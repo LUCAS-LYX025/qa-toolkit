@@ -20,6 +20,7 @@ import os
 
 from author_profile import AuthorProfile
 from log_analyzer_utils import LogAnalyzerUtils
+from feedbackSection import FeedbackSection
 from zendao import ZenTaoPerformanceExporter
 # 在已有的导入后面添加
 from interface_auto_test import InterfaceAutoTestCore
@@ -6469,6 +6470,9 @@ elif tool_category == "BI数据分析工具":
         5. 创建可视化图表和仪表板
         6. 导出分析报告
         """)
+# 初始化并使用留言区
+feedback_section = FeedbackSection()
+feedback_section.render_feedback_section()
 
 # show_general_guidelines()
 author = AuthorProfile()
@@ -6478,3 +6482,4 @@ author.render_main_profile()
 
 # 在需要显示侧边栏作者信息的地方调用
 # author.render_sidebar_profile()
+
