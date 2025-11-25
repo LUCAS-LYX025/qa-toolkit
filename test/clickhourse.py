@@ -425,11 +425,11 @@ def main():
 
     # 数据库配置
     st.sidebar.subheader("数据库配置")
-    host = st.sidebar.text_input("主机地址", value="192.168.30.17")
+    host = st.sidebar.text_input("主机地址", value="")
     port = st.sidebar.number_input("端口", value=8123, min_value=1, max_value=65535)
-    username = st.sidebar.text_input("用户名", value="default")
-    password = st.sidebar.text_input("密码", value="zyl@123", type="password")
-    database = st.sidebar.text_input("数据库", value="quotation")
+    username = st.sidebar.text_input("用户名", value="")
+    password = st.sidebar.text_input("密码", value="", type="password")
+    database = st.sidebar.text_input("数据库", value="")
 
     # 连接状态显示
     if st.session_state.connected:
