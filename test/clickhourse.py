@@ -398,6 +398,36 @@ class TechnicalIndicatorCalculator:
         return analysis
 
 
+def get_database_config():
+    """获取数据库配置：优先使用Secrets，其次使用侧边栏输入"""
+
+    # 检查是否有Secrets配置
+    has_secrets = all(key in st.secrets for key in ['CLICKHOUSE_HOST', 'CLICKHOUSE_USER', 'CLICKHOUSE_PASSWORD'])
+
+    if has_secrets:
+        # 从Secrets获取配置
+        config = {
+            'host': st.secrets.get("CLICKHOUSE_HOST", ""),
+            'port': st.secrets.get("CLICKHOUSE_PORT", 8123),
+            'username': st.secrets.get("CLICKHOUSE_USER", ""),
+            'password': st.secrets.get("CLICKHOUSE_PASSWORD", ""),
+            'database': st.secrets.get("CLICKHOUSE_DATABASE", "quotation"),
+            'use_secrets': True
+        }
+    else:
+        # 使用默认值（用于本地开发）
+        config = {
+            'host': "192.168.30.17",
+            'port': 8123,
+            'username': "default",
+            'password': "zyl@123",
+            'database': "quotation",
+            'use_secrets': False
+        }
+
+    return config
+
+
 # Streamlit 应用
 def main():
     st.set_page_config(
@@ -420,16 +450,45 @@ def main():
     if 'indicators_df' not in st.session_state:
         st.session_state.indicators_df = None
 
+    # 获取数据库配置
+    db_config = get_database_config()
+
     # 侧边栏配置
     st.sidebar.header("🔧 配置参数")
 
-    # 数据库配置
+    # 数据库配置显示
     st.sidebar.subheader("数据库配置")
-    host = st.sidebar.text_input("主机地址", value="")
-    port = st.sidebar.number_input("端口", value=8123, min_value=1, max_value=65535)
-    username = st.sidebar.text_input("用户名", value="")
-    password = st.sidebar.text_input("密码", value="", type="password")
-    database = st.sidebar.text_input("数据库", value="")
+
+    if db_config['use_secrets']:
+        st.sidebar.success("✅ 使用Secrets配置")
+        st.sidebar.info(f"""
+        **当前配置：**
+        - 主机: `{db_config['host']}`
+        - 端口: `{db_config['port']}`
+        - 用户: `{db_config['username']}`
+        - 数据库: `{db_config['database']}`
+        """)
+
+        # 允许覆盖Secrets配置（用于测试）
+        use_custom_config = st.sidebar.checkbox("使用自定义配置", value=False)
+    else:
+        st.sidebar.warning("⚠️ 使用默认配置")
+        use_custom_config = True
+
+    # 自定义配置输入
+    if use_custom_config:
+        host = st.sidebar.text_input("主机地址", value=db_config['host'])
+        port = st.sidebar.number_input("端口", value=db_config['port'], min_value=1, max_value=65535)
+        username = st.sidebar.text_input("用户名", value=db_config['username'])
+        password = st.sidebar.text_input("密码", value=db_config['password'], type="password")
+        database = st.sidebar.text_input("数据库", value=db_config['database'])
+    else:
+        # 使用Secrets配置
+        host = db_config['host']
+        port = db_config['port']
+        username = db_config['username']
+        password = db_config['password']
+        database = db_config['database']
 
     # 连接状态显示
     if st.session_state.connected:
@@ -598,7 +657,7 @@ def main():
                     fig_macd = make_subplots(rows=2, cols=1,
                                              subplot_titles=('MACD线', 'MACD柱状图'),
                                              vertical_spacing=0.1,
-                                             shared_xaxes=True)  # 修复参数名
+                                             shared_xaxes=True)
 
                     fig_macd.add_trace(go.Scatter(x=indicators_df['trading_day'], y=indicators_df['DIF'],
                                                   mode='lines', name='DIF', line=dict(color='blue')), row=1, col=1)
