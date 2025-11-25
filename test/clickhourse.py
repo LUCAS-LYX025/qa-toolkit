@@ -463,10 +463,7 @@ def main():
         st.sidebar.success("✅ 使用Secrets配置")
         st.sidebar.info(f"""
         **当前配置：**
-        - 主机: `{db_config['host']}`
-        - 端口: `{db_config['port']}`
-        - 用户: `{db_config['username']}`
-        - 数据库: `{db_config['database']}`
+        连接成功
         """)
 
         # 允许覆盖Secrets配置（用于测试）
