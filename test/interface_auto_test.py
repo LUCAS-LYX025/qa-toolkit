@@ -1,20 +1,55 @@
-import pandas as pd
+import io
 import json
 import os
+import re
+import shlex
+import subprocess
 import sys
 import time
-from typing import List, Dict, Any
-import subprocess
-import unittest
+from copy import deepcopy
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, urlparse
+
+import pandas as pd
+import requests
 
 
 class InterfaceAutoTestCore:
     """接口自动化测试核心类"""
 
+    HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+    REQUEST_FORMAT_MAP = {
+        "自动检测": "auto",
+        "auto": "auto",
+        "json=参数": "json",
+        "json": "json",
+        "data=json.dumps()": "data_json",
+        "json格式(data)": "data_json",
+        "data": "data_json",
+        "form-urlencoded": "form",
+        "form": "form",
+        "raw": "raw",
+        "text": "raw",
+    }
+    EXECUTION_MODE_MAP = {
+        "pytest": "pytest",
+        "unittest": "unittest",
+        "requests脚本": "requests_script",
+        "requests_script": "requests_script",
+        "requests": "requests_script",
+    }
+
     def __init__(self):
-        self.upload_dir = "uploads"
-        self.test_dir = "test_cases"
-        self.report_dir = "reports"
+        self.base_dir = os.path.dirname(os.path.abspath(__file__))
+        self.upload_dir = os.path.join(self.base_dir, "uploads")
+        self.test_dir = os.path.join(self.base_dir, "test_cases")
+        self.report_dir = os.path.join(self.base_dir, "reports")
+        self.last_parse_meta = {
+            "source_type": "",
+            "source_name": "",
+            "detected_base_url": "",
+            "interface_count": 0,
+        }
         self.setup_directories()
 
     def setup_directories(self):
@@ -22,711 +57,1614 @@ class InterfaceAutoTestCore:
         for directory in [self.upload_dir, self.test_dir, self.report_dir]:
             os.makedirs(directory, exist_ok=True)
 
-    def parse_document(self, file_path: str) -> List[Dict[str, Any]]:
+    def parse_document(self, file_path: str, source_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """解析接口文档"""
-        file_ext = file_path.split('.')[-1].lower()
+        self._reset_parse_meta()
+        file_ext = os.path.splitext(file_path)[1].lower().lstrip(".")
 
-        if file_ext in ['xlsx', 'xls']:
-            return self.parse_excel(file_path)
-        elif file_ext == 'json':
-            return self.parse_json(file_path)
-        else:
-            raise ValueError(f"不支持的文件格式: {file_ext}")
+        if file_ext in {"xlsx", "xls"}:
+            interfaces = self.parse_excel(file_path)
+            return self._finalize_interfaces(interfaces, "excel", os.path.basename(file_path))
+
+        with open(file_path, "r", encoding="utf-8") as file:
+            content = file.read()
+
+        effective_type = source_type or {
+            "json": "auto",
+            "txt": "text",
+            "md": "text",
+            "yaml": "swagger",
+            "yml": "swagger",
+        }.get(file_ext, "auto")
+
+        return self.parse_content(content, source_type=effective_type, source_name=os.path.basename(file_path))
+
+    def parse_content(
+        self,
+        content: str,
+        source_type: str = "auto",
+        source_name: str = "inline",
+    ) -> List[Dict[str, Any]]:
+        """解析原始文本内容"""
+        self._reset_parse_meta()
+        text = (content or "").strip()
+        if not text:
+            raise ValueError("导入内容不能为空")
+
+        effective_type = (source_type or "auto").lower()
+        effective_name = source_name
+        if self._looks_like_url(text):
+            text = self._fetch_remote_content(text)
+            effective_name = source_name if source_name != "inline" else "remote-spec"
+            if effective_type == "text":
+                effective_type = "auto"
+
+        structured = None
+        if effective_type in {"auto", "json", "swagger", "openapi"}:
+            structured = self._load_structured_content(text)
+            if structured is not None:
+                if self._looks_like_openapi(structured):
+                    interfaces = self.parse_openapi_data(structured)
+                    return self._finalize_interfaces(interfaces, "swagger", effective_name)
+                if effective_type in {"auto", "json"}:
+                    interfaces = self.parse_json_data(structured)
+                    return self._finalize_interfaces(interfaces, "json", effective_name)
+
+        if effective_type in {"auto", "text"}:
+            interfaces = self.parse_text_content(text)
+            return self._finalize_interfaces(interfaces, "text", effective_name)
+
+        if effective_type in {"json", "swagger", "openapi"} and structured is None:
+            raise ValueError("未能解析结构化内容，请检查 JSON/Swagger 格式是否正确")
+
+        raise ValueError(f"不支持的导入方式: {source_type}")
 
     def parse_excel(self, file_path: str) -> List[Dict[str, Any]]:
-        """解析Excel文件"""
-        interfaces = []
-
+        """解析 Excel 文件"""
+        interfaces: List[Dict[str, Any]] = []
         try:
-            df = pd.read_excel(file_path)
+            dataframe = pd.read_excel(file_path)
+        except Exception as exc:
+            raise ValueError(f"解析 Excel 文件失败: {exc}") from exc
 
-            for _, row in df.iterrows():
-                interface = {
-                    'name': str(row.get('接口名称', '')),
-                    'method': str(row.get('请求方法', 'GET')).upper(),
-                    'path': str(row.get('接口路径', '')),
-                    'description': str(row.get('接口描述', '')),
-                    'headers': self.parse_json_field(row.get('请求头', '{}')),
-                    'parameters': self.parse_json_field(row.get('请求参数', '{}')),
-                    'expected_status': int(row.get('期望状态码', 200)),
-                    'expected_response': self.parse_json_field(row.get('期望响应', '{}'))
-                }
-                interfaces.append(interface)
+        for _, row in dataframe.iterrows():
+            name = self._clean_text(row.get("接口名称"))
+            path = self._clean_text(row.get("接口路径"))
+            if not name and not path:
+                continue
 
-        except Exception as e:
-            raise ValueError(f"解析Excel文件失败: {str(e)}")
+            raw_interface = {
+                "name": name,
+                "method": self._clean_text(row.get("请求方法")) or "GET",
+                "path": path,
+                "description": self._clean_text(row.get("接口描述")),
+                "headers": self.parse_json_field(row.get("请求头")),
+                "parameters": self.parse_json_field(row.get("请求参数")),
+                "expected_status": self._coerce_int(row.get("期望状态码"), 200),
+                "expected_response": self.parse_json_field(row.get("期望响应")),
+            }
+            interfaces.append(self._normalize_interface(raw_interface))
 
         return interfaces
 
     def parse_json(self, file_path: str) -> List[Dict[str, Any]]:
-        """解析JSON文件"""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        """兼容旧接口"""
+        return self.parse_document(file_path, source_type="json")
 
+    def parse_json_data(self, data: Any) -> List[Dict[str, Any]]:
+        """解析 JSON 数据"""
         if isinstance(data, list):
-            return data
-        elif isinstance(data, dict) and 'interfaces' in data:
-            return data['interfaces']
-        else:
-            raise ValueError("不支持的JSON格式")
+            return [self._normalize_interface(item) for item in data if isinstance(item, dict)]
 
-    def parse_json_field(self, field: Any) -> Dict:
-        """解析JSON格式的字段"""
-        if not field or not isinstance(field, str):
+        if not isinstance(data, dict):
+            raise ValueError("JSON 内容必须是对象或数组")
+
+        if "interfaces" in data and isinstance(data["interfaces"], list):
+            self.last_parse_meta["detected_base_url"] = self._clean_text(data.get("base_url"))
+            return [self._normalize_interface(item) for item in data["interfaces"] if isinstance(item, dict)]
+
+        if self._looks_like_openapi(data):
+            return self.parse_openapi_data(data)
+
+        if "path" in data or "url" in data:
+            self.last_parse_meta["detected_base_url"] = self._clean_text(data.get("base_url"))
+            return [self._normalize_interface(data)]
+
+        raise ValueError("不支持的 JSON 接口文档格式")
+
+    def parse_text_content(self, content: str) -> List[Dict[str, Any]]:
+        """解析文本格式接口定义"""
+        text = (content or "").strip()
+        if not text:
+            return []
+
+        if text.lower().startswith("curl "):
+            blocks = re.split(r"\n(?=curl\s)", text, flags=re.IGNORECASE)
+        else:
+            blocks = re.split(r"\n\s*---+\s*\n", text)
+            if len(blocks) == 1 and len(re.findall(r"(?im)^(?:接口名称|name)\s*:", text)) > 1:
+                blocks = [block for block in re.split(r"(?im)(?=^(?:接口名称|name)\s*:)", text) if block.strip()]
+
+        interfaces: List[Dict[str, Any]] = []
+        for raw_block in blocks:
+            block = raw_block.strip()
+            if not block:
+                continue
+            if block.lower().startswith("curl "):
+                interfaces.append(self._parse_curl_block(block))
+            else:
+                interfaces.append(self._parse_structured_text_block(block))
+
+        if not interfaces:
+            raise ValueError("未能从文本中解析出任何接口定义")
+        return interfaces
+
+    def parse_openapi_data(self, spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """解析 Swagger / OpenAPI 数据"""
+        interfaces: List[Dict[str, Any]] = []
+        detected_base_url = self._detect_openapi_base_url(spec)
+        if detected_base_url:
+            self.last_parse_meta["detected_base_url"] = detected_base_url
+
+        paths = spec.get("paths", {})
+        if not isinstance(paths, dict):
+            raise ValueError("Swagger/OpenAPI 文档缺少 paths 定义")
+
+        for raw_path, path_item in paths.items():
+            if not isinstance(path_item, dict):
+                continue
+
+            path_level_params = path_item.get("parameters", [])
+            for method, operation in path_item.items():
+                method_upper = str(method).upper()
+                if method_upper not in self.HTTP_METHODS or not isinstance(operation, dict):
+                    continue
+
+                merged_params = self._merge_openapi_parameters(path_level_params, operation.get("parameters", []))
+                path_params: Dict[str, Any] = {}
+                query_params: Dict[str, Any] = {}
+                headers: Dict[str, Any] = {}
+
+                for parameter in merged_params:
+                    if not isinstance(parameter, dict):
+                        continue
+                    location = parameter.get("in")
+                    value = self._extract_openapi_parameter_value(parameter, spec)
+                    name = parameter.get("name")
+                    if not name:
+                        continue
+                    if location == "path":
+                        path_params[name] = value
+                    elif location == "query":
+                        query_params[name] = value
+                    elif location == "header":
+                        headers[name] = value
+
+                body, request_format, body_headers = self._extract_openapi_request_body(spec, operation, merged_params)
+                headers.update(body_headers)
+
+                expected_status, expected_response = self._extract_openapi_expected_response(spec, operation)
+
+                raw_interface = {
+                    "name": self._clean_text(operation.get("summary"))
+                    or self._clean_text(operation.get("operationId"))
+                    or f"{method_upper} {raw_path}",
+                    "method": method_upper,
+                    "path": raw_path,
+                    "description": self._clean_text(operation.get("description"))
+                    or self._clean_text(operation.get("summary")),
+                    "headers": headers,
+                    "path_params": path_params,
+                    "query_params": query_params,
+                    "body": body,
+                    "expected_status": expected_status,
+                    "expected_response": expected_response,
+                    "request_format": request_format,
+                    "tags": operation.get("tags", []),
+                    "source": "swagger",
+                }
+                interfaces.append(self._normalize_interface(raw_interface))
+
+        if not interfaces:
+            raise ValueError("Swagger/OpenAPI 文档中未解析到可执行接口")
+        return interfaces
+
+    def parse_json_field(self, field: Any) -> Any:
+        """解析 JSON 样式字段"""
+        if field is None:
+            return {}
+        if isinstance(field, (dict, list)):
+            return field
+        if self._is_empty_value(field):
+            return {}
+
+        text = str(field).strip()
+        if not text or text.lower() == "nan":
             return {}
 
         try:
-            return json.loads(field)
-        except:
-            return {}
+            return json.loads(text)
+        except json.JSONDecodeError:
+            return text
 
-    def generate_test_cases(self, interfaces: List[Dict[str, Any]], framework: str,
-                            base_url: str, timeout: int, retry_times: int,
-                            verify_ssl: bool, request_format: str = "自动检测") -> Dict[str, str]:
-        """生成测试用例 - 修复参数处理"""
-        # 预处理接口数据，确保参数处理正确
-        processed_interfaces = []
-        for interface in interfaces:
-            processed_interface = interface.copy()
-
-            # 确保路径格式正确
-            path = processed_interface.get('path', '')
-            if path and not path.startswith('/'):
-                processed_interface['path'] = '/' + path
-
-            # 处理参数类型
-            parameters = processed_interface.get('parameters', {})
-            if parameters:
-                # 确保参数值是基本类型，避免JSON序列化问题
-                processed_parameters = {}
-                for key, value in parameters.items():
-                    if isinstance(value, (str, int, float, bool)):
-                        processed_parameters[key] = value
-                    else:
-                        processed_parameters[key] = str(value)
-                processed_interface['parameters'] = processed_parameters
-
-            processed_interfaces.append(processed_interface)
-
-        if framework == "unittest":
-            return self._generate_unittest_cases(processed_interfaces, base_url, timeout, retry_times, verify_ssl,
-                                                 request_format)
-        else:
-            return self._generate_pytest_cases(processed_interfaces, base_url, timeout, retry_times, verify_ssl,
-                                               request_format)
-
-    def _generate_unittest_cases(self, interfaces, base_url, timeout, retry_times, verify_ssl, request_format):
-        """生成unittest测试用例"""
-        if not base_url.startswith(('http://', 'https://')):
-            base_url = 'http://' + base_url
-
-        # 构建模板内容
-        lines = [
-            '"""',
-            '自动生成的接口测试用例 - unittest版本',
-            f'生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")}',
-            '"""',
-            '',
-            'import unittest',
-            'import requests',
-            'import json',
-            '',
-            '',
-            'class TestURLValidation(unittest.TestCase):',
-            '    """URL验证测试"""',
-            '',
-            '    def test_url_generation(self):',
-            '        """测试URL生成是否正确"""',
-            '        # 测试手动成功的URL',
-            '        success_url = "http://10.0.3.54:3000/api/login"',
-            '        print(f"✅ 成功URL: {success_url}")',
-            '        ',
-            '        # 测试生成的URL',
-            f'        generated_url = "{base_url.rstrip("/")}/api/login"',
-            '        print(f"🔍 生成URL: {generated_url}")',
-            '        ',
-            '        # 比较两者',
-            '        self.assertEqual(generated_url, success_url, "生成的URL应该与成功URL一致")',
-            '',
-            ''
-        ]
-
-        # 添加测试用例
-        for i, interface in enumerate(interfaces):
-            test_case = self._create_unittest_method(interface, i, base_url)
-            lines.append(test_case)
-            lines.append('')
-
-        # 添加主程序入口
-        lines.extend([
-            'if __name__ == "__main__":',
-            '    unittest.main()',
-            ''
-        ])
-
-        content = '\n'.join(lines)
-
-        return {
-            "test_interfaces.py": content
+    def generate_test_cases(
+        self,
+        interfaces: List[Dict[str, Any]],
+        framework: str,
+        base_url: str,
+        timeout: int,
+        retry_times: int,
+        verify_ssl: bool,
+        request_format: str = "自动检测",
+        template_style: str = "标准模板",
+    ) -> Dict[str, str]:
+        """生成测试文件"""
+        mode = self._normalize_execution_mode(framework)
+        cases = self._prepare_cases(interfaces)
+        config = {
+            "base_url": self._normalize_base_url(base_url),
+            "timeout": int(timeout),
+            "retry_times": int(retry_times),
+            "verify_ssl": bool(verify_ssl),
+            "request_format": self._normalize_request_format(request_format),
+            "template_style": template_style or "标准模板",
         }
 
-    def _create_unittest_method(self, interface: Dict[str, Any], index: int, base_url: str) -> str:
-        """创建unittest测试方法 - 修复GET请求参数问题"""
-        method_name = f"test_interface_{index:03d}"
-        if interface.get('name'):
-            sanitized_name = self._sanitize_method_name(interface['name'])
-            method_name += f"_{sanitized_name}"
-
-        # 确保base_url没有结尾斜杠
-        base_url_clean = base_url.rstrip('/')
-
-        # 处理路径参数
-        path = interface.get('path', '')
-        parameters = interface.get('parameters', {})
-
-        # 替换路径中的参数占位符 {param}
-        if parameters and '{' in path and '}' in path:
-            import re
-            # 提取路径参数占位符
-            path_params = re.findall(r'\{(\w+)\}', path)
-            for param_name in path_params:
-                if param_name in parameters:
-                    path = path.replace(f'{{{param_name}}}', str(parameters[param_name]))
-
-        # 确保路径以斜杠开头
-        if not path.startswith('/'):
-            path = '/' + path
-
-        # 构建完整URL
-        full_url = base_url_clean + path
-
-        # 处理查询参数（GET请求）
-        query_params = {}
-        if interface.get('method', 'GET').upper() == 'GET' and parameters:
-            # 对于GET请求，将参数作为查询参数
-            for key, value in parameters.items():
-                # 如果参数不在路径中，就作为查询参数
-                if f'{{{key}}}' not in interface.get('path', ''):
-                    query_params[key] = value
-
-        # 构建查询字符串
-        if query_params:
-            import urllib.parse
-            query_string = urllib.parse.urlencode(query_params)
-            full_url = f"{full_url}?{query_string}"
-
-        # 调试信息
-        print(f"URL调试: base_url='{base_url}', path='{path}', full_url='{full_url}'")
-
-        return f'''
-    class Test{method_name.capitalize()}(unittest.TestCase):
-        """{interface.get('description', '接口测试')}"""
-
-        def setUp(self):
-            self.url = "{full_url}"
-            self.headers = {interface.get('headers', {})}
-            self.expected_status = {interface.get('expected_status', 200)}
-            # 对于非GET请求，保留请求数据
-            self.data = {interface.get('parameters', {})} if "{interface.get('method', 'GET')}".upper() != "GET" else None
-
-        def test_{method_name}(self):
-            """测试接口: {interface.get('name', f'接口{index}')}"""
-            import requests
-            import json
-
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {{self.url}}")
-            print(f"  请求方法: {interface.get('method', 'GET')}")
-            print(f"  请求头: {{self.headers}}")
-            print(f"  请求数据: {{self.data}}")
-            print(f"  期望状态码: {{self.expected_status}}")
-
-            try:
-                # 根据请求方法发送请求
-                method = "{interface.get('method', 'GET')}".lower()
-
-                if method == 'get':
-                    response = requests.get(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                elif method == 'post':
-                    response = requests.post(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,  # 使用json参数自动处理Content-Type
-                        timeout=30
-                    )
-                elif method == 'put':
-                    response = requests.put(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-                elif method == 'delete':
-                    response = requests.delete(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                else:
-                    response = requests.request(
-                        method=method,
-                        url=self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-
-                print(f"✅ 响应状态码: {{response.status_code}}")
-                print(f"✅ 响应内容: {{response.text}}")
-                print(f"✅ 实际请求URL: {{response.url}}")
-
-                # 断言
-                self.assertEqual(response.status_code, self.expected_status)
-
-            except requests.exceptions.RequestException as e:
-                self.fail(f"请求失败: {{e}}")
-            except Exception as e:
-                self.fail(f"测试执行错误: {{e}}")
-    '''
-
-    def _generate_pytest_cases(self, interfaces, base_url, timeout, retry_times, verify_ssl, request_format):
-        """生成pytest测试用例"""
-        # 确保base_url有协议前缀
-        if not base_url.startswith(('http://', 'https://')):
-            base_url = 'http://' + base_url
-
-        template = '''"""
-    自动生成的接口测试用例 - pytest版本
-    生成时间: {timestamp}
-    """
-
-    import pytest
-    import requests
-    import json
-    import time
-
-
-    @pytest.fixture(scope="session")
-    def api_session():
-        """API会话fixture"""
-        session = requests.Session()
-        yield session
-        session.close()
-
-
-    @pytest.fixture
-    def api_config():
-        """API配置fixture"""
-        return {{
-            "base_url": "{base_url}",
-            "timeout": {timeout},
-            "retry_times": {retry_times},
-            "verify_ssl": {verify_ssl},
-            "request_format": "{request_format}"
-        }}
-
-
-    def make_api_request(session, config, method, path, headers=None, data=None, params=None):
-        """发送API请求"""
-        url = config["base_url"].rstrip('/') + '/' + path.lstrip('/')
-
-        print(f"🔍 调试 - 完整URL: {{url}}")
-        print(f"🔍 调试 - 请求方法: {{method}}")
-        print(f"🔍 调试 - 请求头: {{headers}}")
-        print(f"🔍 调试 - 请求数据: {{data}}")
-        print(f"🔍 调试 - 请求格式: {{config['request_format']}}")
-
-        for attempt in range(config["retry_times"] + 1):
-            try:
-                # 根据配置决定请求数据格式
-                content_type = headers.get('Content-Type', '') if headers else ''
-                use_data_param = (
-                    config["request_format"] == "JSON格式(data)" or 
-                    (config["request_format"] == "自动检测" and content_type == 'application/json')
-                )
-
-                if use_data_param and data:
-                    # 使用data参数并手动JSON编码
-                    print("🔍 调试 - 使用 data=json.dumps(data) 格式")
-                    response = session.request(
-                        method=method,
-                        url=url,
-                        headers=headers or {{}},
-                        data=json.dumps(data),
-                        params=params,
-                        timeout=config["timeout"],
-                        verify=config["verify_ssl"]
-                    )
-                else:
-                    # 使用json参数自动编码
-                    print("🔍 调试 - 使用 json=data 格式")
-                    response = session.request(
-                        method=method,
-                        url=url,
-                        headers=headers or {{}},
-                        json=data,
-                        params=params,
-                        timeout=config["timeout"],
-                        verify=config["verify_ssl"]
-                    )
-
-                print(f"🔍 调试 - 响应状态码: {{response.status_code}}")
-                print(f"🔍 调试 - 响应体: {{response.text}}")
-
-                return response
-            except requests.exceptions.RequestException as e:
-                print(f"🔍 调试 - 请求异常 (尝试 {{attempt + 1}}/{{config['retry_times'] + 1}}): {{e}}")
-                if attempt == config["retry_times"]:
-                    raise e
-                time.sleep(1)
-
-
-    {test_cases}
-    '''
-
-        test_cases = ""
-        for i, interface in enumerate(interfaces):
-            test_case = self._create_pytest_function(interface, i)
-            test_cases += test_case + "\n\n"
-
-        return {
-            "test_interfaces.py": template.format(
-                timestamp=time.strftime("%Y-%m-%d %H:%M:%S"),
-                base_url=base_url,
-                timeout=timeout,
-                retry_times=retry_times,
-                verify_ssl=verify_ssl,
-                request_format=request_format,
-                test_cases=test_cases
-            )
+        manifest = {
+            "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode,
+            "config": config,
+            "cases": cases,
         }
 
-    def _create_pytest_function(self, interface: Dict[str, Any], index: int) -> str:
-        """创建pytest测试函数 - 修复GET请求参数问题"""
-        test_name = f"test_interface_{index:03d}"
-        if interface.get('name'):
-            sanitized_name = self._sanitize_method_name(interface['name'])
-            test_name += f"_{sanitized_name}"
+        files = {
+            "interface_manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2),
+        }
 
-        # 处理路径参数
-        path = interface.get('path', '')
-        parameters = interface.get('parameters', {})
-        method = interface.get('method', 'GET').upper()
-
-        # 构建请求逻辑
-        request_logic = self._build_request_logic(interface, path, parameters, method)
-
-        return f'''
-    def {test_name}(api_session, api_config):
-        """测试接口: {interface.get('name', f'接口{index}')}
-
-        {interface.get('description', '接口功能测试')}
-        """
-        import requests
-        import json
-
-        # 准备请求数据
-        method = "{method}"
-        path = "{path}"
-        headers = {interface.get('headers', {})}
-        parameters = {parameters}
-        expected_status = {interface.get('expected_status', 200)}
-
-        {request_logic}
-
-        # 发送请求
-        try:
-            response = api_session.request(
-                method=method,
-                url=url,
-                headers=headers,
-                {'' if method == 'GET' else 'json=parameters,'}
-                timeout=api_config["timeout"],
-                verify=api_config["verify_ssl"]
-            )
-
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {{url}}")
-            print(f"  请求方法: {{method}}")
-            print(f"  请求头: {{headers}}")
-            print(f"  请求参数: {{parameters}}")
-            print(f"  响应状态码: {{response.status_code}}")
-            print(f"  响应内容: {{response.text}}")
-
-            # 断言
-            assert response.status_code == expected_status, \\
-                f"状态码不匹配: 期望{{expected_status}}, 实际{{response.status_code}} - {{response.text}}"
-
-        except requests.exceptions.RequestException as e:
-            pytest.fail(f"请求失败: {{e}}")
-    '''
-
-    def _build_request_logic(self, interface: Dict[str, Any], path: str, parameters: dict, method: str) -> str:
-        """构建请求逻辑"""
-        lines = []
-
-        # 处理路径参数
-        if parameters and '{' in path and '}' in path:
-            lines.append("    # 处理路径参数")
-            lines.append("    actual_path = path")
-            for key, value in parameters.items():
-                if f'{{{key}}}' in path:
-                    lines.append(f'    actual_path = actual_path.replace("{{{key}}}", str(parameters.get("{key}")))')
-            lines.append("    url = api_config['base_url'].rstrip('/') + '/' + actual_path.lstrip('/')")
+        if mode == "pytest":
+            files["test_interfaces.py"] = self._render_pytest_file(cases, config)
+        elif mode == "unittest":
+            files["test_interfaces.py"] = self._render_unittest_file(cases, config)
+        elif mode == "requests_script":
+            files["run_interfaces.py"] = self._render_requests_script(cases, config)
         else:
-            lines.append("    url = api_config['base_url'].rstrip('/') + '/' + path.lstrip('/')")
+            raise ValueError(f"不支持的执行模式: {framework}")
 
-        # 处理GET请求的查询参数
-        if method == 'GET' and parameters:
-            lines.append("    # 处理查询参数")
-            lines.append("    import urllib.parse")
-            lines.append("    query_params = {}")
+        return files
 
-            # 区分路径参数和查询参数
-            path_params = []
-            if '{' in path and '}' in path:
-                import re
-                path_params = re.findall(r'\{(\w+)\}', path)
+    def save_test_files(self, test_files: Dict[str, str]) -> Dict[str, str]:
+        """保存生成的测试文件"""
+        known_generated_files = {
+            "test_interfaces.py",
+            "run_interfaces.py",
+            "interface_manifest.json",
+        }
 
-            for key in parameters.keys():
-                if key not in path_params:
-                    lines.append(f'    if "{key}" in parameters:')
-                    lines.append(f'        query_params["{key}"] = parameters["{key}"]')
+        for stale_name in known_generated_files - set(test_files.keys()):
+            stale_path = os.path.join(self.test_dir, stale_name)
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
 
-            lines.append("    if query_params:")
-            lines.append("        query_string = urllib.parse.urlencode(query_params)")
-            lines.append("        url = f\"{url}?{query_string}\"")
+        saved_files: Dict[str, str] = {}
+        for filename, content in test_files.items():
+            file_path = os.path.join(self.test_dir, filename)
+            with open(file_path, "w", encoding="utf-8") as file:
+                file.write(content)
+            saved_files[filename] = file_path
 
-        return '\n'.join(lines)
-
-    def _sanitize_method_name(self, name: str) -> str:
-        """清理方法名"""
-        import re
-        return re.sub(r'[^a-zA-Z0-9_]', '_', name)
+        return saved_files
 
     def run_tests(self, framework: str) -> Dict[str, Any]:
         """运行测试用例"""
-        if framework == "unittest":
-            return self._run_unittest_tests()
+        mode = self._normalize_execution_mode(framework)
+
+        if mode == "unittest":
+            command = [sys.executable, "-m", "unittest", "test_interfaces", "-v"]
+        elif mode == "pytest":
+            command = [sys.executable, "-m", "pytest", "test_interfaces.py", "-q", "-s"]
+        elif mode == "requests_script":
+            command = [sys.executable, "run_interfaces.py"]
         else:
-            return self._run_pytest_tests()
+            return self._build_runner_error(f"不支持的执行模式: {framework}")
 
-    def _run_unittest_tests(self) -> Dict[str, Any]:
-        """运行unittest测试"""
-        try:
-            # 添加测试目录到Python路径
-            sys.path.insert(0, self.test_dir)
-
-            # 使用unittest发现并运行测试
-            loader = unittest.TestLoader()
-            suite = loader.discover(self.test_dir, pattern='test_*.py')
-
-            # 运行测试
-            runner = unittest.TextTestRunner(verbosity=2)
-            result = runner.run(suite)
-
-            return {
-                'total': result.testsRun,
-                'passed': result.testsRun - len(result.failures) - len(result.errors),
-                'failed': len(result.failures),
-                'errors': len(result.errors),
-                'success': result.wasSuccessful()
-            }
-
-        except Exception as e:
-            return {
-                'total': 0,
-                'passed': 0,
-                'failed': 0,
-                'errors': 1,
-                'success': False,
-                'error_message': str(e)
-            }
-
-    def _run_pytest_tests(self) -> Dict[str, Any]:
-        """运行pytest测试"""
-        try:
-            # 运行pytest
-            pytest_args = [
-                self.test_dir,
-                '-v',
-                '--tb=short'
-            ]
-
-            # 执行pytest
-            result = subprocess.run(
-                [sys.executable, '-m', 'pytest'] + pytest_args,
-                capture_output=True,
-                text=True,
-                cwd=os.getcwd()
-            )
-
-            # 解析输出结果
-            return self._parse_pytest_output(result.stdout)
-
-        except Exception as e:
-            return {
-                'total': 0,
-                'passed': 0,
-                'failed': 0,
-                'errors': 1,
-                'success': False,
-                'error_message': str(e)
-            }
-
-    def _parse_pytest_output(self, output: str) -> Dict[str, Any]:
-        """解析pytest输出 - 修复版本"""
-        import re
-
-        passed = 0
-        failed = 0
-        errors = 0
-
-        # 使用正则表达式匹配 pytest 总结行
-        # 匹配格式: "X passed, Y failed, Z errors in T seconds"
-        summary_pattern = r'(\d+) passed|(\d+) failed|(\d+) error'
-        matches = re.findall(summary_pattern, output)
-
-        for match in matches:
-            if match[0]:  # passed
-                passed = int(match[0])
-            if match[1]:  # failed
-                failed = int(match[1])
-            if match[2]:  # errors
-                errors = int(match[2])
-
-        # 如果没有找到匹配，尝试其他格式
-        if passed == 0 and failed == 0 and errors == 0:
-            # 尝试匹配简单的统计行
-            if "PASSED" in output:
-                passed = output.count("PASSED")
-            if "FAILED" in output:
-                failed = output.count("FAILED")
-            if "ERROR" in output:
-                errors = output.count("ERROR")
-
-        total = passed + failed + errors
-
-        return {
-            'total': total,
-            'passed': passed,
-            'failed': failed,
-            'errors': errors,
-            'success': failed == 0 and errors == 0,
-            'output': output
-        }
+        return self._run_command(command, mode)
 
     def generate_html_report(self, test_results: Dict[str, Any], framework: str) -> str:
-        """生成HTML测试报告"""
+        """生成简单 HTML 测试报告"""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        total = test_results.get("total", 0)
+        passed = test_results.get("passed", 0)
+        failed = test_results.get("failed", 0)
+        errors = test_results.get("errors", 0)
+        success_rate = (passed / total * 100) if total else 0
 
-        # 计算成功率
-        total = test_results.get('total', 0)
-        passed = test_results.get('passed', 0)
-        success_rate = (passed / total * 100) if total > 0 else 0
-
-        html_content = f'''
+        html_content = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <title>接口自动化测试报告</title>
     <meta charset="utf-8">
+    <title>接口自动化测试报告</title>
     <style>
-        body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-        .container {{ max-width: 1200px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
-        .header {{ text-align: center; margin-bottom: 30px; padding-bottom: 20px; border-bottom: 2px solid #eee; }}
-        .summary {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }}
-        .metric {{ background: #f8f9fa; padding: 20px; border-radius: 8px; text-align: center; border-left: 4px solid; }}
-        .metric.total {{ border-color: #007bff; }}
-        .metric.passed {{ border-color: #28a745; }}
-        .metric.failed {{ border-color: #dc3545; }}
-        .metric.errors {{ border-color: #ffc107; }}
-        .metric-value {{ font-size: 2em; font-weight: bold; margin: 10px 0; }}
-        .success-rate {{ font-size: 1.5em; color: #28a745; font-weight: bold; text-align: center; margin: 20px 0; }}
-        .details {{ margin-top: 30px; }}
-        table {{ width: 100%; border-collapse: collapse; margin-top: 20px; }}
-        th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
-        th {{ background-color: #f8f9fa; font-weight: bold; }}
-        .status-passed {{ color: #28a745; font-weight: bold; }}
-        .status-failed {{ color: #dc3545; font-weight: bold; }}
-        .status-error {{ color: #ffc107; font-weight: bold; }}
+        body {{ font-family: Arial, sans-serif; margin: 24px; background: #f3f5f7; }}
+        .container {{ max-width: 1100px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 24px; }}
+        .metrics {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 24px 0; }}
+        .card {{ background: #fafbfc; border-radius: 10px; padding: 16px; border-left: 4px solid #1f77b4; }}
+        .value {{ font-size: 28px; font-weight: bold; margin-top: 8px; }}
+        table {{ width: 100%; border-collapse: collapse; margin-top: 24px; }}
+        th, td {{ padding: 12px; border-bottom: 1px solid #eee; text-align: left; }}
+        th {{ background: #fafbfc; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>🚀 接口自动化测试报告</h1>
-            <p>测试框架: {framework} | 生成时间: {timestamp}</p>
+        <h1>接口自动化测试报告</h1>
+        <p>执行模式: {framework} | 生成时间: {timestamp}</p>
+        <p>成功率: {success_rate:.1f}%</p>
+        <div class="metrics">
+            <div class="card"><div>总用例</div><div class="value">{total}</div></div>
+            <div class="card"><div>通过</div><div class="value">{passed}</div></div>
+            <div class="card"><div>失败</div><div class="value">{failed}</div></div>
+            <div class="card"><div>错误</div><div class="value">{errors}</div></div>
         </div>
-
-        <div class="success-rate">
-            测试成功率: {success_rate:.1f}%
-        </div>
-
-        <div class="summary">
-            <div class="metric total">
-                <div>总用例数</div>
-                <div class="metric-value">{total}</div>
-            </div>
-            <div class="metric passed">
-                <div>通过</div>
-                <div class="metric-value" style="color: #28a745;">{passed}</div>
-            </div>
-            <div class="metric failed">
-                <div>失败</div>
-                <div class="metric-value" style="color: #dc3545;">{test_results.get('failed', 0)}</div>
-            </div>
-            <div class="metric errors">
-                <div>错误</div>
-                <div class="metric-value" style="color: #ffc107;">{test_results.get('errors', 0)}</div>
-            </div>
-        </div>
-
-        <div class="details">
-            <h3>📊 测试详情</h3>
-            <table>
-                <tr>
-                    <th>统计项</th>
-                    <th>数量</th>
-                    <th>比例</th>
-                </tr>
-                <tr>
-                    <td>总测试用例</td>
-                    <td>{total}</td>
-                    <td>100%</td>
-                </tr>
-                <tr>
-                    <td class="status-passed">通过用例</td>
-                    <td>{passed}</td>
-                    <td>{(passed / total * 100) if total > 0 else 0:.1f}%</td>
-                </tr>
-                <tr>
-                    <td class="status-failed">失败用例</td>
-                    <td>{test_results.get('failed', 0)}</td>
-                    <td>{(test_results.get('failed', 0) / total * 100) if total > 0 else 0:.1f}%</td>
-                </tr>
-                <tr>
-                    <td class="status-error">错误用例</td>
-                    <td>{test_results.get('errors', 0)}</td>
-                    <td>{(test_results.get('errors', 0) / total * 100) if total > 0 else 0:.1f}%</td>
-                </tr>
-            </table>
-        </div>
-
-        <div style="margin-top: 30px; text-align: center; color: #666;">
-            <p>报告生成时间: {timestamp}</p>
-        </div>
+        <table>
+            <tr><th>接口</th><th>方法</th><th>路径</th><th>状态</th><th>状态码</th><th>响应时间</th></tr>
+            {self._generate_report_rows(test_results.get("test_details", []))}
+        </table>
     </div>
 </body>
 </html>
-'''
-
+"""
         report_path = os.path.join(self.report_dir, f"test_report_{int(time.time())}.html")
-        with open(report_path, 'w', encoding='utf-8') as f:
-            f.write(html_content)
-
+        with open(report_path, "w", encoding="utf-8") as file:
+            file.write(html_content)
         return report_path
+
+    def build_excel_template_bytes(self) -> bytes:
+        """构建 Excel 模板"""
+        example_data = pd.DataFrame(
+            [
+                {
+                    "接口名称": "用户登录",
+                    "请求方法": "POST",
+                    "接口路径": "/api/login",
+                    "接口描述": "用户登录接口",
+                    "请求头": '{"Content-Type": "application/json"}',
+                    "请求参数": '{"username": "test", "password": "123456"}',
+                    "期望状态码": 200,
+                    "期望响应": '{"code": 0, "message": "success"}',
+                },
+                {
+                    "接口名称": "获取用户信息",
+                    "请求方法": "GET",
+                    "接口路径": "/api/user/{id}",
+                    "接口描述": "获取用户信息",
+                    "请求头": '{"Authorization": "Bearer token"}',
+                    "请求参数": '{"id": 1}',
+                    "期望状态码": 200,
+                    "期望响应": '{"id": 1, "name": "test"}',
+                },
+            ]
+        )
+        buffer = io.BytesIO()
+        example_data.to_excel(buffer, index=False, engine="openpyxl")
+        return buffer.getvalue()
+
+    def build_json_template(self) -> str:
+        """构建 JSON 模板"""
+        example = {
+            "base_url": "https://example.com",
+            "interfaces": [
+                {
+                    "name": "用户登录",
+                    "method": "POST",
+                    "path": "/api/login",
+                    "description": "用户登录接口",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {"username": "test", "password": "123456"},
+                    "expected_status": 200,
+                    "expected_response": {"code": 0, "message": "success"},
+                }
+            ],
+        }
+        return json.dumps(example, ensure_ascii=False, indent=2)
+
+    def build_text_template(self) -> str:
+        """构建文本模板"""
+        return """接口名称: 用户登录
+请求方法: POST
+接口路径: /api/login
+接口描述: 用户登录接口
+请求头: {"Content-Type": "application/json"}
+请求参数: {"username": "test", "password": "123456"}
+期望状态码: 200
+期望响应: {"code": 0, "message": "success"}
+---
+接口名称: 获取用户信息
+请求方法: GET
+接口路径: /api/user/{id}
+接口描述: 获取用户信息
+请求参数: {"id": 1}
+期望状态码: 200
+期望响应: {"id": 1, "name": "test"}"""
+
+    def build_openapi_template(self) -> str:
+        """构建 OpenAPI JSON 模板"""
+        example = {
+            "openapi": "3.0.0",
+            "info": {"title": "Sample API", "version": "1.0.0"},
+            "servers": [{"url": "https://example.com"}],
+            "paths": {
+                "/api/login": {
+                    "post": {
+                        "summary": "用户登录",
+                        "requestBody": {
+                            "required": True,
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "required": ["username", "password"],
+                                        "properties": {
+                                            "username": {"type": "string", "example": "test"},
+                                            "password": {"type": "string", "example": "123456"},
+                                        },
+                                    }
+                                }
+                            },
+                        },
+                        "responses": {
+                            "200": {
+                                "description": "success",
+                                "content": {
+                                    "application/json": {
+                                        "schema": {
+                                            "type": "object",
+                                            "properties": {
+                                                "code": {"type": "integer", "example": 0},
+                                                "message": {"type": "string", "example": "success"},
+                                            },
+                                        }
+                                    }
+                                },
+                            }
+                        },
+                    }
+                }
+            },
+        }
+        return json.dumps(example, ensure_ascii=False, indent=2)
+
+    def _normalize_interface(self, raw_interface: Dict[str, Any]) -> Dict[str, Any]:
+        """归一化接口定义"""
+        if not isinstance(raw_interface, dict):
+            raise ValueError("接口定义必须是对象")
+
+        path = self._clean_text(raw_interface.get("path") or raw_interface.get("url"))
+        if not path:
+            raise ValueError("接口路径不能为空")
+
+        method = self._clean_text(raw_interface.get("method")) or "GET"
+        method = method.upper()
+        if method not in self.HTTP_METHODS:
+            method = "GET"
+
+        headers = self._ensure_mapping(raw_interface.get("headers"))
+        parameters = raw_interface.get("parameters")
+        path_params = self._ensure_mapping(raw_interface.get("path_params"))
+        query_params = self._ensure_mapping(raw_interface.get("query_params"))
+        body = raw_interface.get("body")
+        if body is None and raw_interface.get("request_body") is not None:
+            body = raw_interface.get("request_body")
+
+        if body is None and raw_interface.get("data") is not None:
+            body = raw_interface.get("data")
+
+        if parameters is None and raw_interface.get("请求参数") is not None:
+            parameters = raw_interface.get("请求参数")
+
+        path_placeholders = set(re.findall(r"\{([^}]+)\}", path))
+        if isinstance(parameters, dict):
+            temp_parameters = deepcopy(parameters)
+            for key in list(temp_parameters.keys()):
+                if key in path_placeholders and key not in path_params:
+                    path_params[key] = temp_parameters.pop(key)
+
+            if method == "GET":
+                if not query_params:
+                    query_params = temp_parameters
+            elif body is None and not query_params:
+                body = temp_parameters
+
+        if parameters is None:
+            if method == "GET":
+                parameters = {**path_params, **query_params}
+            elif isinstance(body, dict):
+                parameters = {**path_params, **query_params, **body}
+            elif body is not None:
+                parameters = body
+            else:
+                parameters = {**path_params, **query_params}
+
+        request_format = self._normalize_request_format(
+            raw_interface.get("request_format")
+            or raw_interface.get("body_type")
+            or self._infer_request_format(headers, body)
+        )
+
+        expected_response = raw_interface.get("expected_response")
+        if isinstance(expected_response, str):
+            parsed_expected = self.parse_json_field(expected_response)
+            expected_response = parsed_expected if parsed_expected != "" else expected_response
+
+        tags = raw_interface.get("tags") or []
+        if isinstance(tags, str):
+            tags = [item.strip() for item in tags.split(",") if item.strip()]
+        elif not isinstance(tags, list):
+            tags = []
+
+        return {
+            "name": self._clean_text(raw_interface.get("name")) or f"{method} {path}",
+            "method": method,
+            "path": path,
+            "description": self._clean_text(raw_interface.get("description")),
+            "headers": headers,
+            "parameters": parameters,
+            "path_params": path_params,
+            "query_params": query_params,
+            "body": body,
+            "expected_status": self._coerce_int(raw_interface.get("expected_status"), 200),
+            "expected_response": expected_response if expected_response is not None else {},
+            "request_format": request_format,
+            "tags": tags,
+            "source": self._clean_text(raw_interface.get("source")),
+        }
+
+    def _prepare_cases(self, interfaces: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """准备生成和执行时使用的标准用例"""
+        cases: List[Dict[str, Any]] = []
+        for index, interface in enumerate(interfaces, start=1):
+            case = self._normalize_interface(interface)
+            case_id = f"case_{index:03d}"
+            case["case_id"] = case_id
+            case["test_name"] = self._build_test_name(case_id, case["name"])
+            cases.append(case)
+        return cases
+
+    def _render_pytest_file(self, cases: List[Dict[str, Any]], config: Dict[str, Any]) -> str:
+        helpers = self._build_runtime_helpers(config, cases)
+        tests = []
+        for case in cases:
+            tests.append(
+                f"""
+def {case["test_name"]}(api_session):
+    execute_case(api_session, CASE_INDEX["{case["case_id"]}"])
+""".rstrip()
+            )
+
+        return "\n\n".join(
+            [
+                '"""自动生成的接口测试脚本 - pytest"""',
+                "import pytest",
+                helpers,
+                "",
+                '@pytest.fixture(scope="session")',
+                "def api_session():",
+                "    session = requests.Session()",
+                "    yield session",
+                "    session.close()",
+                "",
+                "\n\n".join(tests),
+                "",
+            ]
+        )
+
+    def _render_unittest_file(self, cases: List[Dict[str, Any]], config: Dict[str, Any]) -> str:
+        helpers = self._build_runtime_helpers(config, cases)
+        methods = []
+        for case in cases:
+            methods.append(
+                f"""
+    def {case["test_name"]}(self):
+        execute_case(self.session, CASE_INDEX["{case["case_id"]}"])
+""".rstrip()
+            )
+
+        return "\n\n".join(
+            [
+                '"""自动生成的接口测试脚本 - unittest"""',
+                "import unittest",
+                helpers,
+                "",
+                "class GeneratedApiTests(unittest.TestCase):",
+                "    @classmethod",
+                "    def setUpClass(cls):",
+                "        cls.session = requests.Session()",
+                "",
+                "    @classmethod",
+                "    def tearDownClass(cls):",
+                "        cls.session.close()",
+                "",
+                "\n\n".join(methods),
+                "",
+                'if __name__ == "__main__":',
+                "    unittest.main(verbosity=2)",
+                "",
+            ]
+        )
+
+    def _render_requests_script(self, cases: List[Dict[str, Any]], config: Dict[str, Any]) -> str:
+        helpers = self._build_runtime_helpers(config, cases)
+        return "\n\n".join(
+            [
+                '"""自动生成的接口执行脚本 - requests"""',
+                "import sys",
+                helpers,
+                "",
+                "def main():",
+                "    session = requests.Session()",
+                "    failed = 0",
+                "    try:",
+                "        for case in CASES:",
+                "            try:",
+                "                execute_case(session, case)",
+                "            except Exception:",
+                "                failed += 1",
+                "    finally:",
+                "        session.close()",
+                "    return 1 if failed else 0",
+                "",
+                'if __name__ == "__main__":',
+                "    sys.exit(main())",
+                "",
+            ]
+        )
+
+    def _build_runtime_helpers(self, config: Dict[str, Any], cases: List[Dict[str, Any]]) -> str:
+        template = """
+import json
+import re
+import time
+from copy import deepcopy
+
+import requests
+
+CONFIG = json.loads(r'''__CONFIG_JSON__''')
+CASES = json.loads(r'''__CASES_JSON__''')
+CASE_INDEX = {case["case_id"]: case for case in CASES}
+
+
+def clone_value(value):
+    return deepcopy(value)
+
+
+def build_url(base_url, path, path_params):
+    actual_path = path or "/"
+    for key, value in (path_params or {}).items():
+        actual_path = actual_path.replace("{" + str(key) + "}", str(value))
+    if actual_path.startswith(("http://", "https://")):
+        return actual_path
+    if not base_url:
+        return actual_path
+    return base_url.rstrip("/") + "/" + actual_path.lstrip("/")
+
+
+def merge_request_parts(case):
+    path = case.get("path", "")
+    path_params = clone_value(case.get("path_params") or {})
+    query_params = clone_value(case.get("query_params") or {})
+    body = clone_value(case.get("body"))
+    placeholders = set(re.findall(r"\\{([^}]+)\\}", path or ""))
+    for name in placeholders:
+        if name not in path_params:
+            if isinstance(query_params, dict) and name in query_params:
+                path_params[name] = query_params.pop(name)
+            elif isinstance(body, dict) and name in body:
+                path_params[name] = body.pop(name)
+    return path_params, query_params, body
+
+
+def resolve_request_format(case):
+    override = CONFIG.get("request_format", "auto")
+    if override and override != "auto":
+        return override
+    case_format = case.get("request_format", "auto")
+    if case_format and case_format != "auto":
+        return case_format
+    headers = case.get("headers") or {}
+    content_type = str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
+    body = case.get("body")
+    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        return "form"
+    if "application/json" in content_type:
+        return "json"
+    if isinstance(body, (dict, list)):
+        return "json"
+    if isinstance(body, str):
+        return "raw"
+    return "auto"
+
+
+def response_json(response):
+    try:
+        return response.json()
+    except ValueError:
+        return None
+
+
+def compare_standard(expected, actual, prefix):
+    failures = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
+        for key, value in expected.items():
+            if key not in actual:
+                failures.append(f"{prefix} 缺少字段 {key}")
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            if value not in (None, "", {}, []) and actual.get(key) != value:
+                failures.append(f"{prefix}.{key} 期望 {value!r}，实际 {actual.get(key)!r}")
+        return failures
+
+    if isinstance(expected, list):
+        if all(isinstance(item, str) for item in expected):
+            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
+                for key in expected:
+                    if key not in actual[0]:
+                        failures.append(f"{prefix}[0] 缺少字段 {key}")
+                return failures
+            if isinstance(actual, dict):
+                for key in expected:
+                    if key not in actual:
+                        failures.append(f"{prefix} 缺少字段 {key}")
+                return failures
+        if not isinstance(actual, list) or not actual:
+            return [f"{prefix} 应返回非空数组"]
+        return []
+
+    if isinstance(expected, str):
+        if expected not in str(actual):
+            return [f"{prefix} 未包含期望文本 {expected!r}"]
+        return []
+
+    if expected not in (None, "", {}, []) and expected != actual:
+        return [f"{prefix} 期望 {expected!r}，实际 {actual!r}"]
+    return failures
+
+
+def compare_strict(expected, actual, prefix):
+    failures = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
+        for key, value in expected.items():
+            if key not in actual:
+                failures.append(f"{prefix} 缺少字段 {key}")
+                continue
+            failures.extend(compare_strict(value, actual[key], f"{prefix}.{key}"))
+        return failures
+
+    if isinstance(expected, list):
+        if all(isinstance(item, str) for item in expected):
+            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
+                for key in expected:
+                    if key not in actual[0]:
+                        failures.append(f"{prefix}[0] 缺少字段 {key}")
+                return failures
+            if isinstance(actual, dict):
+                for key in expected:
+                    if key not in actual:
+                        failures.append(f"{prefix} 缺少字段 {key}")
+                return failures
+        if not isinstance(actual, list):
+            return [f"{prefix} 应为数组，实际为 {type(actual).__name__}"]
+        if len(actual) < len(expected):
+            failures.append(f"{prefix} 长度不足，期望至少 {len(expected)}，实际 {len(actual)}")
+        for index, value in enumerate(expected):
+            if index >= len(actual):
+                break
+            failures.extend(compare_strict(value, actual[index], f"{prefix}[{index}]"))
+        return failures
+
+    if expected != actual:
+        failures.append(f"{prefix} 期望 {expected!r}，实际 {actual!r}")
+    return failures
+
+
+def build_assertions(case, response):
+    assertions = []
+    failures = []
+    expected_status = int(case.get("expected_status", 200))
+    status_ok = response.status_code == expected_status
+    status_message = f"期望 {expected_status}，实际 {response.status_code}"
+    assertions.append({
+        "description": f"状态码应为 {expected_status}",
+        "passed": status_ok,
+        "message": status_message,
+    })
+    if not status_ok:
+        failures.append(status_message)
+
+    expected_response = case.get("expected_response")
+    if expected_response in (None, "", {}, []) or CONFIG.get("template_style") == "冒烟模板":
+        return assertions, failures
+
+    actual_payload = response_json(response)
+    actual_value = actual_payload if actual_payload is not None else response.text
+    if CONFIG.get("template_style") == "严格模板":
+        payload_failures = compare_strict(expected_response, actual_value, "response")
+    else:
+        payload_failures = compare_standard(expected_response, actual_value, "response")
+
+    assertions.append({
+        "description": "响应内容断言",
+        "passed": not payload_failures,
+        "message": "通过" if not payload_failures else "; ".join(payload_failures),
+    })
+    failures.extend(payload_failures)
+    return assertions, failures
+
+
+def build_detail(case, status, response, response_time, url, error, assertions):
+    return {
+        "case_id": case.get("case_id"),
+        "test_name": case.get("test_name"),
+        "name": case.get("name"),
+        "method": case.get("method"),
+        "path": case.get("path"),
+        "status": status,
+        "status_code": response.status_code if response is not None else 0,
+        "response_time": round(response_time, 4),
+        "headers": case.get("headers") or {},
+        "parameters": case.get("parameters"),
+        "response_body": response.text if response is not None else "",
+        "error": error or "",
+        "assertions": assertions or [],
+        "url": url,
+    }
+
+
+def emit_case_result(detail):
+    print("CASE_RESULT::" + json.dumps(detail, ensure_ascii=False))
+
+
+def send_request(session, case):
+    path_params, query_params, body = merge_request_parts(case)
+    headers = clone_value(case.get("headers") or {})
+    method = str(case.get("method", "GET")).upper()
+    request_format = resolve_request_format(case)
+    url = build_url(CONFIG.get("base_url", ""), case.get("path", ""), path_params)
+    request_kwargs = {
+        "method": method,
+        "url": url,
+        "headers": headers,
+        "params": query_params or None,
+        "timeout": int(CONFIG.get("timeout", 30)),
+        "verify": bool(CONFIG.get("verify_ssl", False)),
+    }
+
+    if method != "GET" and body is not None:
+        if request_format == "data_json":
+            headers.setdefault("Content-Type", "application/json")
+            request_kwargs["data"] = json.dumps(body, ensure_ascii=False)
+        elif request_format == "form":
+            request_kwargs["data"] = body
+        elif request_format == "raw":
+            request_kwargs["data"] = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        else:
+            request_kwargs["json"] = body
+    elif method == "GET" and body and not request_kwargs["params"] and isinstance(body, dict):
+        request_kwargs["params"] = body
+
+    retry_times = int(CONFIG.get("retry_times", 0))
+    last_error = None
+    for attempt in range(retry_times + 1):
+        try:
+            return session.request(**request_kwargs), url
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt >= retry_times:
+                raise
+            time.sleep(1)
+    raise last_error or RuntimeError("请求失败")
+
+
+def execute_case(session, case):
+    started_at = time.time()
+    response = None
+    url = ""
+    assertions = []
+    try:
+        response, url = send_request(session, case)
+        assertions, failures = build_assertions(case, response)
+        if failures:
+            raise AssertionError("; ".join(failures))
+        detail = build_detail(case, "passed", response, time.time() - started_at, url, "", assertions)
+        emit_case_result(detail)
+        return detail
+    except AssertionError as exc:
+        detail = build_detail(case, "failed", response, time.time() - started_at, url, str(exc), assertions)
+        emit_case_result(detail)
+        raise
+    except Exception as exc:
+        detail = build_detail(case, "error", response, time.time() - started_at, url, str(exc), assertions)
+        emit_case_result(detail)
+        raise
+"""
+        return (
+            template.replace("__CONFIG_JSON__", json.dumps(config, ensure_ascii=False))
+            .replace("__CASES_JSON__", json.dumps(cases, ensure_ascii=False))
+            .strip()
+        )
+
+    def _run_command(self, command: List[str], mode: str) -> Dict[str, Any]:
+        """运行子进程并解析结构化输出"""
+        start_time = time.time()
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                cwd=self.test_dir,
+            )
+        except Exception as exc:
+            return self._build_runner_error(str(exc))
+
+        parsed = self._parse_execution_output(result.stdout, result.stderr, result.returncode, mode)
+        parsed["start_time"] = start_time
+        parsed["end_time"] = time.time()
+        parsed["duration"] = parsed["end_time"] - parsed["start_time"]
+        return parsed
+
+    def _parse_execution_output(
+        self,
+        stdout: str,
+        stderr: str,
+        return_code: int,
+        mode: str,
+    ) -> Dict[str, Any]:
+        """解析执行输出"""
+        manifest = self._load_manifest()
+        cases = manifest.get("cases", [])
+        results_by_case: Dict[str, Dict[str, Any]] = {}
+        combined_output = "\n".join(part for part in [stdout, stderr] if part).strip()
+
+        for line in (stdout or "").splitlines():
+            if "CASE_RESULT::" not in line:
+                continue
+            raw_payload = line.split("CASE_RESULT::", 1)[1].strip()
+            try:
+                payload = json.loads(raw_payload)
+            except json.JSONDecodeError:
+                continue
+            case_id = payload.get("case_id")
+            if case_id:
+                results_by_case[case_id] = payload
+
+        test_details: List[Dict[str, Any]] = []
+        for case in cases:
+            case_id = case.get("case_id")
+            detail = results_by_case.get(case_id)
+            if detail:
+                detail = self._merge_case_detail(case, detail)
+            else:
+                detail = self._build_missing_case_detail(case, combined_output, return_code)
+            test_details.append(detail)
+
+        if not test_details and results_by_case:
+            test_details = list(results_by_case.values())
+
+        passed = sum(1 for detail in test_details if detail.get("status") == "passed")
+        failed = sum(1 for detail in test_details if detail.get("status") == "failed")
+        errors = sum(1 for detail in test_details if detail.get("status") == "error")
+        total = len(test_details)
+
+        if total == 0 and return_code != 0:
+            return self._build_runner_error(
+                combined_output or f"{mode} 执行失败，退出码 {return_code}",
+                output=combined_output,
+            )
+
+        return {
+            "total": total,
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "success": failed == 0 and errors == 0 and return_code == 0,
+            "test_details": test_details,
+            "output": combined_output,
+        }
+
+    def _load_manifest(self) -> Dict[str, Any]:
+        """读取生成时保存的 manifest"""
+        manifest_path = os.path.join(self.test_dir, "interface_manifest.json")
+        if not os.path.exists(manifest_path):
+            return {}
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as file:
+                return json.load(file)
+        except Exception:
+            return {}
+
+    def _merge_case_detail(self, case: Dict[str, Any], detail: Dict[str, Any]) -> Dict[str, Any]:
+        """补齐单接口执行结果"""
+        merged = {
+            "case_id": case.get("case_id"),
+            "test_name": case.get("test_name"),
+            "name": case.get("name"),
+            "method": case.get("method"),
+            "path": case.get("path"),
+            "status": detail.get("status", "error"),
+            "status_code": detail.get("status_code", 0),
+            "response_time": max(float(detail.get("response_time", 0)), 0.0),
+            "headers": detail.get("headers") or case.get("headers", {}),
+            "parameters": detail.get("parameters")
+            if detail.get("parameters") is not None
+            else case.get("parameters"),
+            "response_body": detail.get("response_body", ""),
+            "error": detail.get("error", ""),
+            "assertions": detail.get("assertions", []),
+            "url": detail.get("url", ""),
+        }
+        return merged
+
+    def _build_missing_case_detail(
+        self,
+        case: Dict[str, Any],
+        combined_output: str,
+        return_code: int,
+    ) -> Dict[str, Any]:
+        """为未产出结构化日志的用例构造兜底结果"""
+        message = combined_output.strip() if combined_output else "测试进程未输出结构化结果"
+        if len(message) > 800:
+            message = message[-800:]
+        return {
+            "case_id": case.get("case_id"),
+            "test_name": case.get("test_name"),
+            "name": case.get("name"),
+            "method": case.get("method"),
+            "path": case.get("path"),
+            "status": "error" if return_code != 0 else "failed",
+            "status_code": 0,
+            "response_time": 0.0,
+            "headers": case.get("headers", {}),
+            "parameters": case.get("parameters"),
+            "response_body": "",
+            "error": message or "未知错误",
+            "assertions": [],
+            "url": "",
+        }
+
+    def _build_runner_error(self, message: str, output: str = "") -> Dict[str, Any]:
+        """构造执行失败结果"""
+        return {
+            "total": 0,
+            "passed": 0,
+            "failed": 0,
+            "errors": 1,
+            "success": False,
+            "error_message": message,
+            "output": output,
+            "test_details": [],
+        }
+
+    def _generate_report_rows(self, test_details: List[Dict[str, Any]]) -> str:
+        rows = []
+        for detail in test_details:
+            rows.append(
+                "<tr>"
+                f"<td>{detail.get('name', '未命名接口')}</td>"
+                f"<td>{detail.get('method', 'GET')}</td>"
+                f"<td>{detail.get('path', '')}</td>"
+                f"<td>{detail.get('status', 'unknown')}</td>"
+                f"<td>{detail.get('status_code', 0)}</td>"
+                f"<td>{detail.get('response_time', 0):.2f}s</td>"
+                "</tr>"
+            )
+        return "".join(rows) or "<tr><td colspan='6'>暂无测试详情</td></tr>"
+
+    def _parse_curl_block(self, block: str) -> Dict[str, Any]:
+        """解析 curl 命令"""
+        normalized = re.sub(r"\\\s*\n", " ", block).strip()
+        parts = shlex.split(normalized)
+        if not parts or parts[0].lower() != "curl":
+            raise ValueError("curl 文本格式不正确")
+
+        method = "GET"
+        url = ""
+        headers: Dict[str, Any] = {}
+        body: Any = None
+        request_format = "auto"
+
+        index = 1
+        while index < len(parts):
+            token = parts[index]
+            if token in {"-X", "--request"} and index + 1 < len(parts):
+                method = parts[index + 1].upper()
+                index += 2
+                continue
+            if token in {"-H", "--header"} and index + 1 < len(parts):
+                header = parts[index + 1]
+                if ":" in header:
+                    key, value = header.split(":", 1)
+                    headers[key.strip()] = value.strip()
+                index += 2
+                continue
+            if token in {"-d", "--data", "--data-raw", "--data-binary", "--form", "-F"} and index + 1 < len(parts):
+                raw_value = parts[index + 1]
+                if token in {"--form", "-F"}:
+                    request_format = "form"
+                else:
+                    request_format = "data_json"
+                body = self._parse_loose_value(raw_value)
+                index += 2
+                continue
+            if token.startswith(("http://", "https://")):
+                url = token
+            index += 1
+
+        if not url:
+            raise ValueError("curl 命令中缺少 URL")
+
+        parsed_url = urlparse(url)
+        query_params = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
+        if isinstance(body, str):
+            content_type = str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
+            if "application/json" in content_type:
+                try:
+                    body = json.loads(body)
+                except json.JSONDecodeError:
+                    pass
+            elif "=" in body and "&" in body:
+                body = dict(parse_qsl(body, keep_blank_values=True))
+                request_format = "form"
+
+        return self._normalize_interface(
+            {
+                "name": f"{method} {parsed_url.path or '/'}",
+                "method": method,
+                "path": url,
+                "headers": headers,
+                "query_params": query_params,
+                "body": body,
+                "expected_status": 200,
+                "expected_response": {},
+                "request_format": request_format,
+                "source": "text",
+            }
+        )
+
+    def _parse_structured_text_block(self, block: str) -> Dict[str, Any]:
+        """解析结构化文本块"""
+        key_map = {
+            "接口名称": "name",
+            "name": "name",
+            "请求方法": "method",
+            "method": "method",
+            "接口路径": "path",
+            "路径": "path",
+            "path": "path",
+            "url": "path",
+            "接口描述": "description",
+            "description": "description",
+            "请求头": "headers",
+            "headers": "headers",
+            "请求参数": "parameters",
+            "parameters": "parameters",
+            "query_params": "query_params",
+            "query": "query_params",
+            "path_params": "path_params",
+            "请求体": "body",
+            "body": "body",
+            "期望状态码": "expected_status",
+            "expected_status": "expected_status",
+            "期望响应": "expected_response",
+            "expected_response": "expected_response",
+            "tags": "tags",
+            "标签": "tags",
+            "请求格式": "request_format",
+            "request_format": "request_format",
+        }
+
+        raw_interface: Dict[str, Any] = {}
+        for raw_line in block.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            method_match = re.match(r"^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s+(.+)$", line, re.IGNORECASE)
+            if method_match:
+                raw_interface["method"] = method_match.group(1).upper()
+                raw_interface["path"] = method_match.group(2).strip()
+                continue
+
+            if ":" not in line:
+                continue
+            key, value = line.split(":", 1)
+            normalized_key = key_map.get(key.strip()) or key_map.get(key.strip().lower())
+            if not normalized_key:
+                continue
+
+            parsed_value = self._parse_loose_value(value.strip())
+            if normalized_key == "tags" and isinstance(parsed_value, str):
+                parsed_value = [item.strip() for item in parsed_value.split(",") if item.strip()]
+            raw_interface[normalized_key] = parsed_value
+
+        return self._normalize_interface(raw_interface)
+
+    def _extract_openapi_expected_response(
+        self,
+        spec: Dict[str, Any],
+        operation: Dict[str, Any],
+    ) -> Tuple[int, Any]:
+        """解析 OpenAPI 期望状态码和响应结构"""
+        responses = operation.get("responses", {})
+        if not isinstance(responses, dict):
+            return 200, {}
+
+        selected_code = "200"
+        for status_code in responses.keys():
+            status_text = str(status_code).lower()
+            if status_text.startswith("2"):
+                selected_code = str(status_code)
+                break
+            if status_text == "default":
+                selected_code = str(status_code)
+
+        expected_status = 200
+        if selected_code.isdigit():
+            expected_status = int(selected_code)
+
+        response_def = responses.get(selected_code, {})
+        if not isinstance(response_def, dict):
+            return expected_status, {}
+
+        if "content" in response_def and isinstance(response_def["content"], dict):
+            content_type, content_def = self._pick_openapi_content(response_def["content"])
+            if content_def:
+                if "example" in content_def:
+                    return expected_status, deepcopy(content_def["example"])
+                if "examples" in content_def and isinstance(content_def["examples"], dict):
+                    first_example = next(iter(content_def["examples"].values()), {})
+                    if isinstance(first_example, dict) and "value" in first_example:
+                        return expected_status, deepcopy(first_example["value"])
+                if "schema" in content_def:
+                    return expected_status, self._schema_to_example(content_def["schema"], spec)
+
+        if "schema" in response_def:
+            return expected_status, self._schema_to_example(response_def["schema"], spec)
+
+        return expected_status, {}
+
+    def _extract_openapi_parameter_value(self, parameter: Dict[str, Any], spec: Dict[str, Any]) -> Any:
+        """提取参数默认值"""
+        if "$ref" in parameter:
+            parameter = self._resolve_ref(spec, parameter["$ref"])
+        if "example" in parameter:
+            return deepcopy(parameter["example"])
+        if "schema" in parameter:
+            return self._schema_to_example(parameter["schema"], spec)
+        if parameter.get("enum"):
+            return deepcopy(parameter["enum"][0])
+        if "default" in parameter:
+            return deepcopy(parameter["default"])
+        param_type = parameter.get("type", "string")
+        if param_type in {"integer", "number"}:
+            return parameter.get("minimum", 1)
+        if param_type == "boolean":
+            return True
+        return f"{parameter.get('name', 'value')}_sample"
+
+    def _extract_openapi_request_body(
+        self,
+        spec: Dict[str, Any],
+        operation: Dict[str, Any],
+        merged_params: List[Dict[str, Any]],
+    ) -> Tuple[Any, str, Dict[str, Any]]:
+        """提取 OpenAPI 请求体"""
+        request_body = operation.get("requestBody")
+        if isinstance(request_body, dict) and "$ref" in request_body:
+            request_body = self._resolve_ref(spec, request_body["$ref"])
+
+        if isinstance(request_body, dict):
+            content = request_body.get("content", {})
+            if isinstance(content, dict):
+                content_type, content_def = self._pick_openapi_content(content)
+                if content_def:
+                    example = content_def.get("example")
+                    if example is None and isinstance(content_def.get("examples"), dict):
+                        first_example = next(iter(content_def["examples"].values()), {})
+                        if isinstance(first_example, dict):
+                            example = first_example.get("value")
+                    if example is None:
+                        example = self._schema_to_example(content_def.get("schema", {}), spec)
+                    return example, self._infer_request_format({"Content-Type": content_type}, example), {
+                        "Content-Type": content_type
+                    }
+
+        body_param = None
+        form_body: Dict[str, Any] = {}
+        for parameter in merged_params:
+            if not isinstance(parameter, dict):
+                continue
+            if parameter.get("in") == "body":
+                body_param = parameter
+            elif parameter.get("in") == "formData":
+                form_body[parameter.get("name")] = self._extract_openapi_parameter_value(parameter, spec)
+
+        if body_param:
+            body_param = self._resolve_ref(spec, body_param["$ref"]) if "$ref" in body_param else body_param
+            schema = body_param.get("schema", {})
+            example = self._schema_to_example(schema, spec)
+            return example, "json", {"Content-Type": "application/json"}
+
+        if form_body:
+            return form_body, "form", {"Content-Type": "application/x-www-form-urlencoded"}
+
+        return None, "auto", {}
+
+    def _merge_openapi_parameters(self, path_params: Any, op_params: Any) -> List[Dict[str, Any]]:
+        """合并 path 级与 operation 级参数"""
+        merged: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for group in [path_params or [], op_params or []]:
+            for parameter in group:
+                if not isinstance(parameter, dict):
+                    continue
+                name = parameter.get("name")
+                location = parameter.get("in")
+                if name and location:
+                    merged[(name, location)] = parameter
+        return list(merged.values())
+
+    def _pick_openapi_content(self, content: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """选择最合适的 content-type"""
+        preferred_types = [
+            "application/json",
+            "application/x-www-form-urlencoded",
+            "multipart/form-data",
+            "text/plain",
+        ]
+        for content_type in preferred_types:
+            if content_type in content:
+                return content_type, content[content_type]
+        first_type = next(iter(content.keys()), "")
+        return first_type, content.get(first_type, {})
+
+    def _schema_to_example(self, schema: Any, spec: Dict[str, Any], depth: int = 0) -> Any:
+        """根据 schema 生成示例数据"""
+        if depth > 6:
+            return {}
+        if not isinstance(schema, dict):
+            return {}
+
+        if "$ref" in schema:
+            return self._schema_to_example(self._resolve_ref(spec, schema["$ref"]), spec, depth + 1)
+        if "example" in schema:
+            return deepcopy(schema["example"])
+        if "default" in schema:
+            return deepcopy(schema["default"])
+        if schema.get("enum"):
+            return deepcopy(schema["enum"][0])
+        if schema.get("oneOf"):
+            return self._schema_to_example(schema["oneOf"][0], spec, depth + 1)
+        if schema.get("anyOf"):
+            return self._schema_to_example(schema["anyOf"][0], spec, depth + 1)
+        if schema.get("allOf"):
+            merged_object: Dict[str, Any] = {}
+            for item in schema["allOf"]:
+                value = self._schema_to_example(item, spec, depth + 1)
+                if isinstance(value, dict):
+                    merged_object.update(value)
+            return merged_object
+
+        schema_type = schema.get("type")
+        if schema_type == "object" or "properties" in schema:
+            properties = schema.get("properties", {})
+            return {
+                key: self._schema_to_example(value, spec, depth + 1)
+                for key, value in properties.items()
+            }
+        if schema_type == "array":
+            return [self._schema_to_example(schema.get("items", {}), spec, depth + 1)]
+        if schema_type in {"integer", "number"}:
+            return schema.get("minimum", 1)
+        if schema_type == "boolean":
+            return True
+        if schema.get("format") == "date-time":
+            return "2026-01-01T00:00:00Z"
+        if schema.get("format") == "date":
+            return "2026-01-01"
+        return "sample"
+
+    def _resolve_ref(self, spec: Dict[str, Any], ref: str) -> Dict[str, Any]:
+        """解析 schema/parameter 引用"""
+        if not ref.startswith("#/"):
+            return {}
+        node: Any = spec
+        for part in ref.lstrip("#/").split("/"):
+            if not isinstance(node, dict):
+                return {}
+            node = node.get(part)
+        return node if isinstance(node, dict) else {}
+
+    def _detect_openapi_base_url(self, spec: Dict[str, Any]) -> str:
+        """检测文档中的基础地址"""
+        servers = spec.get("servers")
+        if isinstance(servers, list) and servers:
+            first_server = servers[0]
+            if isinstance(first_server, dict):
+                return self._clean_text(first_server.get("url"))
+
+        host = self._clean_text(spec.get("host"))
+        if host:
+            schemes = spec.get("schemes") or ["https"]
+            scheme = schemes[0] if isinstance(schemes, list) and schemes else "https"
+            base_path = self._clean_text(spec.get("basePath"))
+            return f"{scheme}://{host}{base_path}"
+        return ""
+
+    def _build_test_name(self, case_id: str, name: str) -> str:
+        """生成安全的测试函数名"""
+        safe_name = re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_").lower()
+        if not safe_name:
+            return f"test_{case_id}"
+        if safe_name[0].isdigit():
+            safe_name = f"case_{safe_name}"
+        return f"test_{case_id}_{safe_name}"
+
+    def _normalize_execution_mode(self, mode: str) -> str:
+        """归一化执行模式"""
+        return self.EXECUTION_MODE_MAP.get((mode or "").strip(), "pytest")
+
+    def _normalize_request_format(self, request_format: Any) -> str:
+        """归一化请求格式"""
+        if request_format is None:
+            return "auto"
+        key = str(request_format).strip()
+        return self.REQUEST_FORMAT_MAP.get(key, self.REQUEST_FORMAT_MAP.get(key.lower(), "auto"))
+
+    def _normalize_base_url(self, base_url: str) -> str:
+        """标准化基础 URL"""
+        base = (base_url or "").strip()
+        if not base:
+            return ""
+        if base.startswith(("http://", "https://")) or base.startswith("/"):
+            return base.rstrip("/")
+        return f"http://{base}".rstrip("/")
+
+    def _infer_request_format(self, headers: Dict[str, Any], body: Any) -> str:
+        """根据头和请求体推断请求格式"""
+        content_type = str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
+        if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+            return "form"
+        if "application/json" in content_type:
+            return "json"
+        if isinstance(body, str):
+            return "raw"
+        if isinstance(body, (dict, list)):
+            return "json"
+        return "auto"
+
+    def _load_structured_content(self, content: str) -> Optional[Any]:
+        """尝试解析 JSON / YAML"""
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            pass
+
+        try:
+            import yaml  # type: ignore
+        except ImportError:
+            return None
+
+        try:
+            return yaml.safe_load(content)
+        except Exception:
+            return None
+
+    def _looks_like_openapi(self, data: Any) -> bool:
+        """判断内容是否像 Swagger/OpenAPI"""
+        return isinstance(data, dict) and (
+            "openapi" in data
+            or "swagger" in data
+            or (isinstance(data.get("paths"), dict) and ("info" in data or "servers" in data or "host" in data))
+        )
+
+    def _looks_like_url(self, text: str) -> bool:
+        """判断文本是否为 URL"""
+        parsed = urlparse(text)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    def _fetch_remote_content(self, url: str) -> str:
+        """拉取远程 Swagger/OpenAPI 文档"""
+        response = requests.get(url, timeout=20)
+        response.raise_for_status()
+        return response.text
+
+    def _ensure_mapping(self, value: Any) -> Dict[str, Any]:
+        """确保值为 dict"""
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            parsed = self.parse_json_field(value)
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    def _parse_loose_value(self, value: str) -> Any:
+        """尽量宽松地解析文本值"""
+        text = (value or "").strip()
+        if not text:
+            return ""
+        if text.startswith(("{", "[")):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+        if text.lower() in {"true", "false"}:
+            return text.lower() == "true"
+        if re.fullmatch(r"-?\d+", text):
+            return int(text)
+        if re.fullmatch(r"-?\d+\.\d+", text):
+            return float(text)
+        return text
+
+    def _coerce_int(self, value: Any, default: int) -> int:
+        """安全转换为 int"""
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip()
+        if not text or text.lower() == "nan":
+            return default
+        try:
+            return int(float(text))
+        except ValueError:
+            return default
+
+    def _clean_text(self, value: Any) -> str:
+        """清理文本"""
+        if self._is_empty_value(value):
+            return ""
+        return str(value).strip()
+
+    def _is_empty_value(self, value: Any) -> bool:
+        """判断空值"""
+        if value is None:
+            return True
+        try:
+            if pd.isna(value):
+                return True
+        except Exception:
+            pass
+        return False
+
+    def _reset_parse_meta(self):
+        """重置解析元数据"""
+        self.last_parse_meta = {
+            "source_type": "",
+            "source_name": "",
+            "detected_base_url": "",
+            "interface_count": 0,
+        }
+
+    def _finalize_interfaces(
+        self,
+        interfaces: List[Dict[str, Any]],
+        source_type: str,
+        source_name: str,
+    ) -> List[Dict[str, Any]]:
+        """收尾处理解析结果"""
+        cleaned = [self._normalize_interface(item) for item in interfaces if isinstance(item, dict)]
+        if not cleaned:
+            raise ValueError("未解析到有效接口，请检查导入内容格式")
+
+        self.last_parse_meta["source_type"] = source_type
+        self.last_parse_meta["source_name"] = source_name
+        self.last_parse_meta["interface_count"] = len(cleaned)
+        return cleaned

@@ -417,11 +417,11 @@ def get_database_config():
     else:
         # 使用默认值（用于本地开发）
         config = {
-            'host': "192.168.30.17",
+            'host': "",
             'port': 8123,
-            'username': "default",
-            'password': "zyl@123",
-            'database': "quotation",
+            'username': "",
+            'password': "",
+            'database': "",
             'use_secrets': False
         }
 

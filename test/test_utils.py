@@ -5773,63 +5773,6 @@ elif tool_category == "禅道绩效统计":
             st.error(f"❌ 查询超时明细时出错: {str(e)}")
 
 elif tool_category == "接口自动化测试":
-    # 依赖检查
-    def check_interface_dependencies():
-        """检查接口测试工具依赖"""
-        required_packages = {
-            'pytest': 'pytest',
-            'requests': 'requests',
-            'pandas': 'pandas',
-            'openpyxl': 'openpyxl'
-        }
-
-        missing_packages = []
-
-        for package_name, import_name in required_packages.items():
-            try:
-                __import__(import_name)
-            except ImportError:
-                missing_packages.append(package_name)
-
-        if missing_packages:
-            st.warning(f"⚠️ 缺少必要的依赖包: {', '.join(missing_packages)}")
-
-            col1, col2 = st.columns([2, 1])
-
-            with col1:
-                st.markdown("**缺失的依赖:**")
-                for dep in missing_packages:
-                    st.write(f"- {dep}")
-
-            with col2:
-                mirror = st.selectbox("选择镜像源",
-                                      ["清华镜像", "阿里云镜像", "豆瓣镜像", "中科大镜像"])
-                mirror_urls = {
-                    "清华镜像": "https://pypi.tuna.tsinghua.edu.cn/simple/",
-                    "阿里云镜像": "https://mirrors.aliyun.com/pypi/simple/",
-                    "豆瓣镜像": "https://pypi.douban.com/simple/",
-                    "中科大镜像": "https://pypi.mirrors.ustc.edu.cn/simple/"
-                }
-
-                if st.button("🚀 自动安装依赖", use_container_width=True):
-                    with st.spinner("正在安装依赖..."):
-                        success = install_missing_packages(missing_packages, mirror_urls[mirror])
-
-                    if success:
-                        st.success("✅ 依赖安装成功！请刷新页面。")
-                        st.rerun()
-                    else:
-                        st.error("❌ 依赖安装失败，请手动安装")
-
-            # 手动安装说明
-            with st.expander("📋 手动安装指南", expanded=True):
-                st.code(f"pip install {' '.join(missing_packages)} -i https://pypi.tuna.tsinghua.edu.cn/simple/")
-
-            return False
-
-        return True
-
-
     def install_missing_packages(packages, mirror_url):
         """安装缺失的包"""
         import subprocess
@@ -5847,25 +5790,77 @@ elif tool_category == "接口自动化测试":
                 if result.returncode != 0:
                     st.error(f"安装 {package} 失败: {result.stderr}")
                     return False
-
             return True
         except Exception as e:
             st.error(f"安装过程中出错: {e}")
             return False
 
 
-    def create_jsonplaceholder_test_data():
-        """创建JSONPlaceholder测试数据"""
-        base_url = "https://jsonplaceholder.typicode.com"
+    def check_interface_dependencies(selected_mode, for_execution=False):
+        """检查接口测试工具依赖"""
+        required_packages = {
+            "requests": "requests",
+            "pandas": "pandas",
+            "openpyxl": "openpyxl"
+        }
+        if selected_mode == "pytest" and for_execution:
+            required_packages["pytest"] = "pytest"
 
+        missing_packages = []
+        for package_name, import_name in required_packages.items():
+            try:
+                __import__(import_name)
+            except ImportError:
+                missing_packages.append(package_name)
+
+        if not missing_packages:
+            return True
+
+        title = "当前执行模式运行时缺少依赖包" if for_execution else "当前页面缺少基础依赖包"
+        st.warning(f"⚠️ {title}: {', '.join(missing_packages)}")
+
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown("**缺失的依赖:**")
+            for dep in missing_packages:
+                st.write(f"- {dep}")
+
+        with col2:
+            mirror = st.selectbox(
+                "选择镜像源",
+                ["清华镜像", "阿里云镜像", "豆瓣镜像", "中科大镜像"],
+                key=f"interface_mirror_{selected_mode}"
+            )
+            mirror_urls = {
+                "清华镜像": "https://pypi.tuna.tsinghua.edu.cn/simple/",
+                "阿里云镜像": "https://mirrors.aliyun.com/pypi/simple/",
+                "豆瓣镜像": "https://pypi.douban.com/simple/",
+                "中科大镜像": "https://pypi.mirrors.ustc.edu.cn/simple/"
+            }
+
+            if st.button("🚀 自动安装依赖", use_container_width=True, key=f"install_interface_deps_{selected_mode}"):
+                with st.spinner("正在安装依赖..."):
+                    success = install_missing_packages(missing_packages, mirror_urls[mirror])
+                if success:
+                    st.success("✅ 依赖安装成功，请刷新页面后重试")
+                else:
+                    st.error("❌ 依赖安装失败，请手动安装")
+
+        with st.expander("📋 手动安装指南", expanded=True):
+            st.code(f"pip install {' '.join(missing_packages)} -i https://pypi.tuna.tsinghua.edu.cn/simple/")
+
+        return False
+
+
+    def create_jsonplaceholder_test_data():
+        """创建 JSONPlaceholder 测试数据"""
+        base_url = "https://jsonplaceholder.typicode.com"
         interfaces = [
             {
                 "name": "获取所有帖子",
                 "method": "GET",
                 "path": "/posts",
                 "description": "获取所有帖子列表",
-                "headers": {},
-                "parameters": {},
                 "expected_status": 200,
                 "expected_response": ["userId", "id", "title", "body"]
             },
@@ -5873,9 +5868,7 @@ elif tool_category == "接口自动化测试":
                 "name": "获取单个帖子",
                 "method": "GET",
                 "path": "/posts/1",
-                "description": "获取ID为1的帖子详情",
-                "headers": {},
-                "parameters": {},
+                "description": "获取 ID 为 1 的帖子详情",
                 "expected_status": 200,
                 "expected_response": ["userId", "id", "title", "body"]
             },
@@ -5883,9 +5876,8 @@ elif tool_category == "接口自动化测试":
                 "name": "获取用户帖子",
                 "method": "GET",
                 "path": "/posts",
-                "description": "获取指定用户的帖子",
-                "headers": {},
-                "parameters": {"userId": 1},
+                "description": "按用户查询帖子",
+                "query_params": {"userId": 1},
                 "expected_status": 200,
                 "expected_response": ["userId", "id", "title", "body"]
             },
@@ -5895,7 +5887,7 @@ elif tool_category == "接口自动化测试":
                 "path": "/posts",
                 "description": "创建新的帖子",
                 "headers": {"Content-Type": "application/json"},
-                "parameters": {
+                "body": {
                     "title": "自动化测试帖子",
                     "body": "这是通过自动化测试工具创建的帖子",
                     "userId": 1
@@ -5904,22 +5896,19 @@ elif tool_category == "接口自动化测试":
                 "expected_response": ["id"]
             }
         ]
-
         return base_url, interfaces
 
 
     def create_reqres_test_data():
-        """创建ReqRes测试数据"""
+        """创建 ReqRes 测试数据"""
         base_url = "https://reqres.in/api"
-
         interfaces = [
             {
                 "name": "获取用户列表",
                 "method": "GET",
                 "path": "/users",
                 "description": "获取分页用户列表",
-                "headers": {},
-                "parameters": {"page": 2},
+                "query_params": {"page": 2},
                 "expected_status": 200,
                 "expected_response": ["page", "per_page", "total", "data"]
             },
@@ -5928,8 +5917,6 @@ elif tool_category == "接口自动化测试":
                 "method": "GET",
                 "path": "/users/2",
                 "description": "获取用户详情",
-                "headers": {},
-                "parameters": {},
                 "expected_status": 200,
                 "expected_response": ["data"]
             },
@@ -5939,7 +5926,7 @@ elif tool_category == "接口自动化测试":
                 "path": "/login",
                 "description": "用户登录接口",
                 "headers": {"Content-Type": "application/json"},
-                "parameters": {
+                "body": {
                     "email": "eve.holt@reqres.in",
                     "password": "cityslicka"
                 },
@@ -5947,456 +5934,508 @@ elif tool_category == "接口自动化测试":
                 "expected_response": ["token"]
             }
         ]
-
         return base_url, interfaces
 
 
-    # 检查依赖
-    if not check_interface_dependencies():
-        st.error("❌ 请先安装必要的依赖包")
-        st.stop()
+    def set_interface_state(interfaces, base_url="", source_name=""):
+        st.session_state.interface_loaded_interfaces = interfaces
+        st.session_state.interface_loaded_base_url = base_url or ""
+        st.session_state.interface_source_name = source_name or ""
+        st.session_state.pop("interface_last_generated_files", None)
+        st.session_state.pop("interface_last_test_results", None)
 
-    show_doc("interface_auto_test")
 
-    # 初始化核心工具
-    if 'auto_test_tool' not in st.session_state:
-        st.session_state.auto_test_tool = InterfaceAutoTestCore()
+    def clear_interface_state():
+        for key in [
+            "interface_loaded_interfaces",
+            "interface_loaded_base_url",
+            "interface_source_name",
+            "interface_last_generated_files",
+            "interface_last_test_results",
+            "interface_upload_signature"
+        ]:
+            st.session_state.pop(key, None)
 
-    # 初始化增强工具
-    if 'enhanced_runner' not in st.session_state:
-        st.session_state.enhanced_runner = EnhancedTestRunner()
-    if 'enhanced_report' not in st.session_state:
-        st.session_state.enhanced_report = EnhancedReportGenerator()
 
-    st.markdown('<div class="category-card">🚀 接口自动化测试工具</div>', unsafe_allow_html=True)
-
-    # 框架选择
-    framework = st.radio(
-        "选择测试框架",
-        ["unittest", "pytest"],
-        horizontal=True,
-        key="test_framework"
-    )
-
-    # 快速测试接口选择
-    st.markdown("### 🚀 快速测试")
-
-    col1, col2, col3 = st.columns(3)
-
-    with col1:
-        if st.button("📝 JSONPlaceholder测试", use_container_width=True):
-            base_url, interfaces = create_jsonplaceholder_test_data()
-            st.session_state.test_interfaces = interfaces
-            st.session_state.base_url = base_url
-            st.success("✅ JSONPlaceholder测试数据已加载")
-
-    with col2:
-        if st.button("👥 ReqRes测试", use_container_width=True):
-            base_url, interfaces = create_reqres_test_data()
-            st.session_state.test_interfaces = interfaces
-            st.session_state.base_url = base_url
-            st.success("✅ ReqRes测试数据已加载")
-
-    with col3:
-        if st.button("🔄 清除测试数据", use_container_width=True):
-            if 'test_interfaces' in st.session_state:
-                del st.session_state.test_interfaces
-            if 'base_url' in st.session_state:
-                del st.session_state.base_url
-            st.success("✅ 测试数据已清除")
-
-    # 文件上传区域
-    st.markdown("### 📁 上传接口文档")
-    uploaded_file = st.file_uploader(
-        "选择接口文档文件",
-        type=['xlsx', 'xls', 'json'],
-        help="支持Excel和JSON格式的接口文档",
-        key="interface_doc_upload"
-    )
-
-    # 如果存在测试数据，自动填充
-    interfaces = []
-    if 'test_interfaces' in st.session_state and 'base_url' in st.session_state:
-        st.info("🎯 测试数据已加载，请继续下面的配置")
-        interfaces = st.session_state.test_interfaces
-        base_url = st.text_input(
-            "基础URL",
-            value=st.session_state.base_url,
-            key="auto_base_url"
-        )
-    elif uploaded_file is not None:
-        # 保存上传的文件
-        file_path = os.path.join(st.session_state.auto_test_tool.upload_dir, uploaded_file.name)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
-        try:
-            # 解析接口文档
-            with st.spinner("正在解析接口文档..."):
-                interfaces = st.session_state.auto_test_tool.parse_document(file_path)
-
-            if interfaces:
-                st.success(f"✅ 成功解析出 {len(interfaces)} 个接口")
-                base_url = st.text_input(
-                    "基础URL",
-                    value="",  # 使用您实际的URL作为默认值
-                    placeholder="例如: http://10.0.3.54:3000",
-                    key="manual_base_url"
-                )
-            else:
-                st.error("❌ 未能从文档中解析出接口信息")
-                interfaces = []
-
-        except Exception as e:
-            st.error(f"❌ 处理文件时出错: {str(e)}")
-            interfaces = []
-    else:
-        # 显示使用说明和示例
-        st.markdown("### 📖 使用说明")
-
-        with st.expander("📋 点击查看Excel文档格式示例", expanded=True):
-            st.markdown("""
-            **Excel文档格式要求:**
-
-            | 接口名称 | 请求方法 | 接口路径 | 接口描述 | 请求头 | 请求参数 | 期望状态码 | 期望响应 |
-            |---------|----------|----------|----------|--------|----------|------------|----------|
-            | 用户登录 | POST | /api/login | 用户登录接口 | `{"Content-Type": "application/json"}` | `{"username": "test", "password": "123456"}` | 200 | `{"code": 0, "message": "success"}` |
-            | 获取用户信息 | GET | /api/user/{id} | 获取用户信息 | `{"Authorization": "Bearer token"}` | `{"id": 1}` | 200 | `{"id": 1, "name": "test"}` |
-            """)
-
-            # 提供示例文件下载
-            example_data = {
-                '接口名称': ['用户登录', '获取用户信息'],
-                '请求方法': ['POST', 'GET'],
-                '接口路径': ['/api/login', '/api/user/{id}'],
-                '接口描述': ['用户登录接口', '获取用户信息'],
-                '请求头': ['{"Content-Type": "application/json"}', '{"Authorization": "Bearer token"}'],
-                '请求参数': ['{"username": "test", "password": "123456"}', '{"id": 1}'],
-                '期望状态码': [200, 200],
-                '期望响应': ['{"code": 0, "message": "success"}', '{"id": 1, "name": "test"}']
-            }
-
-            df = pd.DataFrame(example_data)
-            excel_buffer = io.BytesIO()
-            df.to_excel(excel_buffer, index=False, engine='openpyxl')
-            excel_buffer.seek(0)
-
-            st.download_button(
-                label="📥 下载Excel模板",
-                data=excel_buffer.getvalue(),
-                file_name="接口文档模板.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-        with st.expander("📋 点击查看JSON文档格式示例"):
-            st.markdown("""
-            **JSON文档格式示例:**
-            ```json
-            [
-              {
-                "name": "用户登录",
-                "method": "POST",
-                "path": "/api/login",
-                "description": "用户登录接口",
-                "headers": {
-                  "Content-Type": "application/json"
-                },
-                "parameters": {
-                  "username": "test",
-                  "password": "123456"
-                },
-                "expected_status": 200,
-                "expected_response": {
-                  "code": 0,
-                  "message": "success"
-                }
-              }
-            ]
-            ```
-            """)
-
-        st.stop()
-
-    # 显示接口列表
-    if interfaces:
+    def render_interface_preview(interfaces):
         st.markdown("### 📋 接口列表")
-        for i, interface in enumerate(interfaces, 1):
-            with st.expander(f"{i}. {interface.get('name', '未命名接口')}", expanded=False):
+        for index, interface in enumerate(interfaces, 1):
+            with st.expander(f"{index}. {interface.get('name', '未命名接口')}", expanded=False):
                 col1, col2 = st.columns(2)
                 with col1:
                     st.write(f"**方法:** `{interface.get('method', 'GET')}`")
                     st.write(f"**路径:** `{interface.get('path', '')}`")
                     st.write(f"**期望状态码:** `{interface.get('expected_status', 200)}`")
+                    if interface.get("tags"):
+                        st.write(f"**标签:** {', '.join(interface.get('tags', []))}")
                 with col2:
                     st.write(f"**描述:** {interface.get('description', '无描述')}")
-                    if interface.get('headers'):
+                    if interface.get("headers"):
                         st.write("**请求头:**")
-                        st.json(interface['headers'])
-                    if interface.get('parameters'):
+                        st.json(interface["headers"])
+                    if interface.get("path_params"):
+                        st.write("**路径参数:**")
+                        st.json(interface["path_params"])
+                    if interface.get("query_params"):
+                        st.write("**查询参数:**")
+                        st.json(interface["query_params"])
+                    if interface.get("body") not in [None, {}, []]:
+                        st.write("**请求体:**")
+                        st.json(interface["body"])
+                    elif interface.get("parameters"):
                         st.write("**请求参数:**")
-                        st.json(interface['parameters'])
+                        if isinstance(interface["parameters"], (dict, list)):
+                            st.json(interface["parameters"])
+                        else:
+                            st.write(interface["parameters"])
 
-        # 测试配置
-        st.markdown("### ⚙️ 测试配置")
-        col1, col2 = st.columns(2)
 
+    def render_test_results(test_results, execution_mode, interfaces):
+        st.markdown("### 📊 测试结果概览")
+        total = test_results.get("total", 0)
+        passed = test_results.get("passed", 0)
+        failed = test_results.get("failed", 0)
+        errors = test_results.get("errors", 0)
+        success_rate = (passed / total * 100) if total > 0 else 0
+
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
-            base_url = st.text_input(
-                "基础URL",
-                value=base_url if 'base_url' in locals() else "",
-                placeholder="例如: http://10.0.3.54:3000",
-                key="base_url_input"
+            st.metric("总用例数", total)
+        with col2:
+            st.metric("通过", passed)
+        with col3:
+            st.metric("失败", failed)
+        with col4:
+            st.metric("错误", errors)
+        with col5:
+            st.metric("成功率", f"{success_rate:.1f}%")
+
+        if test_results.get("output"):
+            with st.expander("🧾 执行日志", expanded=False):
+                st.code(test_results["output"], language="text")
+
+        if total > 0:
+            report_path = st.session_state.enhanced_report.generate_detailed_report(
+                test_results=test_results,
+                framework=execution_mode,
+                interfaces=interfaces,
+                test_details=test_results.get("test_details", [])
             )
 
-            # URL格式验证
-            if base_url:
-                if not base_url.startswith(('http://', 'https://')):
-                    st.warning("⚠️ URL缺少协议前缀，已自动添加 http://")
-                    base_url = "http://" + base_url
-                    st.info(f"修正后的URL: `{base_url}`")
+            with open(report_path, "rb") as file:
+                report_data = file.read()
 
+            st.download_button(
+                label="📥 下载详细测试报告",
+                data=report_data,
+                file_name=os.path.basename(report_path),
+                mime="text/html",
+                use_container_width=True,
+                key=f"download_interface_report_{execution_mode}"
+            )
+
+        test_details = test_results.get("test_details", [])
+        if test_details:
+            st.markdown("### 📋 测试详情摘要")
+            summary_rows = []
+            for detail in test_details:
+                status_icon = "✅" if detail.get("status") == "passed" else "❌" if detail.get("status") == "failed" else "⚠️"
+                summary_rows.append({
+                    "接口": detail.get("name", "未知"),
+                    "方法": detail.get("method", "GET"),
+                    "路径": detail.get("path", ""),
+                    "状态": f"{status_icon} {detail.get('status', 'unknown')}",
+                    "状态码": detail.get("status_code", "N/A"),
+                    "响应时间": f"{detail.get('response_time', 0):.2f}s"
+                })
+            st.dataframe(pd.DataFrame(summary_rows), use_container_width=True)
+
+            failed_tests = [detail for detail in test_details if detail.get("status") in ["failed", "error"]]
+            if failed_tests:
+                st.markdown("#### ❌ 失败和错误详情")
+                for detail in failed_tests:
+                    with st.expander(f"{detail.get('name', '未知接口')} - {detail.get('status', 'error')}", expanded=False):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write(f"**方法:** {detail.get('method', 'GET')}")
+                            st.write(f"**路径:** {detail.get('path', '')}")
+                            st.write(f"**状态码:** {detail.get('status_code', 'N/A')}")
+                            st.write(f"**响应时间:** {detail.get('response_time', 0):.2f}s")
+                        with col2:
+                            st.write("**错误信息:**")
+                            st.error(detail.get("error", "无错误信息"))
+                        if detail.get("assertions"):
+                            st.write("**断言结果:**")
+                            for assertion in detail.get("assertions", []):
+                                if assertion.get("passed"):
+                                    st.success(f"✅ {assertion.get('description')}: {assertion.get('message')}")
+                                else:
+                                    st.error(f"❌ {assertion.get('description')}: {assertion.get('message')}")
+
+        if test_results.get("success", False):
+            st.success("✅ 所有测试用例执行成功")
+        elif total > 0:
+            st.error(f"❌ 存在 {failed + errors} 个失败或错误")
+
+
+    def generate_artifacts(interfaces, execution_mode, base_url, timeout, retry_times, verify_ssl, request_format, template_style):
+        with st.spinner("正在生成测试用例..."):
+            test_files = st.session_state.auto_test_tool.generate_test_cases(
+                interfaces=interfaces,
+                framework=execution_mode,
+                base_url=base_url,
+                timeout=timeout,
+                retry_times=retry_times,
+                verify_ssl=verify_ssl,
+                request_format=request_format,
+                template_style=template_style
+            )
+            st.session_state.auto_test_tool.save_test_files(test_files)
+            st.session_state.interface_last_generated_files = test_files
+        return test_files
+
+
+    def ensure_generated_file(execution_mode):
+        target_file = "run_interfaces.py" if execution_mode == "requests脚本" else "test_interfaces.py"
+        manifest_file = os.path.join(st.session_state.auto_test_tool.test_dir, "interface_manifest.json")
+        target_path = os.path.join(st.session_state.auto_test_tool.test_dir, target_file)
+        if not (os.path.exists(manifest_file) and os.path.exists(target_path)):
+            return False
+        try:
+            with open(manifest_file, "r", encoding="utf-8") as file:
+                manifest = json.load(file)
+        except Exception:
+            return False
+        expected_mode = st.session_state.auto_test_tool._normalize_execution_mode(execution_mode)
+        return manifest.get("mode") == expected_mode
+
+
+    show_doc("interface_auto_test")
+
+    if "auto_test_tool" not in st.session_state:
+        st.session_state.auto_test_tool = InterfaceAutoTestCore()
+    if "enhanced_runner" not in st.session_state:
+        st.session_state.enhanced_runner = EnhancedTestRunner()
+    if "enhanced_report" not in st.session_state:
+        st.session_state.enhanced_report = EnhancedReportGenerator()
+    if "interface_loaded_interfaces" not in st.session_state:
+        st.session_state.interface_loaded_interfaces = []
+    if "interface_loaded_base_url" not in st.session_state:
+        st.session_state.interface_loaded_base_url = ""
+    if "interface_source_name" not in st.session_state:
+        st.session_state.interface_source_name = ""
+
+    st.markdown('<div class="category-card">🚀 接口自动化测试工具</div>', unsafe_allow_html=True)
+
+    execution_mode = st.radio(
+        "选择执行模式",
+        ["pytest", "unittest", "requests脚本"],
+        horizontal=True,
+        key="interface_execution_mode"
+    )
+
+    if not check_interface_dependencies(execution_mode, for_execution=False):
+        st.stop()
+
+    st.markdown("### 🚀 快速测试")
+    quick_col1, quick_col2, quick_col3 = st.columns(3)
+    with quick_col1:
+        if st.button("📝 JSONPlaceholder", use_container_width=True, key="load_jsonplaceholder"):
+            base_url, interfaces = create_jsonplaceholder_test_data()
+            set_interface_state(interfaces, base_url, "内置 JSONPlaceholder 示例")
+            st.success("✅ 已加载 JSONPlaceholder 示例")
+    with quick_col2:
+        if st.button("👥 ReqRes", use_container_width=True, key="load_reqres"):
+            base_url, interfaces = create_reqres_test_data()
+            set_interface_state(interfaces, base_url, "内置 ReqRes 示例")
+            st.success("✅ 已加载 ReqRes 示例")
+    with quick_col3:
+        if st.button("🔄 清空导入数据", use_container_width=True, key="clear_interface_inputs"):
+            clear_interface_state()
+            st.success("✅ 已清空接口数据和生成产物缓存")
+
+    with st.expander("📚 模板与导入说明", expanded=not st.session_state.interface_loaded_interfaces):
+        template_col1, template_col2, template_col3, template_col4 = st.columns(4)
+        with template_col1:
+            st.download_button(
+                label="📥 Excel模板",
+                data=st.session_state.auto_test_tool.build_excel_template_bytes(),
+                file_name="接口文档模板.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        with template_col2:
+            st.download_button(
+                label="📥 JSON模板",
+                data=st.session_state.auto_test_tool.build_json_template(),
+                file_name="接口文档模板.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        with template_col3:
+            st.download_button(
+                label="📥 文本模板",
+                data=st.session_state.auto_test_tool.build_text_template(),
+                file_name="接口文档模板.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+        with template_col4:
+            st.download_button(
+                label="📥 OpenAPI模板",
+                data=st.session_state.auto_test_tool.build_openapi_template(),
+                file_name="openapi-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        st.markdown("""
+        **支持的导入方式**
+
+        - 文件上传: `xlsx/xls/json/txt/md/yaml/yml`
+        - Swagger/OpenAPI URL: 直接输入 JSON 或 YAML 地址
+        - 原始文本: 支持结构化文本、JSON 文本、Swagger 文本、`curl` 命令
+
+        **支持的执行模板**
+
+        - `pytest`: 生成 `pytest` 可执行脚本
+        - `unittest`: 生成 `unittest` 可执行脚本
+        - `requests脚本`: 生成可直接运行的 `requests` 脚本
+
+        **模板风格**
+
+        - `冒烟模板`: 只校验状态码
+        - `标准模板`: 校验状态码和关键响应字段
+        - `严格模板`: 按期望响应做更严格的字段/值校验
+        """)
+
+    st.markdown("### 📥 导入接口文档")
+    import_mode = st.radio(
+        "导入方式",
+        ["文件上传", "Swagger/OpenAPI URL", "原始文本"],
+        horizontal=True,
+        key="interface_import_mode"
+    )
+
+    if import_mode == "文件上传":
+        uploaded_file = st.file_uploader(
+            "选择接口文档文件",
+            type=["xlsx", "xls", "json", "txt", "md", "yaml", "yml"],
+            help="支持 Excel、JSON、Swagger/OpenAPI、文本等格式",
+            key="interface_doc_upload_v2"
+        )
+        if uploaded_file is not None:
+            upload_signature = f"{uploaded_file.name}:{uploaded_file.size}"
+            if st.session_state.get("interface_upload_signature") != upload_signature:
+                file_path = os.path.join(st.session_state.auto_test_tool.upload_dir, uploaded_file.name)
+                with open(file_path, "wb") as file:
+                    file.write(uploaded_file.getbuffer())
+                try:
+                    with st.spinner("正在解析接口文档..."):
+                        interfaces = st.session_state.auto_test_tool.parse_document(file_path)
+                    detected_base_url = st.session_state.auto_test_tool.last_parse_meta.get("detected_base_url", "")
+                    set_interface_state(interfaces, detected_base_url, uploaded_file.name)
+                    st.session_state.interface_upload_signature = upload_signature
+                    st.success(f"✅ 成功解析出 {len(interfaces)} 个接口")
+                    if detected_base_url:
+                        st.info(f"已从文档中识别基础地址: `{detected_base_url}`")
+                except Exception as e:
+                    st.error(f"❌ 处理文件时出错: {str(e)}")
+
+    elif import_mode == "Swagger/OpenAPI URL":
+        swagger_url = st.text_input(
+            "Swagger / OpenAPI 地址",
+            placeholder="例如: https://example.com/openapi.json",
+            key="swagger_spec_url"
+        )
+        if st.button("🔍 解析 Swagger / OpenAPI", use_container_width=True, key="parse_swagger_url"):
+            if not swagger_url.strip():
+                st.error("❌ 请输入 Swagger/OpenAPI 地址")
+            else:
+                try:
+                    with st.spinner("正在拉取并解析远程文档..."):
+                        interfaces = st.session_state.auto_test_tool.parse_content(
+                            swagger_url,
+                            source_type="swagger",
+                            source_name="remote-swagger"
+                        )
+                    detected_base_url = st.session_state.auto_test_tool.last_parse_meta.get("detected_base_url", "")
+                    set_interface_state(interfaces, detected_base_url, swagger_url)
+                    st.success(f"✅ 成功解析出 {len(interfaces)} 个接口")
+                    if detected_base_url:
+                        st.info(f"已从文档中识别基础地址: `{detected_base_url}`")
+                except Exception as e:
+                    st.error(f"❌ 解析 Swagger/OpenAPI 失败: {str(e)}")
+
+    else:
+        raw_format = st.selectbox(
+            "文本格式",
+            ["自动检测", "JSON", "Swagger/OpenAPI", "结构化文本"],
+            key="raw_interface_format"
+        )
+        raw_content = st.text_area(
+            "粘贴接口定义",
+            height=260,
+            placeholder="可粘贴 JSON、OpenAPI 文本、结构化文本，或 curl 命令",
+            key="raw_interface_content"
+        )
+        if st.button("🧩 解析文本内容", use_container_width=True, key="parse_raw_interface_content"):
+            if not raw_content.strip():
+                st.error("❌ 请输入要解析的文本内容")
+            else:
+                format_map = {
+                    "自动检测": "auto",
+                    "JSON": "json",
+                    "Swagger/OpenAPI": "swagger",
+                    "结构化文本": "text"
+                }
+                try:
+                    with st.spinner("正在解析文本内容..."):
+                        interfaces = st.session_state.auto_test_tool.parse_content(
+                            raw_content,
+                            source_type=format_map[raw_format],
+                            source_name="inline-text"
+                        )
+                    detected_base_url = st.session_state.auto_test_tool.last_parse_meta.get("detected_base_url", "")
+                    set_interface_state(interfaces, detected_base_url, f"{raw_format} 文本")
+                    st.success(f"✅ 成功解析出 {len(interfaces)} 个接口")
+                    if detected_base_url:
+                        st.info(f"已从内容中识别基础地址: `{detected_base_url}`")
+                except Exception as e:
+                    st.error(f"❌ 解析文本失败: {str(e)}")
+
+    interfaces = st.session_state.interface_loaded_interfaces
+    if interfaces:
+        source_name = st.session_state.interface_source_name or "当前导入结果"
+        st.info(f"🎯 当前已加载 {len(interfaces)} 个接口，来源: {source_name}")
+        render_interface_preview(interfaces)
+
+        st.markdown("### ⚙️ 测试配置")
+        config_col1, config_col2 = st.columns(2)
+        with config_col1:
+            base_url = st.text_input(
+                "基础URL",
+                value=st.session_state.interface_loaded_base_url,
+                placeholder="例如: http://10.0.3.54:3000",
+                key="interface_base_url_input_v2"
+            )
             timeout = st.number_input(
                 "请求超时时间(秒)",
                 min_value=1,
                 value=30,
-                key="timeout"
+                key="interface_timeout_v2"
             )
-
-        with col2:
+            request_format = st.selectbox(
+                "请求格式",
+                ["自动检测", "json=参数", "data=json.dumps()", "form-urlencoded"],
+                index=0,
+                key="interface_request_format_v2"
+            )
+        with config_col2:
             retry_times = st.number_input(
                 "重试次数",
                 min_value=0,
                 value=0,
-                key="retry_times"
+                key="interface_retry_times_v2"
             )
             verify_ssl = st.checkbox(
                 "验证SSL证书",
                 value=False,
-                key="verify_ssl"
+                key="interface_verify_ssl_v2"
             )
-            # 请求格式选项
-            use_data_format = st.checkbox(
-                "使用 data=json.dumps() 格式",
-                value=True,
-                help="勾选后使用与手动代码一致的请求格式（推荐）",
-                key="use_data_format"
+            template_style = st.selectbox(
+                "模板风格",
+                ["冒烟模板", "标准模板", "严格模板"],
+                index=1,
+                key="interface_template_style_v2"
             )
 
-        # 使用容器固定操作按钮位置
-        operations_container = st.container()
+        st.markdown("### 🎯 测试操作")
+        action_col1, action_col2, action_col3 = st.columns(3)
 
-        with operations_container:
-            st.markdown("### 🎯 测试操作")
+        with action_col1:
+            if st.button("🧪 生成测试用例", use_container_width=True, key="generate_tests_v2"):
+                try:
+                    generate_artifacts(
+                        interfaces,
+                        execution_mode,
+                        base_url,
+                        timeout,
+                        retry_times,
+                        verify_ssl,
+                        request_format,
+                        template_style
+                    )
+                    st.success("✅ 测试文件已生成")
+                except Exception as e:
+                    st.error(f"❌ 生成测试用例失败: {str(e)}")
 
-            # 操作按钮布局
-            col1, col2 = st.columns(2)
-
-            with col1:
-                # 生成测试用例按钮
-                if st.button("🧪 生成测试用例", use_container_width=True, key="generate_tests"):
-                    # URL预处理
-                    processed_base_url = base_url
-                    if not processed_base_url.startswith(('http://', 'https://')):
-                        processed_base_url = 'http://' + processed_base_url
-                        st.info(f"🔧 已自动添加协议前缀: `{processed_base_url}`")
-
-                    # 确定请求格式
-                    request_format = "JSON格式(data)" if use_data_format else "自动检测"
-
-                    with st.spinner("正在生成测试用例..."):
-                        test_files = st.session_state.auto_test_tool.generate_test_cases(
-                            interfaces=interfaces,
-                            framework=framework,
-                            base_url=processed_base_url,
-                            timeout=timeout,
-                            retry_times=retry_times,
-                            verify_ssl=verify_ssl,
-                            request_format=request_format
+        with action_col2:
+            if st.button("▶️ 执行测试", use_container_width=True, key="run_tests_v2"):
+                if not ensure_generated_file(execution_mode):
+                    st.error("❌ 请先生成当前执行模式对应的测试文件")
+                elif not check_interface_dependencies(execution_mode, for_execution=True):
+                    pass
+                else:
+                    with st.spinner("正在执行测试并收集结果..."):
+                        test_results = st.session_state.enhanced_runner.run_tests_with_details(
+                            execution_mode,
+                            interfaces
                         )
-                    # 显示生成的测试代码
-                    st.markdown("### 📄 生成的测试代码")
-                    for filename, content in test_files.items():
-                        with st.expander(f"查看 {filename}", expanded=True):
-                            st.code(content, language='python')
-                    # 保存测试文件
-                    for filename, content in test_files.items():
-                        filepath = os.path.join(st.session_state.auto_test_tool.test_dir, filename)
-                        with open(filepath, 'w', encoding='utf-8') as f:
-                            f.write(content)
+                        st.session_state.interface_last_test_results = test_results
 
-                    st.success(f"✅ 成功生成 {len(test_files)} 个测试文件")
+        with action_col3:
+            if st.button("⚡ 生成并执行", use_container_width=True, key="generate_and_run_tests_v2"):
+                try:
+                    generate_artifacts(
+                        interfaces,
+                        execution_mode,
+                        base_url,
+                        timeout,
+                        retry_times,
+                        verify_ssl,
+                        request_format,
+                        template_style
+                    )
+                    if not check_interface_dependencies(execution_mode, for_execution=True):
+                        raise RuntimeError("当前执行模式缺少运行依赖，请先安装后再执行")
+                    with st.spinner("正在执行测试并收集结果..."):
+                        test_results = st.session_state.enhanced_runner.run_tests_with_details(
+                            execution_mode,
+                            interfaces
+                        )
+                        st.session_state.interface_last_test_results = test_results
+                except Exception as e:
+                    st.error(f"❌ 生成并执行失败: {str(e)}")
 
-                    # 显示生成的测试文件
-                    st.markdown("### 📄 生成的测试文件")
-                    for filename in test_files.keys():
-                        with st.expander(f"查看 {filename}", expanded=False):
-                            st.code(test_files[filename], language='python')
+        generated_files = st.session_state.get("interface_last_generated_files", {})
+        if generated_files:
+            st.markdown("### 📄 最近一次生成结果")
+            for filename, content in generated_files.items():
+                language = "json" if filename.endswith(".json") else "python"
+                with st.expander(f"查看 {filename}", expanded=filename.endswith(".py")):
+                    st.code(content, language=language)
 
-            with col2:
-                # 执行测试按钮
-                if st.button("▶️ 执行测试", use_container_width=True, key="run_tests"):
-                    if not os.path.exists(st.session_state.auto_test_tool.test_dir) or \
-                            not any(f.startswith('test_') and f.endswith('.py')
-                                    for f in os.listdir(st.session_state.auto_test_tool.test_dir)):
-                        st.error("❌ 请先生成测试用例")
-                    else:
-                        # 确认测试文件内容
-                        test_files = os.listdir(st.session_state.auto_test_tool.test_dir)
-                        st.info(f"找到测试文件: {test_files}")
+        cached_results = st.session_state.get("interface_last_test_results")
+        if cached_results:
+            render_test_results(cached_results, execution_mode, interfaces)
 
-                        # 显示测试文件内容用于调试
-                        for test_file in test_files:
-                            if test_file.startswith('test_') and test_file.endswith('.py'):
-                                file_path = os.path.join(st.session_state.auto_test_tool.test_dir, test_file)
-                                with open(file_path, 'r', encoding='utf-8') as f:
-                                    content = f.read()
-                                    st.code(f"测试文件 {test_file} 内容:\n{content}", language='python')
-
-                        # with st.spinner("正在执行测试用例并收集详细数据..."):
-                        #     # 使用修复后的测试执行器
-                        #     test_results = st.session_state.enhanced_runner.run_tests_with_details(
-                        #         framework,
-                        #         interfaces
-                        #     )
-                        # 修复后的测试执行逻辑
-                        with st.spinner("正在执行测试用例并收集详细数据..."):
-                            # 确保测试文件存在且内容正确
-                            test_files = os.listdir(st.session_state.auto_test_tool.test_dir)
-                            st.info(f"找到测试文件: {test_files}")
-
-                            # 验证测试文件内容
-                            for test_file in test_files:
-                                if test_file.startswith('test_') and test_file.endswith('.py'):
-                                    file_path = os.path.join(st.session_state.auto_test_tool.test_dir, test_file)
-                                    with open(file_path, 'r', encoding='utf-8') as f:
-                                        content = f.read()
-                                        # 检查测试文件是否包含有效的测试用例
-                                        if 'def test_' not in content and 'class Test' not in content:
-                                            st.error(f"测试文件 {test_file} 不包含有效的测试用例")
-                                            continue
-
-                            # 运行测试
-                            test_results = st.session_state.enhanced_runner.run_tests_with_details(
-                                framework,
-                                interfaces
-                            )
-
-                            # 调试信息
-                            st.info(f"测试结果: {test_results}")
-                        # 显示测试结果概览
-                        st.markdown("### 📊 测试结果概览")
-
-                        total = test_results.get('total', 0)
-                        passed = test_results.get('passed', 0)
-                        failed = test_results.get('failed', 0)
-                        errors = test_results.get('errors', 0)
-                        success_rate = (passed / total * 100) if total > 0 else 0
-
-                        col1, col2, col3, col4, col5 = st.columns(5)
-                        with col1:
-                            st.metric("总用例数", total)
-                        with col2:
-                            st.metric("通过", passed, delta=f"+{passed}")
-                        with col3:
-                            st.metric("失败", failed, delta=f"-{failed}", delta_color="inverse")
-                        with col4:
-                            st.metric("错误", errors, delta=f"-{errors}", delta_color="inverse")
-                        with col5:
-                            st.metric("成功率", f"{success_rate:.1f}%")
-
-                        # 生成详细报告
-                        if total > 0:
-                            report_path = st.session_state.enhanced_report.generate_detailed_report(
-                                test_results=test_results,
-                                framework=framework,
-                                interfaces=interfaces,
-                                test_details=test_results.get('test_details', [])
-                            )
-
-                            # 提供报告下载
-                            with open(report_path, 'rb') as f:
-                                report_data = f.read()
-
-                            st.download_button(
-                                label="📥 下载详细测试报告",
-                                data=report_data,
-                                file_name=os.path.basename(report_path),
-                                mime="text/html",
-                                use_container_width=True
-                            )
-
-                            # 在页面中显示报告摘要
-                            st.markdown("### 📋 测试详情摘要")
-
-                            # 显示测试详情表格
-                            test_details = test_results.get('test_details', [])
-                            if test_details:
-                                # 创建摘要表格
-                                summary_data = []
-                                for detail in test_details:
-                                    status_icon = "✅" if detail.get('status') == 'passed' else "❌" if detail.get(
-                                        'status') == 'failed' else "⚠️"
-                                    summary_data.append({
-                                        "接口": detail.get('name', '未知'),
-                                        "方法": detail.get('method', 'GET'),
-                                        "路径": detail.get('path', ''),
-                                        "状态": f"{status_icon} {detail.get('status', 'unknown')}",
-                                        "状态码": detail.get('status_code', 'N/A'),
-                                        "响应时间": f"{detail.get('response_time', 0):.2f}s"
-                                    })
-
-                                df_summary = pd.DataFrame(summary_data)
-                                st.dataframe(df_summary, use_container_width=True)
-
-                            # 显示失败和错误详情
-                            failed_tests = [d for d in test_results.get('test_details', [])
-                                            if d.get('status') in ['failed', 'error']]
-                            if failed_tests:
-                                st.markdown("#### ❌ 失败和错误详情")
-                                for test in failed_tests:
-                                    with st.expander(f"{test.get('name')} - {test.get('status')}", expanded=False):
-                                        col1, col2 = st.columns(2)
-                                        with col1:
-                                            st.write(f"**方法:** {test.get('method')}")
-                                            st.write(f"**路径:** {test.get('path')}")
-                                            st.write(f"**状态码:** {test.get('status_code', 'N/A')}")
-                                            st.write(f"**响应时间:** {test.get('response_time', 0):.2f}s")
-                                        with col2:
-                                            st.write(f"**错误信息:**")
-                                            st.error(test.get('error', '无错误信息'))
-
-                                        # 显示断言结果
-                                        if test.get('assertions'):
-                                            st.write("**断言结果:**")
-                                            for assertion in test.get('assertions', []):
-                                                if not assertion.get('passed'):
-                                                    st.error(
-                                                        f"❌ {assertion.get('description')}: {assertion.get('message')}")
-
-                            # 显示成功状态
-                            if test_results.get('success', False):
-                                st.balloons()
-                                st.success("🎉 所有测试用例执行成功！")
-                            else:
-                                st.error(f"❌ 存在 {failed + errors} 个测试失败或错误")
-
-            # 清理按钮单独放在一行，位置固定
-            st.markdown("---")
-            col_clean = st.columns([1, 2, 1])[1]  # 居中显示
-            with col_clean:
-                if st.button("🗑️ 清理测试文件", use_container_width=True, key="clean_tests"):
-                    import shutil
-
-                    try:
-                        if os.path.exists(st.session_state.auto_test_tool.test_dir):
-                            shutil.rmtree(st.session_state.auto_test_tool.test_dir)
-                        os.makedirs(st.session_state.auto_test_tool.test_dir)
-                        st.success("✅ 测试文件已清理")
-                    except Exception as e:
-                        st.error(f"❌ 清理失败: {e}")
-
+        st.markdown("---")
+        clean_col = st.columns([1, 2, 1])[1]
+        with clean_col:
+            if st.button("🗑️ 清理生成文件", use_container_width=True, key="clean_generated_interface_files"):
+                import shutil
+                try:
+                    if os.path.exists(st.session_state.auto_test_tool.test_dir):
+                        shutil.rmtree(st.session_state.auto_test_tool.test_dir)
+                    os.makedirs(st.session_state.auto_test_tool.test_dir)
+                    st.session_state.pop("interface_last_generated_files", None)
+                    st.session_state.pop("interface_last_test_results", None)
+                    st.success("✅ 生成文件已清理")
+                except Exception as e:
+                    st.error(f"❌ 清理失败: {str(e)}")
     else:
-        st.info("📝 请上传接口文档或选择快速测试数据")
+        st.info("📝 请先导入接口文档，支持 Excel、Swagger/OpenAPI、JSON、文本和 curl")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -6482,4 +6521,3 @@ author.render_main_profile()
 
 # 在需要显示侧边栏作者信息的地方调用
 # author.render_sidebar_profile()
-

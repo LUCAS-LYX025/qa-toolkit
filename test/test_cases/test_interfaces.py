@@ -1,320 +1,304 @@
-"""
-自动生成的接口测试用例 - unittest版本
-生成时间: 2025-10-16 20:38:44
-"""
+"""自动生成的接口测试脚本 - unittest"""
 
 import unittest
 
+import json
+import re
+import time
+from copy import deepcopy
 
-class TestURLValidation(unittest.TestCase):
-    """URL验证测试"""
+import requests
 
-    def test_url_generation(self):
-        """测试URL生成是否正确"""
-        # 测试手动成功的URL
-        success_url = "http://10.0.3.54:3000/api/login"
-        print(f"✅ 成功URL: {success_url}")
+CONFIG = json.loads(r'''{"base_url": "https://jsonplaceholder.typicode.com", "timeout": 20, "retry_times": 0, "verify_ssl": true, "request_format": "auto", "template_style": "标准模板"}''')
+CASES = json.loads(r'''[{"name": "获取单个帖子", "method": "GET", "path": "/posts/1", "description": "获取帖子详情", "headers": {}, "parameters": {}, "path_params": {}, "query_params": {}, "body": null, "expected_status": 200, "expected_response": ["userId", "id", "title", "body"], "request_format": "auto", "tags": [], "source": "", "case_id": "case_001", "test_name": "test_case_001"}]''')
+CASE_INDEX = {case["case_id"]: case for case in CASES}
 
-        # 测试生成的URL
-        generated_url = "https://jsonplaceholder.typicode.com/api/login"
-        print(f"🔍 生成URL: {generated_url}")
 
-        # 比较两者
-        self.assertEqual(generated_url, success_url, "生成的URL应该与成功URL一致")
+def clone_value(value):
+    return deepcopy(value)
 
-    class TestTest_interface_000_______(unittest.TestCase):
-        """获取所有帖子列表"""
 
-        def setUp(self):
-            self.url = "https://jsonplaceholder.typicode.com/posts"
-            self.headers = {}
-            self.expected_status = 200
-            # 对于非GET请求，保留请求数据
-            self.data = {} if "GET".upper() != "GET" else None
+def build_url(base_url, path, path_params):
+    actual_path = path or "/"
+    for key, value in (path_params or {}).items():
+        actual_path = actual_path.replace("{" + str(key) + "}", str(value))
+    if actual_path.startswith(("http://", "https://")):
+        return actual_path
+    if not base_url:
+        return actual_path
+    return base_url.rstrip("/") + "/" + actual_path.lstrip("/")
 
-        def test_test_interface_000_______(self):
-            """测试接口: 获取所有帖子"""
-            import requests
-            import json
 
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {self.url}")
-            print(f"  请求方法: GET")
-            print(f"  请求头: {self.headers}")
-            print(f"  请求数据: {self.data}")
-            print(f"  期望状态码: {self.expected_status}")
+def merge_request_parts(case):
+    path = case.get("path", "")
+    path_params = clone_value(case.get("path_params") or {})
+    query_params = clone_value(case.get("query_params") or {})
+    body = clone_value(case.get("body"))
+    placeholders = set(re.findall(r"\{([^}]+)\}", path or ""))
+    for name in placeholders:
+        if name not in path_params:
+            if isinstance(query_params, dict) and name in query_params:
+                path_params[name] = query_params.pop(name)
+            elif isinstance(body, dict) and name in body:
+                path_params[name] = body.pop(name)
+    return path_params, query_params, body
 
-            try:
-                # 根据请求方法发送请求
-                method = "GET".lower()
 
-                if method == 'get':
-                    response = requests.get(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                elif method == 'post':
-                    response = requests.post(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,  # 使用json参数自动处理Content-Type
-                        timeout=30
-                    )
-                elif method == 'put':
-                    response = requests.put(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-                elif method == 'delete':
-                    response = requests.delete(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                else:
-                    response = requests.request(
-                        method=method,
-                        url=self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
+def resolve_request_format(case):
+    override = CONFIG.get("request_format", "auto")
+    if override and override != "auto":
+        return override
+    case_format = case.get("request_format", "auto")
+    if case_format and case_format != "auto":
+        return case_format
+    headers = case.get("headers") or {}
+    content_type = str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
+    body = case.get("body")
+    if "application/x-www-form-urlencoded" in content_type or "multipart/form-data" in content_type:
+        return "form"
+    if "application/json" in content_type:
+        return "json"
+    if isinstance(body, (dict, list)):
+        return "json"
+    if isinstance(body, str):
+        return "raw"
+    return "auto"
 
-                print(f"✅ 响应状态码: {response.status_code}")
-                print(f"✅ 响应内容: {response.text}")
-                print(f"✅ 实际请求URL: {response.url}")
 
-                # 断言
-                self.assertEqual(response.status_code, self.expected_status)
+def response_json(response):
+    try:
+        return response.json()
+    except ValueError:
+        return None
 
-            except requests.exceptions.RequestException as e:
-                self.fail(f"请求失败: {e}")
-            except Exception as e:
-                self.fail(f"测试执行错误: {e}")
 
-    class TestTest_interface_001_______(unittest.TestCase):
-        """获取ID为1的帖子详情"""
+def compare_standard(expected, actual, prefix):
+    failures = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
+        for key, value in expected.items():
+            if key not in actual:
+                failures.append(f"{prefix} 缺少字段 {key}")
+                continue
+            if isinstance(value, (dict, list)):
+                continue
+            if value not in (None, "", {}, []) and actual.get(key) != value:
+                failures.append(f"{prefix}.{key} 期望 {value!r}，实际 {actual.get(key)!r}")
+        return failures
 
-        def setUp(self):
-            self.url = "https://jsonplaceholder.typicode.com/posts/1"
-            self.headers = {}
-            self.expected_status = 200
-            # 对于非GET请求，保留请求数据
-            self.data = {} if "GET".upper() != "GET" else None
+    if isinstance(expected, list):
+        if all(isinstance(item, str) for item in expected):
+            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
+                for key in expected:
+                    if key not in actual[0]:
+                        failures.append(f"{prefix}[0] 缺少字段 {key}")
+                return failures
+            if isinstance(actual, dict):
+                for key in expected:
+                    if key not in actual:
+                        failures.append(f"{prefix} 缺少字段 {key}")
+                return failures
+        if not isinstance(actual, list) or not actual:
+            return [f"{prefix} 应返回非空数组"]
+        return []
 
-        def test_test_interface_001_______(self):
-            """测试接口: 获取单个帖子"""
-            import requests
-            import json
+    if isinstance(expected, str):
+        if expected not in str(actual):
+            return [f"{prefix} 未包含期望文本 {expected!r}"]
+        return []
 
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {self.url}")
-            print(f"  请求方法: GET")
-            print(f"  请求头: {self.headers}")
-            print(f"  请求数据: {self.data}")
-            print(f"  期望状态码: {self.expected_status}")
+    if expected not in (None, "", {}, []) and expected != actual:
+        return [f"{prefix} 期望 {expected!r}，实际 {actual!r}"]
+    return failures
 
-            try:
-                # 根据请求方法发送请求
-                method = "GET".lower()
 
-                if method == 'get':
-                    response = requests.get(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                elif method == 'post':
-                    response = requests.post(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,  # 使用json参数自动处理Content-Type
-                        timeout=30
-                    )
-                elif method == 'put':
-                    response = requests.put(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-                elif method == 'delete':
-                    response = requests.delete(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                else:
-                    response = requests.request(
-                        method=method,
-                        url=self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
+def compare_strict(expected, actual, prefix):
+    failures = []
+    if isinstance(expected, dict):
+        if not isinstance(actual, dict):
+            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
+        for key, value in expected.items():
+            if key not in actual:
+                failures.append(f"{prefix} 缺少字段 {key}")
+                continue
+            failures.extend(compare_strict(value, actual[key], f"{prefix}.{key}"))
+        return failures
 
-                print(f"✅ 响应状态码: {response.status_code}")
-                print(f"✅ 响应内容: {response.text}")
-                print(f"✅ 实际请求URL: {response.url}")
+    if isinstance(expected, list):
+        if all(isinstance(item, str) for item in expected):
+            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
+                for key in expected:
+                    if key not in actual[0]:
+                        failures.append(f"{prefix}[0] 缺少字段 {key}")
+                return failures
+            if isinstance(actual, dict):
+                for key in expected:
+                    if key not in actual:
+                        failures.append(f"{prefix} 缺少字段 {key}")
+                return failures
+        if not isinstance(actual, list):
+            return [f"{prefix} 应为数组，实际为 {type(actual).__name__}"]
+        if len(actual) < len(expected):
+            failures.append(f"{prefix} 长度不足，期望至少 {len(expected)}，实际 {len(actual)}")
+        for index, value in enumerate(expected):
+            if index >= len(actual):
+                break
+            failures.extend(compare_strict(value, actual[index], f"{prefix}[{index}]"))
+        return failures
 
-                # 断言
-                self.assertEqual(response.status_code, self.expected_status)
+    if expected != actual:
+        failures.append(f"{prefix} 期望 {expected!r}，实际 {actual!r}")
+    return failures
 
-            except requests.exceptions.RequestException as e:
-                self.fail(f"请求失败: {e}")
-            except Exception as e:
-                self.fail(f"测试执行错误: {e}")
 
-    class TestTest_interface_002_______(unittest.TestCase):
-        """获取指定用户的帖子"""
+def build_assertions(case, response):
+    assertions = []
+    failures = []
+    expected_status = int(case.get("expected_status", 200))
+    status_ok = response.status_code == expected_status
+    status_message = f"期望 {expected_status}，实际 {response.status_code}"
+    assertions.append({
+        "description": f"状态码应为 {expected_status}",
+        "passed": status_ok,
+        "message": status_message,
+    })
+    if not status_ok:
+        failures.append(status_message)
 
-        def setUp(self):
-            self.url = "https://jsonplaceholder.typicode.com/posts?userId=1"
-            self.headers = {}
-            self.expected_status = 200
-            # 对于非GET请求，保留请求数据
-            self.data = {'userId': 1} if "GET".upper() != "GET" else None
+    expected_response = case.get("expected_response")
+    if expected_response in (None, "", {}, []) or CONFIG.get("template_style") == "冒烟模板":
+        return assertions, failures
 
-        def test_test_interface_002_______(self):
-            """测试接口: 获取用户帖子"""
-            import requests
-            import json
+    actual_payload = response_json(response)
+    actual_value = actual_payload if actual_payload is not None else response.text
+    if CONFIG.get("template_style") == "严格模板":
+        payload_failures = compare_strict(expected_response, actual_value, "response")
+    else:
+        payload_failures = compare_standard(expected_response, actual_value, "response")
 
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {self.url}")
-            print(f"  请求方法: GET")
-            print(f"  请求头: {self.headers}")
-            print(f"  请求数据: {self.data}")
-            print(f"  期望状态码: {self.expected_status}")
+    assertions.append({
+        "description": "响应内容断言",
+        "passed": not payload_failures,
+        "message": "通过" if not payload_failures else "; ".join(payload_failures),
+    })
+    failures.extend(payload_failures)
+    return assertions, failures
 
-            try:
-                # 根据请求方法发送请求
-                method = "GET".lower()
 
-                if method == 'get':
-                    response = requests.get(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                elif method == 'post':
-                    response = requests.post(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,  # 使用json参数自动处理Content-Type
-                        timeout=30
-                    )
-                elif method == 'put':
-                    response = requests.put(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-                elif method == 'delete':
-                    response = requests.delete(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                else:
-                    response = requests.request(
-                        method=method,
-                        url=self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
+def build_detail(case, status, response, response_time, url, error, assertions):
+    return {
+        "case_id": case.get("case_id"),
+        "test_name": case.get("test_name"),
+        "name": case.get("name"),
+        "method": case.get("method"),
+        "path": case.get("path"),
+        "status": status,
+        "status_code": response.status_code if response is not None else 0,
+        "response_time": round(response_time, 4),
+        "headers": case.get("headers") or {},
+        "parameters": case.get("parameters"),
+        "response_body": response.text if response is not None else "",
+        "error": error or "",
+        "assertions": assertions or [],
+        "url": url,
+    }
 
-                print(f"✅ 响应状态码: {response.status_code}")
-                print(f"✅ 响应内容: {response.text}")
-                print(f"✅ 实际请求URL: {response.url}")
 
-                # 断言
-                self.assertEqual(response.status_code, self.expected_status)
+def emit_case_result(detail):
+    print("CASE_RESULT::" + json.dumps(detail, ensure_ascii=False))
 
-            except requests.exceptions.RequestException as e:
-                self.fail(f"请求失败: {e}")
-            except Exception as e:
-                self.fail(f"测试执行错误: {e}")
 
-    class TestTest_interface_003______(unittest.TestCase):
-        """创建新的帖子"""
+def send_request(session, case):
+    path_params, query_params, body = merge_request_parts(case)
+    headers = clone_value(case.get("headers") or {})
+    method = str(case.get("method", "GET")).upper()
+    request_format = resolve_request_format(case)
+    url = build_url(CONFIG.get("base_url", ""), case.get("path", ""), path_params)
+    request_kwargs = {
+        "method": method,
+        "url": url,
+        "headers": headers,
+        "params": query_params or None,
+        "timeout": int(CONFIG.get("timeout", 30)),
+        "verify": bool(CONFIG.get("verify_ssl", False)),
+    }
 
-        def setUp(self):
-            self.url = "https://jsonplaceholder.typicode.com/posts"
-            self.headers = {'Content-Type': 'application/json'}
-            self.expected_status = 201
-            # 对于非GET请求，保留请求数据
-            self.data = {'title': '自动化测试帖子', 'body': '这是通过自动化测试工具创建的帖子',
-                         'userId': 1} if "POST".upper() != "GET" else None
+    if method != "GET" and body is not None:
+        if request_format == "data_json":
+            headers.setdefault("Content-Type", "application/json")
+            request_kwargs["data"] = json.dumps(body, ensure_ascii=False)
+        elif request_format == "form":
+            request_kwargs["data"] = body
+        elif request_format == "raw":
+            request_kwargs["data"] = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+        else:
+            request_kwargs["json"] = body
+    elif method == "GET" and body and not request_kwargs["params"] and isinstance(body, dict):
+        request_kwargs["params"] = body
 
-        def test_test_interface_003______(self):
-            """测试接口: 创建新帖子"""
-            import requests
-            import json
+    retry_times = int(CONFIG.get("retry_times", 0))
+    last_error = None
+    for attempt in range(retry_times + 1):
+        try:
+            return session.request(**request_kwargs), url
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt >= retry_times:
+                raise
+            time.sleep(1)
+    raise last_error or RuntimeError("请求失败")
 
-            print(f"🔍 调试信息:")
-            print(f"  请求URL: {self.url}")
-            print(f"  请求方法: POST")
-            print(f"  请求头: {self.headers}")
-            print(f"  请求数据: {self.data}")
-            print(f"  期望状态码: {self.expected_status}")
 
-            try:
-                # 根据请求方法发送请求
-                method = "POST".lower()
+def execute_case(session, case):
+    started_at = time.time()
+    response = None
+    url = ""
+    assertions = []
+    try:
+        response, url = send_request(session, case)
+        assertions, failures = build_assertions(case, response)
+        if failures:
+            raise AssertionError("; ".join(failures))
+        detail = build_detail(case, "passed", response, time.time() - started_at, url, "", assertions)
+        emit_case_result(detail)
+        return detail
+    except AssertionError as exc:
+        detail = build_detail(case, "failed", response, time.time() - started_at, url, str(exc), assertions)
+        emit_case_result(detail)
+        raise
+    except Exception as exc:
+        detail = build_detail(case, "error", response, time.time() - started_at, url, str(exc), assertions)
+        emit_case_result(detail)
+        raise
 
-                if method == 'get':
-                    response = requests.get(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                elif method == 'post':
-                    response = requests.post(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,  # 使用json参数自动处理Content-Type
-                        timeout=30
-                    )
-                elif method == 'put':
-                    response = requests.put(
-                        self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
-                elif method == 'delete':
-                    response = requests.delete(
-                        self.url,
-                        headers=self.headers,
-                        timeout=30
-                    )
-                else:
-                    response = requests.request(
-                        method=method,
-                        url=self.url,
-                        headers=self.headers,
-                        json=self.data,
-                        timeout=30
-                    )
 
-                print(f"✅ 响应状态码: {response.status_code}")
-                print(f"✅ 响应内容: {response.text}")
-                print(f"✅ 实际请求URL: {response.url}")
 
-                # 断言
-                self.assertEqual(response.status_code, self.expected_status)
+class GeneratedApiTests(unittest.TestCase):
 
-            except requests.exceptions.RequestException as e:
-                self.fail(f"请求失败: {e}")
-            except Exception as e:
-                self.fail(f"测试执行错误: {e}")
+    @classmethod
+
+    def setUpClass(cls):
+
+        cls.session = requests.Session()
+
+
+
+    @classmethod
+
+    def tearDownClass(cls):
+
+        cls.session.close()
+
+
+
+
+    def test_case_001(self):
+        execute_case(self.session, CASE_INDEX["case_001"])
+
 
 
 if __name__ == "__main__":
-    unittest.main()
+
+    unittest.main(verbosity=2)
+
