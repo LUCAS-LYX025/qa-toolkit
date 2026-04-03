@@ -1,0 +1,71 @@
+{
+  "generated_at": "2026-04-03 09:53:29",
+  "mode": "requests_script",
+  "config": {
+    "base_url": "https://jsonplaceholder.typicode.com",
+    "timeout": 20,
+    "retry_times": 0,
+    "verify_ssl": true,
+    "request_format": "auto",
+    "template_style": "标准模板",
+    "active_env": "staging",
+    "environments": {
+      "dev": {
+        "base_url": "https://jsonplaceholder.typicode.com",
+        "headers": {
+          "X-Env": "dev",
+          "X-Test-Auth": "token-123"
+        }
+      },
+      "staging": {
+        "base_url": "https://jsonplaceholder.typicode.com",
+        "headers": {
+          "X-Env": "staging",
+          "X-Test-Auth": "token-123"
+        }
+      }
+    },
+    "default_headers": {
+      "X-Env": "staging",
+      "X-Test-Auth": "token-123"
+    },
+    "auth": {
+      "enabled": true,
+      "type": "custom_header",
+      "header_name": "Authorization",
+      "prefix": "Bearer ",
+      "token": "",
+      "api_key_name": "X-API-Key",
+      "api_key_value": "",
+      "username": "",
+      "password": "",
+      "custom_header_name": "X-Test-Auth",
+      "custom_header_value": "token-123"
+    }
+  },
+  "cases": [
+    {
+      "name": "获取单个帖子",
+      "method": "GET",
+      "path": "/posts/1",
+      "description": "",
+      "headers": {},
+      "parameters": {},
+      "path_params": {},
+      "query_params": {},
+      "body": null,
+      "expected_status": 200,
+      "expected_response": [
+        "userId",
+        "id",
+        "title",
+        "body"
+      ],
+      "request_format": "auto",
+      "tags": [],
+      "source": "",
+      "case_id": "case_001",
+      "test_name": "test_case_001"
+    }
+  ]
+}

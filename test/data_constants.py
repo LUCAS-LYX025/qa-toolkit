@@ -635,6 +635,21 @@ TOOL_CATEGORIES = {
         "description": "IP定位、域名解析、网络信息查询",
         "color": "#ed64a6"
     },
+    "接口性能测试": {
+        "icon": "🚀",
+        "description": "JMeter风格接口压测、CSV参数化、事务链路",
+        "color": "#dd6b20"
+    },
+    "接口安全测试": {
+        "icon": "🛡️",
+        "description": "API/移动端/Web 安全审计、基线探测、清单和报告",
+        "color": "#15803d"
+    },
+    "接口研发辅助": {
+        "icon": "🛠️",
+        "description": "接口变更分析、Mock服务、调试代码生成",
+        "color": "#3182ce"
+    },
     "接口自动化测试": {
         "icon": "🚀",
         "description": "基于接口文档自动生成和执行测试用例"
@@ -891,6 +906,76 @@ CSS_STYLES = """
         color: white !important;
         transform: scale(1.02) !important;
         box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4) !important;
+    }
+
+    .tool-picker-card {
+        background: white;
+        border-radius: 16px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 10px 25px rgba(0,0,0,0.08);
+        padding: 1.25rem;
+        min-height: 188px;
+        margin-bottom: 0.75rem;
+        transition: all 0.25s ease;
+    }
+
+    .tool-picker-card.selected {
+        background: linear-gradient(180deg, #eef2f7 0%, #d8dee9 100%);
+        border-color: #94a3b8;
+        box-shadow: inset 1px 1px 0 rgba(255,255,255,0.9), 0 12px 24px rgba(100, 116, 139, 0.18);
+        transform: translateY(-1px);
+    }
+
+    .tool-picker-icon {
+        font-size: 2rem;
+        line-height: 1;
+        margin-bottom: 0.75rem;
+    }
+
+    .tool-picker-title {
+        font-size: 1.12rem;
+        font-weight: 700;
+        color: #1e293b;
+        margin-bottom: 0.5rem;
+    }
+
+    .tool-picker-desc {
+        color: #64748b;
+        font-size: 0.93rem;
+        line-height: 1.55;
+        min-height: 3.2rem;
+    }
+
+    .tool-picker-card.selected .tool-picker-title {
+        color: #334155;
+    }
+
+    .tool-picker-card.selected .tool-picker-desc {
+        color: #475569;
+    }
+
+    .tool-picker-active-button {
+        background: linear-gradient(180deg, #e2e8f0 0%, #cbd5e1 100%);
+        color: #334155;
+        border: 1px solid #94a3b8;
+        border-radius: 12px;
+        font-weight: 700;
+        padding: 0.8rem 1rem;
+        text-align: center;
+        width: 100%;
+        min-height: 48px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-shadow: inset 1px 1px 0 rgba(255,255,255,0.85), inset -1px -1px 0 rgba(148,163,184,0.7);
+    }
+
+    .tool-picker-status {
+        color: #64748b;
+        font-size: 0.85rem;
+        margin-top: 0.45rem;
+        text-align: center;
+        font-weight: 600;
     }
 </style>
 """
