@@ -6042,6 +6042,7 @@ elif tool_category == "接口自动化测试":
                 status_icon = "✅" if detail.get("status") == "passed" else "❌" if detail.get("status") == "failed" else "⚠️"
                 summary_rows.append({
                     "接口": detail.get("name", "未知"),
+                    "环境": detail.get("environment", ""),
                     "方法": detail.get("method", "GET"),
                     "路径": detail.get("path", ""),
                     "状态": f"{status_icon} {detail.get('status', 'unknown')}",
@@ -6057,6 +6058,7 @@ elif tool_category == "接口自动化测试":
                     with st.expander(f"{detail.get('name', '未知接口')} - {detail.get('status', 'error')}", expanded=False):
                         col1, col2 = st.columns(2)
                         with col1:
+                            st.write(f"**环境:** {detail.get('environment', '')}")
                             st.write(f"**方法:** {detail.get('method', 'GET')}")
                             st.write(f"**路径:** {detail.get('path', '')}")
                             st.write(f"**状态码:** {detail.get('status_code', 'N/A')}")
@@ -6078,7 +6080,26 @@ elif tool_category == "接口自动化测试":
             st.error(f"❌ 存在 {failed + errors} 个失败或错误")
 
 
-    def generate_artifacts(interfaces, execution_mode, base_url, timeout, retry_times, verify_ssl, request_format, template_style):
+    def build_env_template_with_base_url(base_url):
+        template = json.loads(st.session_state.auto_test_tool.build_environment_template())
+        normalized_base_url = base_url.strip()
+        if normalized_base_url:
+            template["environments"]["dev"]["base_url"] = normalized_base_url
+        return json.dumps(template, ensure_ascii=False, indent=2)
+
+
+    def generate_artifacts(
+        interfaces,
+        execution_mode,
+        base_url,
+        timeout,
+        retry_times,
+        verify_ssl,
+        request_format,
+        template_style,
+        environment_config=None,
+        auth_config=None,
+    ):
         with st.spinner("正在生成测试用例..."):
             test_files = st.session_state.auto_test_tool.generate_test_cases(
                 interfaces=interfaces,
@@ -6088,7 +6109,9 @@ elif tool_category == "接口自动化测试":
                 retry_times=retry_times,
                 verify_ssl=verify_ssl,
                 request_format=request_format,
-                template_style=template_style
+                template_style=template_style,
+                environment_config=environment_config,
+                auth_config=auth_config
             )
             st.session_state.auto_test_tool.save_test_files(test_files)
             st.session_state.interface_last_generated_files = test_files
@@ -6155,8 +6178,8 @@ elif tool_category == "接口自动化测试":
             st.success("✅ 已清空接口数据和生成产物缓存")
 
     with st.expander("📚 模板与导入说明", expanded=not st.session_state.interface_loaded_interfaces):
-        template_col1, template_col2, template_col3, template_col4 = st.columns(4)
-        with template_col1:
+        template_row1_col1, template_row1_col2, template_row1_col3, template_row1_col4 = st.columns(4)
+        with template_row1_col1:
             st.download_button(
                 label="📥 Excel模板",
                 data=st.session_state.auto_test_tool.build_excel_template_bytes(),
@@ -6164,7 +6187,7 @@ elif tool_category == "接口自动化测试":
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
-        with template_col2:
+        with template_row1_col2:
             st.download_button(
                 label="📥 JSON模板",
                 data=st.session_state.auto_test_tool.build_json_template(),
@@ -6172,7 +6195,7 @@ elif tool_category == "接口自动化测试":
                 mime="application/json",
                 use_container_width=True
             )
-        with template_col3:
+        with template_row1_col3:
             st.download_button(
                 label="📥 文本模板",
                 data=st.session_state.auto_test_tool.build_text_template(),
@@ -6180,11 +6203,89 @@ elif tool_category == "接口自动化测试":
                 mime="text/plain",
                 use_container_width=True
             )
-        with template_col4:
+        with template_row1_col4:
             st.download_button(
-                label="📥 OpenAPI模板",
+                label="📥 curl模板",
+                data=st.session_state.auto_test_tool.build_curl_template(),
+                file_name="curl-import-template.txt",
+                mime="text/plain",
+                use_container_width=True
+            )
+
+        template_row2_col1, template_row2_col2, template_row2_col3, template_row2_col4 = st.columns(4)
+        with template_row2_col1:
+            st.download_button(
+                label="📥 OpenAPI JSON",
                 data=st.session_state.auto_test_tool.build_openapi_template(),
                 file_name="openapi-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        with template_row2_col2:
+            st.download_button(
+                label="📥 OpenAPI YAML",
+                data=st.session_state.auto_test_tool.build_openapi_yaml_template(),
+                file_name="openapi-template.yaml",
+                mime="text/yaml",
+                use_container_width=True
+            )
+        with template_row2_col3:
+            st.download_button(
+                label="📥 Postman模板",
+                data=st.session_state.auto_test_tool.build_postman_template(),
+                file_name="postman-collection-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        with template_row2_col4:
+            st.download_button(
+                label="📥 HAR模板",
+                data=st.session_state.auto_test_tool.build_har_template(),
+                file_name="sample-template.har",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        template_row3_col1, template_row3_col2, template_row3_col3 = st.columns(3)
+        with template_row3_col1:
+            st.download_button(
+                label="📥 Apifox模板",
+                data=st.session_state.auto_test_tool.build_apifox_template(),
+                file_name="apifox-openapi-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+
+        template_row4_col1, template_row4_col2 = st.columns(2)
+        with template_row4_col1:
+            st.download_button(
+                label="📥 环境配置模板",
+                data=st.session_state.auto_test_tool.build_environment_template(),
+                file_name="environment-config-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        with template_row4_col2:
+            st.download_button(
+                label="📥 鉴权模板",
+                data=st.session_state.auto_test_tool.build_auth_template(),
+                file_name="auth-template.json",
+                mime="application/json",
+                use_container_width=True
+            )
+        with template_row3_col2:
+            st.download_button(
+                label="📥 Bruno模板",
+                data=st.session_state.auto_test_tool.build_bruno_template(),
+                file_name="sample-template.bru",
+                mime="text/plain",
+                use_container_width=True
+            )
+        with template_row3_col3:
+            st.download_button(
+                label="📥 Insomnia模板",
+                data=st.session_state.auto_test_tool.build_insomnia_template(),
+                file_name="insomnia-export-template.json",
                 mime="application/json",
                 use_container_width=True
             )
@@ -6192,9 +6293,25 @@ elif tool_category == "接口自动化测试":
         st.markdown("""
         **支持的导入方式**
 
-        - 文件上传: `xlsx/xls/json/txt/md/yaml/yml`
+        - 文件上传: `xlsx/xls/json/har/bru/txt/md/yaml/yml`
         - Swagger/OpenAPI URL: 直接输入 JSON 或 YAML 地址
-        - 原始文本: 支持结构化文本、JSON 文本、Swagger 文本、`curl` 命令
+        - 原始文本: 支持结构化文本、JSON 文本、Swagger 文本、`curl` 命令、`Bruno .bru`
+        - JSON 导入兼容 `OpenAPI / Apifox / Postman Collection / HAR / Insomnia / 自定义接口列表`
+
+        **可下载模板**
+
+        - `Excel模板`: 适合表格维护接口清单后上传
+        - `JSON模板`: 适合结构化接口列表导入
+        - `文本模板`: 适合手写接口块批量粘贴
+        - `OpenAPI JSON / YAML`: 适合 Swagger/OpenAPI 文档导入
+        - `Apifox模板`: 提供 Apifox 兼容的 OpenAPI 导出骨架
+        - `curl模板`: 适合把抓包或终端命令直接粘贴导入
+        - `Postman模板`: 适合集合导出后直接导入
+        - `HAR模板`: 适合浏览器抓包导出后回放
+        - `Bruno模板`: 适合 `.bru` 单接口文件导入
+        - `Insomnia模板`: 适合 Insomnia 导出 JSON 回放
+        - `环境配置模板`: 适合维护 `dev/staging/prod` 基础地址和公共头
+        - `鉴权模板`: 适合统一配置 `Bearer / API Key / Basic / 自定义 Header`
 
         **支持的执行模板**
 
@@ -6220,8 +6337,8 @@ elif tool_category == "接口自动化测试":
     if import_mode == "文件上传":
         uploaded_file = st.file_uploader(
             "选择接口文档文件",
-            type=["xlsx", "xls", "json", "txt", "md", "yaml", "yml"],
-            help="支持 Excel、JSON、Swagger/OpenAPI、文本等格式",
+            type=["xlsx", "xls", "json", "har", "bru", "txt", "md", "yaml", "yml"],
+            help="支持 Excel、JSON、Swagger/OpenAPI、Apifox、Postman、HAR、Bruno、Insomnia、文本等格式",
             key="interface_doc_upload_v2"
         )
         if uploaded_file is not None:
@@ -6270,7 +6387,7 @@ elif tool_category == "接口自动化测试":
     else:
         raw_format = st.selectbox(
             "文本格式",
-            ["自动检测", "JSON", "Swagger/OpenAPI", "结构化文本"],
+            ["自动检测", "JSON / Apifox / Postman / HAR / Insomnia", "Swagger/OpenAPI", "结构化文本", "Bruno .bru"],
             key="raw_interface_format"
         )
         raw_content = st.text_area(
@@ -6285,9 +6402,10 @@ elif tool_category == "接口自动化测试":
             else:
                 format_map = {
                     "自动检测": "auto",
-                    "JSON": "json",
+                    "JSON / Apifox / Postman / HAR / Insomnia": "json",
                     "Swagger/OpenAPI": "swagger",
-                    "结构化文本": "text"
+                    "结构化文本": "text",
+                    "Bruno .bru": "bruno"
                 }
                 try:
                     with st.spinner("正在解析文本内容..."):
@@ -6314,7 +6432,7 @@ elif tool_category == "接口自动化测试":
         config_col1, config_col2 = st.columns(2)
         with config_col1:
             base_url = st.text_input(
-                "基础URL",
+                "基础URL或默认URL",
                 value=st.session_state.interface_loaded_base_url,
                 placeholder="例如: http://10.0.3.54:3000",
                 key="interface_base_url_input_v2"
@@ -6350,12 +6468,102 @@ elif tool_category == "接口自动化测试":
                 key="interface_template_style_v2"
             )
 
+        st.markdown("### 🌐 环境与鉴权")
+        env_auth_col1, env_auth_col2 = st.columns(2)
+        environment_config = None
+        auth_config = {"enabled": False, "type": "none"}
+
+        with env_auth_col1:
+            env_mode = st.radio(
+                "环境模式",
+                ["单环境", "多环境(JSON模板)"],
+                horizontal=True,
+                key="interface_env_mode"
+            )
+            if env_mode == "多环境(JSON模板)":
+                env_default_text = build_env_template_with_base_url(base_url or st.session_state.interface_loaded_base_url)
+                env_config_text = st.text_area(
+                    "环境配置 JSON",
+                    value=st.session_state.get("interface_env_config_text", env_default_text),
+                    height=220,
+                    key="interface_env_config_text",
+                    help="定义 dev/staging/prod 的 base_url 和公共 headers，运行时按所选环境生效"
+                )
+                try:
+                    environment_config = json.loads(env_config_text)
+                    env_names = list((environment_config.get("environments") or {}).keys())
+                    if env_names:
+                        default_env = environment_config.get("active_env")
+                        default_index = env_names.index(default_env) if default_env in env_names else 0
+                        selected_env = st.selectbox(
+                            "当前环境",
+                            env_names,
+                            index=default_index,
+                            key="interface_active_env"
+                        )
+                        environment_config["active_env"] = selected_env
+                    else:
+                        st.error("❌ 环境配置缺少 environments 节点")
+                        environment_config = None
+                except json.JSONDecodeError as exc:
+                    st.error(f"❌ 环境配置 JSON 格式错误: {exc}")
+                    environment_config = None
+            else:
+                st.info("当前使用单环境模式，执行时直接使用上面的基础URL")
+
+        with env_auth_col2:
+            auth_mode = st.selectbox(
+                "鉴权方式",
+                ["无", "Bearer Token", "API Key", "Basic Auth", "自定义Header"],
+                key="interface_auth_mode"
+            )
+            if auth_mode == "Bearer Token":
+                token = st.text_input("Bearer Token", type="password", key="interface_bearer_token")
+                auth_config = {
+                    "enabled": bool(token),
+                    "type": "bearer",
+                    "header_name": "Authorization",
+                    "prefix": "Bearer ",
+                    "token": token,
+                }
+            elif auth_mode == "API Key":
+                api_key_name = st.text_input("Header名称", value="X-API-Key", key="interface_api_key_name")
+                api_key_value = st.text_input("API Key", type="password", key="interface_api_key_value")
+                auth_config = {
+                    "enabled": bool(api_key_value),
+                    "type": "api_key",
+                    "api_key_name": api_key_name,
+                    "api_key_value": api_key_value,
+                }
+            elif auth_mode == "Basic Auth":
+                username = st.text_input("用户名", key="interface_basic_username")
+                password = st.text_input("密码", type="password", key="interface_basic_password")
+                auth_config = {
+                    "enabled": bool(username),
+                    "type": "basic",
+                    "username": username,
+                    "password": password,
+                }
+            elif auth_mode == "自定义Header":
+                custom_header_name = st.text_input("Header名称", value="X-Custom-Auth", key="interface_custom_header_name")
+                custom_header_value = st.text_input("Header值", type="password", key="interface_custom_header_value")
+                auth_config = {
+                    "enabled": bool(custom_header_value),
+                    "type": "custom_header",
+                    "custom_header_name": custom_header_name,
+                    "custom_header_value": custom_header_value,
+                }
+            else:
+                st.info("不附加统一鉴权头，接口自身 headers 保持不变")
+
         st.markdown("### 🎯 测试操作")
         action_col1, action_col2, action_col3 = st.columns(3)
 
         with action_col1:
             if st.button("🧪 生成测试用例", use_container_width=True, key="generate_tests_v2"):
                 try:
+                    if env_mode == "多环境(JSON模板)" and environment_config is None:
+                        raise RuntimeError("多环境配置无效，请先修正环境配置 JSON")
                     generate_artifacts(
                         interfaces,
                         execution_mode,
@@ -6364,7 +6572,9 @@ elif tool_category == "接口自动化测试":
                         retry_times,
                         verify_ssl,
                         request_format,
-                        template_style
+                        template_style,
+                        environment_config,
+                        auth_config
                     )
                     st.success("✅ 测试文件已生成")
                 except Exception as e:
@@ -6387,6 +6597,8 @@ elif tool_category == "接口自动化测试":
         with action_col3:
             if st.button("⚡ 生成并执行", use_container_width=True, key="generate_and_run_tests_v2"):
                 try:
+                    if env_mode == "多环境(JSON模板)" and environment_config is None:
+                        raise RuntimeError("多环境配置无效，请先修正环境配置 JSON")
                     generate_artifacts(
                         interfaces,
                         execution_mode,
@@ -6395,7 +6607,9 @@ elif tool_category == "接口自动化测试":
                         retry_times,
                         verify_ssl,
                         request_format,
-                        template_style
+                        template_style,
+                        environment_config,
+                        auth_config
                     )
                     if not check_interface_dependencies(execution_mode, for_execution=True):
                         raise RuntimeError("当前执行模式缺少运行依赖，请先安装后再执行")
