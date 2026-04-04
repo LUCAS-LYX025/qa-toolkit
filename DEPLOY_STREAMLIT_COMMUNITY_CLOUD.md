@@ -33,6 +33,7 @@
 - Repository: 当前仓库
 - Branch: 你的发布分支，例如 `main`
 - Main file path: `streamlit_app.py`
+- Python version: `3.12`
 
 ## 3. 配置 Secrets
 
@@ -142,6 +143,7 @@ include_pdf = false
 - GitHub 仓库里已经包含 `.streamlit/config.toml`
 - 如果要接 MobSF，Cloud Secrets 已填写 `[mobsf]`
 - `Main file path` 填的是 `streamlit_app.py`
+- Python 版本选的是 `3.12`
 - 远程 MobSF 地址可以从公网或你的目标网络访问
 - 远程 MobSF API Key 已验证可用
 - 不把 `workspace/mobsf_profile.local.json` 当成云端长期配置
@@ -153,6 +155,7 @@ include_pdf = false
 - Repository: `你的 GitHub 仓库`
 - Branch: `main`
 - Main file path: `streamlit_app.py`
+- Python version: `3.12`
 
 Secrets 可以直接按下面贴：
 

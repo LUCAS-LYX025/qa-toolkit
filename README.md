@@ -464,6 +464,7 @@ include_pdf = false
 - Repository：当前仓库
 - Branch：稳定分支，如 `main`
 - Main file path：`streamlit_app.py`
+- Python version：`3.12`
 - Python dependencies：`requirements.txt`
 - System dependencies：`packages.txt`
 
