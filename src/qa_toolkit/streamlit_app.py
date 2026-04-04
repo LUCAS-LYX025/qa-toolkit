@@ -351,6 +351,51 @@ def display_generated_results(title, content, filename_prefix):
         )
 
 
+def display_structured_results(title, records, filename_prefix):
+    """统一展示结构化结果，支持预览和多格式导出。"""
+    if not records:
+        st.warning("暂无可展示的数据。")
+        return
+
+    dataframe = pd.DataFrame(records)
+    json_text = json.dumps(records, ensure_ascii=False, indent=2)
+    csv_bytes = dataframe.to_csv(index=False).encode("utf-8-sig")
+
+    st.markdown(f'<div class="category-card">🗂️ 结构化结果 - {title}</div>', unsafe_allow_html=True)
+    metric_col1, metric_col2, metric_col3 = st.columns(3)
+    with metric_col1:
+        st.metric("记录数", len(dataframe))
+    with metric_col2:
+        st.metric("字段数", len(dataframe.columns))
+    with metric_col3:
+        st.metric("导出格式", "CSV / JSON")
+
+    preview_tab, json_tab = st.tabs(["表格预览", "JSON 预览"])
+    with preview_tab:
+        st.dataframe(dataframe, use_container_width=True, hide_index=True)
+        st.caption(f"字段覆盖: {', '.join(dataframe.columns.tolist())}")
+    with json_tab:
+        st.code(json_text, language="json")
+
+    action_col1, action_col2, action_col3 = st.columns(3)
+    with action_col1:
+        create_copy_button(json_text, button_text="📋 复制 JSON", key=f"copy_json_{filename_prefix}")
+    with action_col2:
+        st.download_button(
+            label="💾 下载 CSV",
+            data=csv_bytes,
+            file_name=f"{filename_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    with action_col3:
+        st.download_button(
+            label="🧾 下载 JSON",
+            data=json_text.encode("utf-8"),
+            file_name=f"{filename_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+            mime="application/json"
+        )
+
+
 # 初始化session state
 if 'selected_tool' not in st.session_state:
     st.session_state.selected_tool = "数据生成工具"
@@ -445,9 +490,10 @@ if tool_category == "数据生成工具":
         st.markdown('<div class="category-card">🔧 基础数据生成器</div>', unsafe_allow_html=True)
         data_gen_tool = st.radio(
             "选择生成工具",
-            ["随机内容生成器", "随机邮箱生成器", "电话号码生成器", "随机地址生成器", "随机身份证生成器"],
-            horizontal=True
+            ["随机内容生成器", "随机邮箱生成器", "电话号码生成器", "随机地址生成器", "随机身份证生成器",
+             "测试场景造数", "边界值/异常值生成器"]
         )
+        st.caption("前 5 项适合快速单字段造数，后 2 项适合测试联调、批量导入和边界值设计。")
 
         if data_gen_tool == "随机内容生成器":
             st.markdown('<div class="category-card">🎲 随机内容生成器</div>', unsafe_allow_html=True)
@@ -747,6 +793,163 @@ if tool_category == "数据生成工具":
 
                 result_text = "\n".join(results)
                 display_generated_results(conditions, result_text, "身份证列表")
+
+        elif data_gen_tool == "测试场景造数":
+            st.markdown('<div class="category-card">🧩 测试场景造数</div>', unsafe_allow_html=True)
+            scenario_templates = generator.get_test_data_scenarios()
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                selected_scenario = st.selectbox("选择造数场景", list(scenario_templates.keys()))
+                scenario_meta = scenario_templates[selected_scenario]
+                st.info(scenario_meta["description"])
+                st.caption(f"字段覆盖: {', '.join(scenario_meta['fields'])}")
+                batch_tag = st.text_input(
+                    "批次标识",
+                    value=f"qa{datetime.datetime.now().strftime('%m%d')}",
+                    help="会拼接进用户名、员工号、订单号等字段，便于批量清理和回溯。"
+                )
+                email_domain = st.text_input(
+                    "邮箱域名",
+                    value="example.com",
+                    help="用于注册账号或员工档案中的邮箱字段。"
+                )
+
+            with col2:
+                count = st.number_input("生成数量", min_value=1, max_value=200, value=10)
+                scenario_seed_text = st.text_input(
+                    "随机种子",
+                    value="",
+                    placeholder="留空则每次生成不同",
+                    help="填写整数后，同一参数组合可复现同一批数据。"
+                )
+                st.write("💡 使用建议")
+                st.write("- 联调环境建议填写批次标识")
+                st.write("- 回归场景建议补随机种子")
+                st.write("- 结果可直接下载 CSV/JSON")
+
+            scenario_seed = None
+            if scenario_seed_text.strip():
+                try:
+                    scenario_seed = int(scenario_seed_text.strip())
+                except ValueError:
+                    st.warning("随机种子需为整数，当前已忽略。")
+
+            action_col1, action_col2 = st.columns([3, 1])
+            with action_col1:
+                if st.button("生成场景数据", key="gen_scenario_dataset", use_container_width=True):
+                    dataset = generator.safe_generate(
+                        generator.generate_test_dataset,
+                        selected_scenario,
+                        count,
+                        scenario_seed,
+                        batch_tag,
+                        email_domain,
+                    )
+                    if dataset is not None:
+                        st.session_state.scenario_dataset_records = dataset
+                        st.session_state.scenario_dataset_title = selected_scenario
+            with action_col2:
+                if st.button("清空结果", key="clear_scenario_dataset", use_container_width=True):
+                    st.session_state.pop("scenario_dataset_records", None)
+                    st.session_state.pop("scenario_dataset_title", None)
+                    st.rerun()
+
+            if st.session_state.get("scenario_dataset_records"):
+                display_structured_results(
+                    st.session_state.get("scenario_dataset_title", "测试场景数据"),
+                    st.session_state["scenario_dataset_records"],
+                    "scenario_dataset"
+                )
+
+        elif data_gen_tool == "边界值/异常值生成器":
+            st.markdown('<div class="category-card">🧪 边界值/异常值生成器</div>', unsafe_allow_html=True)
+            boundary_templates = generator.get_boundary_field_templates()
+
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                selected_field_type = st.selectbox("选择字段类型", list(boundary_templates.keys()))
+                st.info(boundary_templates[selected_field_type]["description"])
+                case_types = st.multiselect(
+                    "包含用例类型",
+                    ["正常值", "边界值", "异常值"],
+                    default=["正常值", "边界值", "异常值"],
+                    help="可按需要只生成某类数据，便于接口联调或测试设计。"
+                )
+
+                min_length = 2
+                max_length = 20
+                amount_min = 0.00
+                amount_max = 99999.99
+                boundary_email_domain = "example.com"
+
+                if selected_field_type in ["用户名", "密码"]:
+                    length_col1, length_col2 = st.columns(2)
+                    with length_col1:
+                        min_length = st.number_input("最小长度", min_value=1, max_value=128, value=2)
+                    with length_col2:
+                        max_length = st.number_input("最大长度", min_value=min_length, max_value=256, value=20)
+
+                if selected_field_type == "金额":
+                    amount_col1, amount_col2 = st.columns(2)
+                    with amount_col1:
+                        amount_min = st.number_input("最小金额", value=0.00, format="%.2f")
+                    with amount_col2:
+                        amount_max = st.number_input("最大金额", min_value=float(amount_min), value=99999.99,
+                                                     format="%.2f")
+
+                if selected_field_type == "邮箱":
+                    boundary_email_domain = st.text_input("邮箱域名", value="example.com")
+
+            with col2:
+                boundary_seed_text = st.text_input(
+                    "随机种子",
+                    value="",
+                    placeholder="留空则每次生成不同"
+                )
+                st.write("📌 适用场景")
+                st.write("- 表单校验测试")
+                st.write("- 接口参数边界值设计")
+                st.write("- 前后端联调异常值验证")
+
+            boundary_seed = None
+            if boundary_seed_text.strip():
+                try:
+                    boundary_seed = int(boundary_seed_text.strip())
+                except ValueError:
+                    st.warning("随机种子需为整数，当前已忽略。")
+
+            action_col1, action_col2 = st.columns([3, 1])
+            with action_col1:
+                if st.button("生成边界值用例", key="gen_boundary_cases", use_container_width=True):
+                    cases = generator.safe_generate(
+                        generator.generate_boundary_test_cases,
+                        selected_field_type,
+                        boundary_seed,
+                        min_length,
+                        max_length,
+                        amount_min,
+                        amount_max,
+                        boundary_email_domain,
+                        "正常值" in case_types,
+                        "边界值" in case_types,
+                        "异常值" in case_types,
+                    )
+                    if cases is not None:
+                        st.session_state.boundary_case_records = cases
+                        st.session_state.boundary_case_title = selected_field_type
+            with action_col2:
+                if st.button("清空结果", key="clear_boundary_cases", use_container_width=True):
+                    st.session_state.pop("boundary_case_records", None)
+                    st.session_state.pop("boundary_case_title", None)
+                    st.rerun()
+
+            if st.session_state.get("boundary_case_records"):
+                display_structured_results(
+                    f"{st.session_state.get('boundary_case_title', '字段')}边界值",
+                    st.session_state["boundary_case_records"],
+                    "boundary_cases"
+                )
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -4779,7 +4982,6 @@ MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQD{base64.b64encode(os.urandom(
 elif tool_category == "测试用例生成器":
     show_doc("test_case_generator")
 
-    # 初始化session state
     if 'test_cases' not in st.session_state:
         st.session_state.test_cases = []
     if 'requirement_history' not in st.session_state:
@@ -4788,16 +4990,23 @@ elif tool_category == "测试用例生成器":
         st.session_state.current_requirement = ""
     if 'test_case_generator' not in st.session_state:
         st.session_state.test_case_generator = TestCaseGenerator()
-
-    # 使用计数器来管理输入框状态
     if 'testcase_input_counter' not in st.session_state:
         st.session_state.testcase_input_counter = 0
+    if 'current_requirement_input' not in st.session_state:
         st.session_state.current_requirement_input = ""
+    if 'testcase_ocr_text' not in st.session_state:
+        st.session_state.testcase_ocr_text = ""
+    if 'testcase_ocr_details' not in st.session_state:
+        st.session_state.testcase_ocr_details = []
+    if 'testcase_coverage_focus' not in st.session_state:
+        st.session_state.testcase_coverage_focus = ["核心功能", "异常处理", "边界值"]
+    if 'testcase_last_compiled_requirement' not in st.session_state:
+        st.session_state.testcase_last_compiled_requirement = ""
 
-    # API配置
+    generator = st.session_state.test_case_generator
+
     st.markdown("### 🔑 API配置")
 
-    # 大模型选择
     col1, col2 = st.columns(2)
     with col1:
         model_provider = st.selectbox(
@@ -4809,7 +5018,6 @@ elif tool_category == "测试用例生成器":
     with col2:
         id_prefix = st.text_input("用例ID前缀", value="TC", help="例如: TC、TEST、CASE等", key="id_prefix_input")
 
-    # 根据选择的模型显示不同的API配置
     api_config = {}
     if model_provider == "阿里通义千问":
         st.markdown("#### 阿里通义千问配置")
@@ -4918,47 +5126,244 @@ elif tool_category == "测试用例生成器":
         api_config = {"api_key": api_key}
         st.info("💡 ChatGLM在中文技术文档处理方面有独特优势")
 
-    # 需求输入区域
     st.markdown("### 📝 需求输入")
+    input_tab1, input_tab2, input_tab3 = st.tabs(["手动输入", "图片OCR识别", "结构化补充"])
 
-    # 定义示例数据
+    with input_tab1:
+        st.markdown("**快速选择示例需求：**")
+        example_col1, example_col2, example_col3 = st.columns(3)
 
-    # 示例需求选择
-    st.markdown("**快速选择示例需求：**")
-    example_col1, example_col2, example_col3 = st.columns(3)
+        with example_col1:
+            if st.button("📱 简单功能示例", use_container_width=True, key="simple_example_btn"):
+                st.session_state.current_requirement_input = SIMPLE_EXAMPLE
+                st.session_state.testcase_input_counter += 1
+                st.rerun()
 
-    with example_col1:
-        if st.button("📱 简单功能示例", use_container_width=True, key="simple_example_btn"):
-            st.session_state.current_requirement_input = SIMPLE_EXAMPLE
+        with example_col2:
+            if st.button("🔐 中等功能示例", use_container_width=True, key="medium_example_btn"):
+                st.session_state.current_requirement_input = MEDIUM_EXAMPLE
+                st.session_state.testcase_input_counter += 1
+                st.rerun()
+
+        with example_col3:
+            if st.button("🛒 复杂功能示例", use_container_width=True, key="complex_example_btn"):
+                st.session_state.current_requirement_input = COMPLEX_EXAMPLE
+                st.session_state.testcase_input_counter += 1
+                st.rerun()
+
+        requirement = st.text_area(
+            "需求描述",
+            value=st.session_state.current_requirement_input,
+            height=220,
+            placeholder="请输入详细的需求描述，或先用图片OCR提取后再补充...",
+            key=f"requirement_input_{st.session_state.testcase_input_counter}",
+            help="需求越清晰，生成的测试用例越准确。"
+        )
+
+    with input_tab2:
+        ocr_status = generator.get_ocr_status()
+        if generator.is_ocr_available():
+            st.success(ocr_status["message"])
+        else:
+            st.warning(ocr_status["message"])
+
+        ocr_lang_options = generator.get_ocr_language_options()
+        ocr_col1, ocr_col2 = st.columns(2)
+        with ocr_col1:
+            selected_ocr_lang = st.selectbox(
+                "识别语言",
+                options=list(ocr_lang_options.keys()),
+                index=0,
+                key="testcase_ocr_language"
+            )
+        with ocr_col2:
+            preprocess_mode = st.selectbox(
+                "预处理模式",
+                options=generator.get_ocr_preprocess_modes(),
+                index=0,
+                key="testcase_ocr_preprocess"
+            )
+
+        uploaded_requirement_images = st.file_uploader(
+            "上传需求截图",
+            type=["png", "jpg", "jpeg", "webp", "bmp"],
+            accept_multiple_files=True,
+            help="适合上传 PRD 截图、原型图、聊天需求截图、验收说明截图等。",
+            key="testcase_requirement_images"
+        )
+
+        action_col1, action_col2, action_col3 = st.columns(3)
+        with action_col1:
+            run_ocr_btn = st.button(
+                "识别图片需求",
+                use_container_width=True,
+                disabled=not uploaded_requirement_images or not generator.is_ocr_available(),
+                key="run_testcase_ocr_btn"
+            )
+        with action_col2:
+            append_ocr_btn = st.button(
+                "追加到需求框",
+                use_container_width=True,
+                disabled=not st.session_state.testcase_ocr_text,
+                key="append_ocr_requirement_btn"
+            )
+        with action_col3:
+            clear_ocr_btn = st.button(
+                "清空OCR结果",
+                use_container_width=True,
+                key="clear_testcase_ocr_btn"
+            )
+
+        if run_ocr_btn and uploaded_requirement_images:
+            recognized_details = []
+            with st.spinner("正在识别图片中的需求文本..."):
+                for uploaded_image in uploaded_requirement_images:
+                    try:
+                        extracted_text = generator.extract_text_from_image(
+                            uploaded_image.getvalue(),
+                            lang=ocr_lang_options[selected_ocr_lang],
+                            preprocess_mode=preprocess_mode
+                        )
+                        recognized_details.append({
+                            "file_name": uploaded_image.name,
+                            "text": extracted_text
+                        })
+                    except Exception as e:
+                        recognized_details.append({
+                            "file_name": uploaded_image.name,
+                            "text": f"[识别失败] {str(e)}"
+                        })
+
+            st.session_state.testcase_ocr_details = recognized_details
+            st.session_state.testcase_ocr_text = "\n\n".join(
+                f"[图片: {item['file_name']}]\n{item['text']}" for item in recognized_details
+            ).strip()
+
+        if append_ocr_btn and st.session_state.testcase_ocr_text:
+            merged_requirement = requirement.strip()
+            if merged_requirement:
+                merged_requirement += "\n\n"
+            merged_requirement += st.session_state.testcase_ocr_text
+            st.session_state.current_requirement_input = generator.clean_requirement_text(merged_requirement)
             st.session_state.testcase_input_counter += 1
             st.rerun()
 
-    with example_col2:
-        if st.button("🔐 中等功能示例", use_container_width=True, key="medium_example_btn"):
-            st.session_state.current_requirement_input = MEDIUM_EXAMPLE
-            st.session_state.testcase_input_counter += 1
+        if clear_ocr_btn:
+            st.session_state.testcase_ocr_text = ""
+            st.session_state.testcase_ocr_details = []
             st.rerun()
 
-    with example_col3:
-        if st.button("🛒 复杂功能示例", use_container_width=True, key="complex_example_btn"):
-            st.session_state.current_requirement_input = COMPLEX_EXAMPLE
-            st.session_state.testcase_input_counter += 1
-            st.rerun()
+        if st.session_state.testcase_ocr_details:
+            for idx, item in enumerate(st.session_state.testcase_ocr_details):
+                with st.expander(f"OCR结果 {idx + 1}: {item['file_name']}"):
+                    st.text_area(
+                        "识别文本",
+                        value=item["text"],
+                        height=180,
+                        key=f"testcase_ocr_result_{idx}",
+                        disabled=True
+                    )
 
-    # 需求输入框
-    requirement = st.text_area("需求描述",
-                               value=st.session_state.current_requirement_input,
-                               height=200,
-                               placeholder="请输入详细的需求描述...",
-                               key=f"requirement_input_{st.session_state.testcase_input_counter}",
-                               help="描述要测试的功能需求，越详细生成的测试用例越准确")
+            replace_col1, replace_col2 = st.columns(2)
+            with replace_col1:
+                if st.button("使用OCR结果替换需求框", use_container_width=True, key="replace_requirement_with_ocr_btn"):
+                    st.session_state.current_requirement_input = st.session_state.testcase_ocr_text
+                    st.session_state.testcase_input_counter += 1
+                    st.rerun()
+            with replace_col2:
+                create_copy_button(
+                    st.session_state.testcase_ocr_text,
+                    button_text="📋 复制 OCR 文本",
+                    key="copy_testcase_ocr_text"
+                )
 
-    # 高级选项
-    with st.expander("🔧 高级选项", expanded=True):
+    with input_tab3:
+        st.caption("这些补充信息会和需求原文一起提交给 AI，适合把零散需求整理成更适合生成用例的上下文。")
         col1, col2 = st.columns(2)
         with col1:
-            # 获取支持的用例风格
-            case_styles = st.session_state.test_case_generator.get_case_styles()
+            st.text_input("所属模块/页面", key="testcase_module_name", placeholder="例如：用户中心-地址管理页")
+            st.text_area(
+                "业务规则/字段约束",
+                key="testcase_business_rules",
+                height=140,
+                placeholder="例如：手机号必填；地址最多20条；默认地址只能有1个"
+            )
+            st.text_area(
+                "验收标准/关键成功条件",
+                key="testcase_acceptance_criteria",
+                height=120,
+                placeholder="例如：新增成功后列表实时刷新；默认地址标签立即生效"
+            )
+        with col2:
+            st.text_area(
+                "本次不覆盖范围",
+                key="testcase_out_of_scope",
+                height=140,
+                placeholder="例如：不覆盖性能压测；不覆盖老版本兼容"
+            )
+            st.text_area(
+                "补充说明",
+                key="testcase_additional_notes",
+                height=120,
+                placeholder="例如：当前版本仅支持 App 端；接口联调阶段，提示文案可能调整"
+            )
+            st.checkbox(
+                "生成时附带 OCR 识别内容",
+                value=bool(st.session_state.testcase_ocr_text),
+                key="testcase_include_ocr"
+            )
+
+    compiled_requirement = generator.compose_requirement_context(
+        requirement=requirement,
+        ocr_text=st.session_state.testcase_ocr_text if st.session_state.get("testcase_include_ocr", False) else "",
+        module_name=st.session_state.get("testcase_module_name", ""),
+        business_rules=st.session_state.get("testcase_business_rules", ""),
+        acceptance_criteria=st.session_state.get("testcase_acceptance_criteria", ""),
+        out_of_scope=st.session_state.get("testcase_out_of_scope", ""),
+        additional_notes=st.session_state.get("testcase_additional_notes", "")
+    )
+    st.session_state.testcase_last_compiled_requirement = compiled_requirement
+
+    requirement_analysis = generator.analyze_requirement(compiled_requirement)
+    if compiled_requirement.strip():
+        with st.expander("🧭 需求分析助手", expanded=True):
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            with metric_col1:
+                st.metric("复杂度", requirement_analysis["complexity"])
+            with metric_col2:
+                st.metric("文本行数", requirement_analysis["line_count"])
+            with metric_col3:
+                st.metric("功能点数", len(requirement_analysis["feature_points"]))
+
+            st.caption(f"需求摘要: {requirement_analysis['summary']}")
+
+            info_col1, info_col2, info_col3 = st.columns(3)
+            with info_col1:
+                st.markdown("**关键功能点**")
+                for item in requirement_analysis["feature_points"][:6]:
+                    st.write(f"- {item}")
+            with info_col2:
+                st.markdown("**建议覆盖维度**")
+                for item in requirement_analysis["suggested_focus"]:
+                    st.write(f"- {item}")
+                if st.button("采用建议覆盖维度", key="apply_requirement_focus_btn", use_container_width=True):
+                    st.session_state.testcase_coverage_focus = requirement_analysis["suggested_focus"] or \
+                                                               st.session_state.testcase_coverage_focus
+                    st.rerun()
+            with info_col3:
+                st.markdown("**待确认项**")
+                for item in requirement_analysis["unclear_points"]:
+                    st.write(f"- {item}")
+
+            if requirement_analysis["business_rules"]:
+                st.markdown("**已识别的业务规则/约束**")
+                for item in requirement_analysis["business_rules"]:
+                    st.write(f"- {item}")
+
+    with st.expander("🔧 高级选项", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            case_styles = generator.get_case_styles()
             case_style = st.selectbox(
                 "测试用例风格",
                 options=list(case_styles.keys()),
@@ -4966,14 +5371,11 @@ elif tool_category == "测试用例生成器":
                 help="选择测试用例的编写风格，将直接影响生成的用例格式",
                 key="case_style_select"
             )
-            # 显示当前选择的风格描述
             if case_style in case_styles:
-                style_desc = case_styles[case_style]
-                st.caption(f"💡 {style_desc}")
+                st.caption(f"💡 {case_styles[case_style]}")
 
         with col2:
-            # 获取支持的语言
-            languages = st.session_state.test_case_generator.get_languages()
+            languages = generator.get_languages()
             language = st.selectbox(
                 "输出语言",
                 options=languages,
@@ -4981,34 +5383,67 @@ elif tool_category == "测试用例生成器":
                 help="选择测试用例的输出语言",
                 key="language_select"
             )
-            # 显示语言说明
             if language in LANGUAGE_DESCRIPTIONS:
                 st.caption(f"🌐 {LANGUAGE_DESCRIPTIONS[language]}")
 
-    # 在生成按钮后添加风格预览
+        with col3:
+            target_case_count = st.number_input(
+                "目标用例数",
+                min_value=4,
+                max_value=60,
+                value=12,
+                help="模型会按该数量级生成，实际条数可能因需求复杂度略有上下浮动。",
+                key="testcase_target_case_count"
+            )
+            st.caption("💡 简单功能建议 6-12 条，复杂流程建议 15-30 条")
+
+        coverage_options = generator.get_coverage_focus_options()
+        coverage_focus = st.multiselect(
+            "重点覆盖维度",
+            options=list(coverage_options.keys()),
+            key="testcase_coverage_focus",
+            help="告诉模型优先覆盖哪些测试角度。"
+        )
+        if coverage_focus:
+            st.caption(" | ".join(f"{item}: {coverage_options[item]}" for item in coverage_focus))
+
     if st.button("预览风格示例", key="preview_style_btn"):
         if case_style in STYLE_PREVIEWS:
             preview = STYLE_PREVIEWS[case_style]
             st.info(f"**{case_style} 示例:** {preview['中文']} | {preview['英文']}")
 
-    # 操作按钮
-    col1, col2 = st.columns(2)  # 改为2列平铺
+    with st.expander("👀 最终提交给AI的需求上下文预览", expanded=False):
+        if compiled_requirement.strip():
+            st.text_area(
+                "提交内容",
+                value=compiled_requirement,
+                height=260,
+                key="compiled_requirement_preview",
+                disabled=True
+            )
+        else:
+            st.caption("当前还没有可提交的需求内容。可以手动输入，也可以先做 OCR 识别。")
+
+    col1, col2 = st.columns(2)
     with col1:
         if st.button("清空输入", use_container_width=True, key="clear_input_btn"):
             st.session_state.current_requirement_input = ""
+            st.session_state.testcase_ocr_text = ""
+            st.session_state.testcase_ocr_details = []
             st.session_state.testcase_input_counter += 1
             st.rerun()
 
     with col2:
-        generate_btn = st.button("🧠 AI生成测试用例",
-                                 use_container_width=True,
-                                 disabled=not requirement.strip(),
-                                 key="generate_testcases_btn")
+        generate_btn = st.button(
+            "🧠 AI生成测试用例",
+            use_container_width=True,
+            disabled=not compiled_requirement.strip(),
+            key="generate_testcases_btn"
+        )
 
-    if generate_btn and requirement.strip():
+    if generate_btn and compiled_requirement.strip():
         platform = PLATFORM_MAPPING[model_provider]
 
-        # 验证必要的API参数
         validation_errors = []
         if platform == "ali" and not api_config.get("api_key"):
             validation_errors.append("请输入阿里通义千问API Key")
@@ -5017,7 +5452,7 @@ elif tool_category == "测试用例生成器":
         elif platform == "baidu" and (not api_config.get("api_key") or not api_config.get("secret_key")):
             validation_errors.append("请输入百度文心一言的API Key和Secret Key")
         elif platform == "spark" and not api_config.get("api_key"):
-            validation_errors.append("请输入讯飞星火的API Key和App ID")
+            validation_errors.append("请输入讯飞星火的 API Key")
         elif platform == "glm" and not api_config.get("api_key"):
             validation_errors.append("请输入智谱ChatGLM API Key")
 
@@ -5026,145 +5461,210 @@ elif tool_category == "测试用例生成器":
                 st.error(error)
             st.stop()
 
-        # 显示当前使用的参数
         st.write("🎯 生成参数:")
-        col1, col2, col3 = st.columns(3)
-        with col1:
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        with metric_col1:
             st.metric("风格", case_style)
-        with col2:
+        with metric_col2:
             st.metric("语言", language)
-        with col3:
+        with metric_col3:
             st.metric("平台", model_provider)
+        with metric_col4:
+            st.metric("目标数量", target_case_count)
 
         with st.spinner(f"🤖 {model_provider}正在分析需求并生成测试用例..."):
             try:
-                # 使用统一的生成器接口
-                test_cases = st.session_state.test_case_generator.generate_testcases(
-                    requirement=requirement,
+                test_cases = generator.generate_testcases(
+                    requirement=compiled_requirement,
                     platform=platform,
                     api_config=api_config,
                     id_prefix=id_prefix,
                     case_style=case_style,
-                    language=language
+                    language=language,
+                    target_case_count=target_case_count,
+                    coverage_focus=coverage_focus
                 )
 
                 st.session_state.test_cases = test_cases
-                st.session_state.current_requirement = requirement
+                st.session_state.current_requirement = compiled_requirement
 
-                # 添加到历史记录
                 history_item = {
                     "timestamp": time.strftime("%Y-%m-%d %H:%M"),
-                    "requirement": requirement[:100] + "..." if len(requirement) > 100 else requirement,
+                    "requirement": (requirement or compiled_requirement)[:100] + "..."
+                    if len((requirement or compiled_requirement)) > 100 else (requirement or compiled_requirement),
                     "case_count": len(test_cases),
                     "model": model_provider,
-                    "full_requirement": requirement,
+                    "full_requirement": compiled_requirement,
+                    "editable_requirement": requirement or compiled_requirement,
                     "platform": platform,
                     "case_style": case_style,
                     "language": language,
+                    "target_case_count": target_case_count,
+                    "coverage_focus": list(coverage_focus),
+                    "used_ocr": bool(st.session_state.testcase_ocr_text and st.session_state.get("testcase_include_ocr", False)),
                     "api_config": {k: "***" if "key" in k.lower() else v for k, v in api_config.items()}
                 }
                 st.session_state.requirement_history.insert(0, history_item)
+                st.session_state.requirement_history = st.session_state.requirement_history[:10]
 
                 st.success(f"✅ 使用{model_provider}成功生成 {len(test_cases)} 个测试用例！")
-                st.success(f"📝 用例风格: {case_style} | 输出语言: {language}")
+                st.success(f"📝 风格: {case_style} | 语言: {language} | 覆盖维度: {', '.join(coverage_focus or ['默认'])}")
 
             except Exception as e:
                 st.error(f"生成测试用例失败: {str(e)}")
 
-    # 显示生成的测试用例
     if st.session_state.test_cases:
         st.markdown("### 📊 生成的测试用例")
 
-        # 显示使用的模型和参数信息
-        if st.session_state.requirement_history:
-            latest_history = st.session_state.requirement_history[0]
-            st.caption(f"使用模型: {latest_history.get('model', '未知')} | "
-                       f"风格: {latest_history.get('case_style', '标准格式')} | "
-                       f"语言: {latest_history.get('language', '中文')} | "
-                       f"生成时间: {latest_history['timestamp']}")
+        latest_history = st.session_state.requirement_history[0] if st.session_state.requirement_history else {}
+        if latest_history:
+            coverage_summary = ", ".join(latest_history.get("coverage_focus", [])) or "默认"
+            ocr_summary = " | 含OCR需求" if latest_history.get("used_ocr") else ""
+            st.caption(
+                f"使用模型: {latest_history.get('model', '未知')} | "
+                f"风格: {latest_history.get('case_style', '标准格式')} | "
+                f"语言: {latest_history.get('language', '中文')} | "
+                f"覆盖维度: {coverage_summary}{ocr_summary} | "
+                f"生成时间: {latest_history.get('timestamp', '')}"
+            )
 
-        # 统计信息
-        total_cases = len(st.session_state.test_cases)
+        normalized_cases = generator.normalize_cases_for_display(st.session_state.test_cases)
+        total_cases = len(normalized_cases)
         priority_count = {'高': 0, '中': 0, '低': 0}
-        for case in st.session_state.test_cases:
+        for case in normalized_cases:
             priority = case.get('优先级', '中')
             if priority in priority_count:
                 priority_count[priority] += 1
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
+        metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+        with metric_col1:
             st.metric("总用例数", total_cases)
-        with col2:
+        with metric_col2:
             st.metric("高优先级", priority_count['高'])
-        with col3:
+        with metric_col3:
             st.metric("中优先级", priority_count['中'])
-        with col4:
+        with metric_col4:
             st.metric("低优先级", priority_count['低'])
 
-        # 测试用例表格
-        df = pd.DataFrame(st.session_state.test_cases)
-        st.dataframe(df, use_container_width=True, height=400)
+        filter_col1, filter_col2, filter_col3 = st.columns([1, 1.5, 1])
+        with filter_col1:
+            priority_filter = st.multiselect(
+                "优先级筛选",
+                options=["高", "中", "低"],
+                default=["高", "中", "低"],
+                key="testcase_priority_filter"
+            )
+        with filter_col2:
+            keyword_filter = st.text_input(
+                "关键词筛选",
+                value="",
+                placeholder="按用例名称、步骤、预期结果搜索",
+                key="testcase_keyword_filter"
+            )
+        with filter_col3:
+            view_mode = st.radio(
+                "查看方式",
+                ["表格", "逐条查看"],
+                horizontal=True,
+                key="testcase_view_mode"
+            )
 
-        # 导出功能
+        filtered_cases = normalized_cases
+        if priority_filter:
+            filtered_cases = [case for case in filtered_cases if case.get("优先级") in priority_filter]
+        if keyword_filter.strip():
+            search_keyword = keyword_filter.strip().lower()
+            filtered_cases = [
+                case for case in filtered_cases
+                if search_keyword in json.dumps(case, ensure_ascii=False).lower()
+            ]
+
+        st.caption(f"当前展示 {len(filtered_cases)} / {len(normalized_cases)} 条用例")
+
+        if filtered_cases:
+            filtered_df = pd.DataFrame(filtered_cases)
+            if view_mode == "表格":
+                st.dataframe(filtered_df, use_container_width=True, height=420, hide_index=True)
+            else:
+                for case in filtered_cases:
+                    with st.expander(f"{case['用例ID']} | {case['用例名称']} | {case['优先级']}"):
+                        st.write(f"**测试类型**: {case.get('测试类型', '未标注') or '未标注'}")
+                        st.write(f"**前置条件**: {case['前置条件'] or '无'}")
+                        st.write("**测试步骤**")
+                        st.write(case["测试步骤"] or "无")
+                        st.write("**预期结果**")
+                        st.write(case["预期结果"] or "无")
+                        if case.get("备注"):
+                            st.write(f"**备注**: {case['备注']}")
+        else:
+            st.warning("当前筛选条件下没有匹配的测试用例。")
+
         st.markdown("### 📤 导出测试用例")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("📊 导出Excel文件", use_container_width=True, key="export_excel_btn"):
-                try:
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    filename = f"测试用例_{timestamp}.xlsx"
+        export_timestamp = time.strftime("%Y%m%d_%H%M%S")
+        original_df = pd.DataFrame(st.session_state.test_cases)
+        excel_buffer = io.BytesIO()
+        original_df.to_excel(excel_buffer, index=False, engine='openpyxl')
+        excel_buffer.seek(0)
+        csv_data = original_df.to_csv(index=False).encode("utf-8-sig")
+        json_data = json.dumps(st.session_state.test_cases, ensure_ascii=False, indent=2).encode("utf-8")
+        md_content = generator.generate_markdown_report(
+            st.session_state.test_cases,
+            st.session_state.current_requirement
+        )
 
-                    df = pd.DataFrame(st.session_state.test_cases)
-                    excel_buffer = io.BytesIO()
-                    df.to_excel(excel_buffer, index=False, engine='openpyxl')
-                    excel_buffer.seek(0)
+        export_col1, export_col2, export_col3, export_col4 = st.columns(4)
+        with export_col1:
+            st.download_button(
+                label="📊 下载Excel",
+                data=excel_buffer.getvalue(),
+                file_name=f"测试用例_{export_timestamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_excel_btn"
+            )
+        with export_col2:
+            st.download_button(
+                label="📄 下载CSV",
+                data=csv_data,
+                file_name=f"测试用例_{export_timestamp}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_testcase_csv_btn"
+            )
+        with export_col3:
+            st.download_button(
+                label="📝 下载Markdown",
+                data=md_content,
+                file_name=f"测试用例_{export_timestamp}.md",
+                mime="text/markdown",
+                use_container_width=True,
+                key="download_md_btn"
+            )
+        with export_col4:
+            st.download_button(
+                label="🧾 下载JSON",
+                data=json_data,
+                file_name=f"测试用例_{export_timestamp}.json",
+                mime="application/json",
+                use_container_width=True,
+                key="download_testcase_json_btn"
+            )
 
-                    st.download_button(
-                        label="📥 下载Excel文件",
-                        data=excel_buffer.getvalue(),
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="download_excel_btn"
-                    )
-                except Exception as e:
-                    st.error(f"导出Excel失败: {str(e)}")
-
-        with col2:
-            if st.button("📝 导出Markdown", use_container_width=True, key="export_md_btn"):
-                try:
-                    timestamp = time.strftime("%Y%m%d_%H%M%S")
-                    filename = f"测试用例_{timestamp}.md"
-
-                    md_content = st.session_state.test_case_generator.generate_markdown_report(
-                        st.session_state.test_cases,
-                        st.session_state.current_requirement
-                    )
-
-                    st.download_button(
-                        label="📥 下载Markdown文件",
-                        data=md_content,
-                        file_name=filename,
-                        mime="text/markdown",
-                        use_container_width=True,
-                        key="download_md_btn"
-                    )
-                except Exception as e:
-                    st.error(f"导出Markdown失败: {str(e)}")
-
-    # 历史记录
     if st.session_state.requirement_history:
         st.markdown("### 📚 生成历史")
         for i, history in enumerate(st.session_state.requirement_history[:5]):
             model_info = f" ({history.get('model', '未知模型')})" if 'model' in history else ""
             style_info = f" [{history.get('case_style', '标准')}]" if 'case_style' in history else ""
+            ocr_info = " [OCR]" if history.get("used_ocr") else ""
             with st.expander(
-                    f"{history['timestamp']}{model_info}{style_info} - {history['requirement']} ({history['case_count']}个用例)"):
+                    f"{history['timestamp']}{model_info}{style_info}{ocr_info} - {history['requirement']} ({history['case_count']}个用例)"):
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button(f"重新加载此需求", key=f"reload_history_{i}"):
-                        st.session_state.current_requirement_input = history.get('full_requirement',
-                                                                                 history['requirement'])
+                        st.session_state.current_requirement_input = history.get(
+                            'editable_requirement',
+                            history.get('full_requirement', history['requirement'])
+                        )
                         st.session_state.testcase_input_counter += 1
                         st.rerun()
                 with col2:
@@ -5172,7 +5672,8 @@ elif tool_category == "测试用例生成器":
                         st.info(f"此历史记录包含 {history['case_count']} 个测试用例，"
                                 f"使用模型: {history.get('model', '未知')}, "
                                 f"风格: {history.get('case_style', '标准格式')}, "
-                                f"语言: {history.get('language', '中文')}")
+                                f"语言: {history.get('language', '中文')}, "
+                                f"覆盖维度: {', '.join(history.get('coverage_focus', [])) or '默认'}")
 
 elif tool_category == "禅道绩效统计":
     show_doc("zentao_performance_stats")

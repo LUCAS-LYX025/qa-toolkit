@@ -92,8 +92,3 @@ pytest tests/test_application_security_tool.py
 - `examples/api_cases/`：接口测试清单与示例执行脚本。
 - `examples/screenshots/`：历史输出截图样例。
 
-## 后续建议
-
-- 可以继续把 `src/qa_toolkit/streamlit_app.py` 中的大型页面逻辑拆分到更多 `ui/pages/` 模块。
-- 可以补充 `pyproject.toml`、格式化工具和导入排序规则，进一步统一工程规范。
-- 可以逐步为 `core/` 与 `tools/` 增加更多单元测试，降低后续重构成本。
