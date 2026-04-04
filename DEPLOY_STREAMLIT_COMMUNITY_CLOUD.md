@@ -189,7 +189,7 @@ include_pdf = false
 
 | 症状 | 常见原因 | 处理动作 |
 | --- | --- | --- |
-| 应用构建失败 | `requirements.txt` 或 `packages.txt` 依赖没有正确安装 | 检查构建日志，确认根目录仍有 `requirements.txt`、`packages.txt`，修正后重新部署 |
+| 应用构建失败 | `requirements.txt` 或 `packages.txt` 依赖没有正确安装 | 检查构建日志，确认根目录仍有 `requirements.txt`、`packages.txt`；不要在 `packages.txt` 手动钉 `libglib2.0-0` 这类基础库版本，修正后重新部署 |
 | 页面能打开，但某些功能导入失败 | 新增依赖后应用没有重启，或云端安装没完成 | 在 Community Cloud 后台执行 `Reboot app`，必要时重新部署 |
 | OCR 不可用 | `tesseract` 没装好或系统依赖没生效 | 检查 `packages.txt`，确认包含 `tesseract-ocr`、`tesseract-ocr-chi-sim`，然后重启应用 |
 | PDF 转图片失败 | `poppler-utils` 未安装或大 PDF 超资源限制 | 确认 `packages.txt` 包含 `poppler-utils`，先用小 PDF 验证，再检查资源占用 |

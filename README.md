@@ -441,7 +441,6 @@ Streamlit Cloud 部署：
   - `tesseract-ocr-chi-sim`
   - `poppler-utils`
   - `libgl1`
-  - `libglib2.0-0`
 - Streamlit Cloud 构建时会按 `packages.txt` 安装 Linux 系统依赖
 - 更新依赖后建议重新部署或手动 `Reboot app`
 - 根目录的 `.streamlit/config.toml` 已设置上传和消息体大小为 `200MB`
