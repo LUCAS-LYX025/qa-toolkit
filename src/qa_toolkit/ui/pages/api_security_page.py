@@ -1,6 +1,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pandas as pd
@@ -20,6 +21,7 @@ RAW_FORMAT_MAP = {
     "结构化文本": "text",
     "Bruno .bru": "bruno",
 }
+MOBSF_LOCAL_PROFILE_PATH = Path(__file__).resolve().parents[4] / "workspace" / "mobsf_profile.local.json"
 DEFAULT_STATE = {
     "api_sec_interfaces": [],
     "api_sec_source_name": "",
@@ -43,6 +45,24 @@ DEFAULT_STATE = {
         indent=2,
     ),
     "app_sec_mobile_keywords_text": "xposed\nssl\ncertificate pinning\nroot\njailbreak\ndebug",
+    "app_sec_mobsf_base_url": "http://127.0.0.1:8000",
+    "app_sec_mobsf_api_key": "",
+    "app_sec_mobsf_timeout": 180.0,
+    "app_sec_mobsf_verify_ssl": True,
+    "app_sec_mobsf_include_pdf": False,
+    "app_sec_mobsf_hash_query": "",
+    "app_sec_mobsf_search_query": "",
+    "app_sec_mobsf_dynamic_android_hash": "",
+    "app_sec_mobsf_android_dynamic_action_result": None,
+    "app_sec_mobsf_dynamic_ios_instance_id": "",
+    "app_sec_mobsf_dynamic_ios_bundle_id": "",
+    "app_sec_mobsf_dynamic_ios_device_id": "",
+    "app_sec_mobsf_dynamic_ios_device_bundle_id": "",
+    "app_sec_mobsf_connection_status": None,
+    "app_sec_mobsf_pending_action": None,
+    "app_sec_mobsf_profile_source": "默认值",
+    "app_sec_mobsf_profile_ready": False,
+    "app_sec_mobsf_profile_bootstrapped": False,
     "app_sec_web_url": "",
     "app_sec_web_headers_text": "{}",
     "app_sec_web_timeout": 12.0,
@@ -52,10 +72,148 @@ DEFAULT_STATE = {
 }
 
 
+def _read_mobsf_local_profile() -> Dict[str, Any]:
+    if not MOBSF_LOCAL_PROFILE_PATH.exists():
+        return {}
+    try:
+        with MOBSF_LOCAL_PROFILE_PATH.open("r", encoding="utf-8") as file:
+            data = json.load(file)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _normalize_streamlit_secret_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    try:
+        return value.to_dict()
+    except Exception:
+        pass
+    try:
+        return {key: value[key] for key in value.keys()}
+    except Exception:
+        return {}
+
+
+def _read_streamlit_mobsf_secrets() -> Dict[str, Any]:
+    try:
+        root_secrets = _normalize_streamlit_secret_mapping(st.secrets)
+    except Exception:
+        return {}
+
+    section_secrets = _normalize_streamlit_secret_mapping(root_secrets.get("mobsf"))
+
+    def pick_value(*keys: str):
+        for key in keys:
+            if key in section_secrets and section_secrets.get(key) not in (None, ""):
+                return section_secrets.get(key)
+            if key in root_secrets and root_secrets.get(key) not in (None, ""):
+                return root_secrets.get(key)
+        return None
+
+    resolved = {
+        "base_url": pick_value("base_url", "MOBSF_BASE_URL"),
+        "api_key": pick_value("api_key", "MOBSF_API_KEY"),
+        "timeout_seconds": pick_value("timeout_seconds", "MOBSF_TIMEOUT"),
+        "verify_ssl": pick_value("verify_ssl", "MOBSF_VERIFY_SSL"),
+        "include_pdf": pick_value("include_pdf", "MOBSF_INCLUDE_PDF"),
+    }
+    return {key: value for key, value in resolved.items() if value not in (None, "")}
+
+
+def _build_mobsf_secrets_toml_example() -> str:
+    return (
+        "[mobsf]\n"
+        'base_url = "https://your-mobsf.example.com"\n'
+        'api_key = "replace-with-your-mobsf-api-key"\n'
+        "timeout_seconds = 180\n"
+        "verify_ssl = true\n"
+        "include_pdf = false\n"
+    )
+
+
+def _write_mobsf_local_profile(profile: Dict[str, Any]):
+    MOBSF_LOCAL_PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with MOBSF_LOCAL_PROFILE_PATH.open("w", encoding="utf-8") as file:
+        json.dump(profile, file, ensure_ascii=False, indent=2)
+
+
+def _delete_mobsf_local_profile():
+    if MOBSF_LOCAL_PROFILE_PATH.exists():
+        MOBSF_LOCAL_PROFILE_PATH.unlink()
+
+
+def _resolve_mobsf_profile() -> Dict[str, Any]:
+    return ApplicationSecurityTool().resolve_mobsf_profile(
+        secrets=_read_streamlit_mobsf_secrets(),
+        local_profile=_read_mobsf_local_profile(),
+    )
+
+
+def _apply_resolved_mobsf_profile(profile: Dict[str, Any]):
+    st.session_state.app_sec_mobsf_base_url = str(profile.get("base_url") or "http://127.0.0.1:8000").strip()
+    st.session_state.app_sec_mobsf_api_key = str(profile.get("api_key") or "").strip()
+    st.session_state.app_sec_mobsf_timeout = float(profile.get("timeout_seconds") or 180.0)
+    st.session_state.app_sec_mobsf_verify_ssl = bool(profile.get("verify_ssl", True))
+    st.session_state.app_sec_mobsf_include_pdf = bool(profile.get("include_pdf", False))
+    st.session_state.app_sec_mobsf_profile_source = str(profile.get("source") or "默认值")
+    st.session_state.app_sec_mobsf_profile_ready = bool(profile.get("ready"))
+
+
 def _ensure_security_defaults():
     for key, value in DEFAULT_STATE.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    if not st.session_state.get("app_sec_mobsf_profile_bootstrapped"):
+        _apply_resolved_mobsf_profile(_resolve_mobsf_profile())
+        st.session_state.app_sec_mobsf_profile_bootstrapped = True
+
+
+def _queue_mobsf_action(action_name: str, payload: Dict[str, Any] = None):
+    st.session_state.app_sec_mobsf_pending_action = {
+        "action": action_name,
+        "payload": payload or {},
+    }
+
+
+def _apply_mobsf_pending_action():
+    pending_action = st.session_state.get("app_sec_mobsf_pending_action")
+    if not pending_action:
+        return
+
+    st.session_state.app_sec_mobsf_pending_action = None
+    action_name = str(pending_action.get("action") or "").strip()
+    payload = pending_action.get("payload") or {}
+
+    if action_name == "fill_static_hash":
+        hash_value = str(payload.get("hash") or "").strip()
+        if hash_value:
+            st.session_state.app_sec_mobsf_hash_query = hash_value
+    elif action_name == "fill_android_hash":
+        hash_value = str(payload.get("hash") or "").strip()
+        if hash_value:
+            st.session_state.app_sec_mobsf_dynamic_android_hash = hash_value
+    elif action_name == "fill_ios_bundle":
+        bundle_id = str(payload.get("bundle_id") or "").strip()
+        if bundle_id:
+            st.session_state.app_sec_mobsf_dynamic_ios_bundle_id = bundle_id
+            st.session_state.app_sec_mobsf_dynamic_ios_device_bundle_id = bundle_id
+    elif action_name == "fill_ios_instance_id":
+        instance_id = str(payload.get("instance_id") or "").strip()
+        if instance_id:
+            st.session_state.app_sec_mobsf_dynamic_ios_instance_id = instance_id
+    elif action_name == "fill_ios_device_id":
+        device_id = str(payload.get("device_id") or "").strip()
+        if device_id:
+            st.session_state.app_sec_mobsf_dynamic_ios_device_id = device_id
+    elif action_name == "reload_profile":
+        _apply_resolved_mobsf_profile(_resolve_mobsf_profile())
+    elif action_name == "clear_local_profile":
+        _delete_mobsf_local_profile()
+        _apply_resolved_mobsf_profile(_resolve_mobsf_profile())
 
 
 def _reset_security_outputs():
@@ -72,6 +230,22 @@ def _reset_security_outputs():
         "api_sec_role_regression",
         "api_sec_bundle",
         "app_sec_mobile_report",
+        "app_sec_mobsf_bundle",
+        "app_sec_mobsf_recent_scans",
+        "app_sec_mobsf_search_result",
+        "app_sec_mobsf_hash_report",
+        "app_sec_mobsf_hash_scorecard",
+        "app_sec_mobsf_hash_pdf_bytes",
+        "app_sec_mobsf_android_dynamic_apps",
+        "app_sec_mobsf_android_dynamic_action_result",
+        "app_sec_mobsf_android_dynamic_bundle",
+        "app_sec_mobsf_ios_dynamic_bundle",
+        "app_sec_mobsf_ios_device_dynamic_bundle",
+        "app_sec_mobsf_connection_status",
+        "app_sec_mobsf_pending_action",
+        "app_sec_mobsf_profile_source",
+        "app_sec_mobsf_profile_ready",
+        "app_sec_mobsf_profile_bootstrapped",
         "app_sec_web_report",
     ]:
         st.session_state.pop(key, None)
@@ -173,7 +347,7 @@ def _render_design_cards():
     cards = [
         ("Burp Scanner", "参考范围、认证扫描和审计任务组织方式，先定授权范围，再执行有状态安全基线探测。"),
         ("OWASP ZAP", "参考被动扫描与策略思路，把头部、CORS、Cookie、错误泄露做成低风险安全基线。"),
-        ("ApplicationScanner", "参考 APK/IPA 静态分析清单，把 Manifest、Info.plist、权限、组件和证书线索整合起来。"),
+        ("MobSF", "参考官方静态/动态分析能力，把 APK、IPA、APPX 与 REST API 工作流整合到安全工作台里。"),
         ("HCL AppScan", "参考站点入口+轻量爬取+结果工作台的模式，支持直接粘贴 URL 做站点基线扫描。"),
         ("OWASP WSTG / API Top 10", "把自动发现和人工复核拆开，输出对象级授权、功能权限、业务流等清单。"),
         ("Nuclei", "参考模板化和回归思路，把发现结果沉淀为 JSON/Markdown 报告与复测清单。"),
@@ -1277,16 +1451,379 @@ def _render_results(tool: SecurityTestTool):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
+def _render_structured_payload(payload: Any, empty_message: str = "暂无数据。"):
+    if not payload:
+        st.info(empty_message)
+        return
+    if isinstance(payload, list) and payload and all(isinstance(item, dict) for item in payload):
+        st.dataframe(pd.DataFrame(payload), use_container_width=True, hide_index=True)
+        return
+    st.json(payload, expanded=False)
+
+
+def _render_mobsf_review_bundle(review_bundle: Dict[str, Any], empty_message: str = "暂无二次整理结果。"):
+    if not review_bundle:
+        st.info(empty_message)
+        return
+
+    summary = review_bundle.get("summary", {})
+    metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+    metric_col1.metric("问题数", summary.get("issue_count", 0))
+    metric_col2.metric("High", summary.get("high", 0))
+    metric_col3.metric("Medium", summary.get("medium", 0))
+    metric_col4.metric("回归场景", summary.get("regression_case_count", 0))
+    metric_col5.metric("Score", summary.get("security_score", "-") if summary.get("security_score") is not None else "-")
+
+    if review_bundle.get("focus_areas"):
+        st.markdown("**重点方向**")
+        for item in review_bundle.get("focus_areas", []):
+            st.markdown(f"- {item}")
+
+    review_tab1, review_tab2, review_tab3, review_tab4 = st.tabs(["问题清单", "分类汇总", "回归套件", "Markdown"])
+    with review_tab1:
+        _render_structured_payload(review_bundle.get("issue_register"), "暂无问题清单。")
+    with review_tab2:
+        group_col1, group_col2 = st.columns(2)
+        with group_col1:
+            st.markdown("**按分类分组**")
+            _render_structured_payload(review_bundle.get("category_groups"), "暂无分类汇总。")
+        with group_col2:
+            st.markdown("**按严重级别分组**")
+            _render_structured_payload(review_bundle.get("severity_groups"), "暂无严重级别汇总。")
+    with review_tab3:
+        _render_structured_payload(review_bundle.get("regression_suite"), "暂无回归套件。")
+    with review_tab4:
+        st.code(review_bundle.get("markdown", ""), language="markdown")
+
+
+def _render_mobsf_runtime_bundle(bundle: Dict[str, Any], empty_message: str = "暂无动态分析结果。"):
+    if not bundle:
+        st.info(empty_message)
+        return
+
+    summary = bundle.get("summary", {})
+    review_bundle = bundle.get("review_bundle", {})
+    metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+    metric_col1.metric("平台", summary.get("platform", "-"))
+    metric_col2.metric("模式", summary.get("analysis_mode", "-"))
+    metric_col3.metric("标识", str(summary.get("identifier", "-"))[:18] or "-")
+    metric_col4.metric("报告字段数", summary.get("report_keys", 0))
+    metric_col5.metric("问题数", summary.get("issue_count", 0))
+    if summary.get("runtime_target") and summary.get("runtime_target") != "-":
+        st.caption(f"运行时目标: {summary.get('runtime_target')}")
+
+    bundle_tab1, bundle_tab2 = st.tabs(["动态报告", "二次整理"])
+    with bundle_tab1:
+        _render_structured_payload(bundle.get("json_report"), "MobSF 尚未返回动态分析报告。")
+    with bundle_tab2:
+        _render_mobsf_review_bundle(review_bundle, "动态分析报告暂未整理出复核清单。")
+
+
+def _get_mobsf_request_options() -> Dict[str, Any]:
+    return {
+        "base_url": st.session_state.get("app_sec_mobsf_base_url", ""),
+        "api_key": st.session_state.get("app_sec_mobsf_api_key", ""),
+        "timeout_seconds": float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+        "verify_ssl": bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+    }
+
+
+def _load_mobsf_static_bundle_by_hash(app_tool: ApplicationSecurityTool, file_hash: str):
+    options = _get_mobsf_request_options()
+    bundle = app_tool.build_mobsf_static_bundle_from_hash(
+        file_hash=file_hash,
+        include_pdf=bool(st.session_state.get("app_sec_mobsf_include_pdf", False)),
+        **options,
+    )
+    st.session_state.app_sec_mobsf_hash_query = str(file_hash or "").strip()
+    st.session_state.app_sec_mobsf_hash_report = bundle.get("json_report", {})
+    st.session_state.app_sec_mobsf_hash_scorecard = bundle.get("scorecard", {})
+    st.session_state.app_sec_mobsf_hash_pdf_bytes = bundle.get("pdf_bytes", b"")
+    return bundle
+
+
+def _load_mobsf_android_dynamic_bundle(app_tool: ApplicationSecurityTool, file_hash: str):
+    options = _get_mobsf_request_options()
+    normalized_hash = str(file_hash or "").strip()
+    report_json = app_tool.mobsf_get_android_dynamic_report(file_hash=normalized_hash, **options)
+    bundle = app_tool.build_mobsf_dynamic_bundle(
+        report_json=report_json,
+        platform="android",
+        analysis_mode="android_dynamic",
+        identifier=normalized_hash,
+        runtime_target=normalized_hash,
+    )
+    st.session_state.app_sec_mobsf_dynamic_android_hash = normalized_hash
+    st.session_state.app_sec_mobsf_android_dynamic_bundle = bundle
+    return bundle
+
+
+def _render_mobsf_android_dynamic_report_unavailable_hint(app_tool: ApplicationSecurityTool, file_hash: str):
+    normalized_hash = str(file_hash or "").strip()
+    st.warning("MobSF 侧还没有这个 Hash 的 Android 动态报告。先完成动态分析并收集结果，再回来拉报告。")
+
+    apps_payload = st.session_state.get("app_sec_mobsf_android_dynamic_apps")
+    candidates = app_tool.mobsf_extract_reference_candidates(apps_payload, source_name="Android 可分析应用")
+    if candidates:
+        hash_in_apps = any(str(item.get("Hash") or "").strip() == normalized_hash for item in candidates if normalized_hash)
+        if hash_in_apps:
+            st.info("当前 `获取 Android 可分析应用` 列表里已经找到这个 Hash，可以直接启动动态分析。")
+        else:
+            st.info("当前 `获取 Android 可分析应用` 列表里还没看到这个 Hash。先确认 MobSF 动态环境、模拟器/设备和目标应用已准备好。")
+    else:
+        st.info("建议先点一次“获取 Android 可分析应用”，确认 MobSF 动态环境已经准备好。")
+
+    st.markdown("**下一步建议**")
+    steps = [
+        f"使用同一个 Hash `{normalized_hash or '<hash>'}` 启动 Android 动态分析。",
+        "在模拟器或设备里完成需要覆盖的业务路径和风险操作。",
+        "点击“停止并收集结果”，让 MobSF 生成动态报告。",
+        "再点击“拉 Android 动态报告”获取结果并自动整理。",
+    ]
+    for step in steps:
+        st.markdown(f"- {step}")
+
+
+def _render_mobsf_android_dynamic_environment_hint(app_tool: ApplicationSecurityTool, error: Exception, action_label: str):
+    if app_tool.is_mobsf_android_dynamic_analysis_failed_error(error):
+        st.warning(f"{action_label}没有成功。通常是 MobSF 动态环境、模拟器/真机、Frida 或代理证书还没准备好。")
+        st.markdown("**建议检查**")
+        steps = [
+            "先点“获取 Android 可分析应用”，确认列表能正常返回且目标应用在列表中。",
+            "确认 MobSF Web UI 的 Dynamic Analyzer 页面里设备或模拟器已经就绪。",
+            "确认目标应用已安装并允许被动态分析，必要时先在 MobSF Web UI 手动走一遍动态分析准备。",
+            "如果刚停止分析，稍等几秒再拉报告，避免结果还在收集过程中。",
+        ]
+        for step in steps:
+            st.markdown(f"- {step}")
+        return
+    st.error(f"{action_label}失败: {error}")
+
+
+def _handle_mobsf_android_dynamic_report_exception(
+    app_tool: ApplicationSecurityTool,
+    file_hash: str,
+    exc: Exception,
+    action_label: str,
+):
+    if app_tool.is_mobsf_dynamic_report_unavailable_error(exc):
+        _render_mobsf_android_dynamic_report_unavailable_hint(app_tool, file_hash)
+        return
+    st.error(f"{action_label}失败: {exc}")
+
+
+def _render_mobsf_android_dynamic_apps_hint(apps_payload: Dict[str, Any]):
+    if not isinstance(apps_payload, dict):
+        return
+    if not apps_payload.get("android_version"):
+        st.info("当前 MobSF 没有返回 Android 设备版本信息，通常表示动态设备/模拟器还没完全就绪。")
+    apps = apps_payload.get("apps")
+    if isinstance(apps, list) and any(isinstance(item, dict) and item.get("DYNAMIC_REPORT_EXISTS") is False for item in apps):
+        st.info("列表里 `DYNAMIC_REPORT_EXISTS = false` 表示该应用可用于动态分析，但动态报告尚未生成。")
+
+
+def _load_mobsf_ios_dynamic_bundle(app_tool: ApplicationSecurityTool, instance_id: str, bundle_id: str):
+    options = _get_mobsf_request_options()
+    normalized_instance_id = str(instance_id or "").strip()
+    normalized_bundle_id = str(bundle_id or "").strip()
+    report_json = app_tool.mobsf_get_ios_dynamic_report(
+        instance_id=normalized_instance_id,
+        bundle_id=normalized_bundle_id,
+        **options,
+    )
+    bundle = app_tool.build_mobsf_dynamic_bundle(
+        report_json=report_json,
+        platform="ios",
+        analysis_mode="ios_dynamic",
+        identifier=normalized_bundle_id,
+        runtime_target=normalized_instance_id,
+        app_name=normalized_bundle_id,
+    )
+    st.session_state.app_sec_mobsf_dynamic_ios_instance_id = normalized_instance_id
+    st.session_state.app_sec_mobsf_dynamic_ios_bundle_id = normalized_bundle_id
+    st.session_state.app_sec_mobsf_ios_dynamic_bundle = bundle
+    return bundle
+
+
+def _load_mobsf_ios_device_dynamic_bundle(app_tool: ApplicationSecurityTool, device_id: str, bundle_id: str):
+    options = _get_mobsf_request_options()
+    normalized_device_id = str(device_id or "").strip()
+    normalized_bundle_id = str(bundle_id or "").strip()
+    report_json = app_tool.mobsf_get_ios_device_dynamic_report(
+        device_id=normalized_device_id,
+        bundle_id=normalized_bundle_id,
+        **options,
+    )
+    bundle = app_tool.build_mobsf_dynamic_bundle(
+        report_json=report_json,
+        platform="ios",
+        analysis_mode="ios_device_dynamic",
+        identifier=normalized_bundle_id,
+        runtime_target=normalized_device_id,
+        app_name=normalized_bundle_id,
+    )
+    st.session_state.app_sec_mobsf_dynamic_ios_device_id = normalized_device_id
+    st.session_state.app_sec_mobsf_dynamic_ios_device_bundle_id = normalized_bundle_id
+    st.session_state.app_sec_mobsf_ios_device_dynamic_bundle = bundle
+    return bundle
+
+
+def _render_mobsf_prefill_candidates(
+    app_tool: ApplicationSecurityTool,
+    payload: Any,
+    source_name: str,
+    key_prefix: str,
+):
+    candidates = app_tool.mobsf_extract_reference_candidates(payload, source_name=source_name)
+    if not candidates:
+        st.info("当前结果里没有可用于回填的 hash / bundle_id / instance_id / device_id。")
+        return
+
+    st.caption("可从这里把常用标识一键回填到静态查询、Android 动态或 iOS 动态输入框。")
+    st.dataframe(pd.DataFrame(candidates), use_container_width=True, hide_index=True)
+
+    options = {item["Label"]: item for item in candidates}
+    selected_label = st.selectbox(
+        "选择一条记录用于回填",
+        options=list(options.keys()),
+        key=f"{key_prefix}_selected_label",
+    )
+    selected = options[selected_label]
+
+    st.caption(
+        "iOS Bundle 会同时回填到 Corellium 和真机两个 bundle 输入框；"
+        "Instance ID 和 Device ID 会分别回填到对应动态分析入口。"
+    )
+    fill_col1, fill_col2, fill_col3, fill_col4, fill_col5 = st.columns(5)
+    with fill_col1:
+        st.button(
+            "回填静态 Hash",
+            key=f"{key_prefix}_fill_static_hash",
+            use_container_width=True,
+            disabled=not bool(selected.get("Hash")),
+            on_click=_queue_mobsf_action,
+            kwargs={
+                "action_name": "fill_static_hash",
+                "payload": {"hash": selected.get("Hash", "")},
+            },
+        )
+    with fill_col2:
+        st.button(
+            "回填Android Hash",
+            key=f"{key_prefix}_fill_android_hash",
+            use_container_width=True,
+            disabled=not bool(selected.get("Hash")),
+            on_click=_queue_mobsf_action,
+            kwargs={
+                "action_name": "fill_android_hash",
+                "payload": {"hash": selected.get("Hash", "")},
+            },
+        )
+    with fill_col3:
+        st.button(
+            "回填iOS Bundle",
+            key=f"{key_prefix}_fill_ios_bundle",
+            use_container_width=True,
+            disabled=not bool(selected.get("Bundle ID") or selected.get("Package Name")),
+            on_click=_queue_mobsf_action,
+            kwargs={
+                "action_name": "fill_ios_bundle",
+                "payload": {"bundle_id": selected.get("Bundle ID") or selected.get("Package Name") or ""},
+            },
+        )
+    with fill_col4:
+        st.button(
+            "回填Instance ID",
+            key=f"{key_prefix}_fill_instance_id",
+            use_container_width=True,
+            disabled=not bool(selected.get("Instance ID")),
+            on_click=_queue_mobsf_action,
+            kwargs={
+                "action_name": "fill_ios_instance_id",
+                "payload": {"instance_id": selected.get("Instance ID", "")},
+            },
+        )
+    with fill_col5:
+        st.button(
+            "回填Device ID",
+            key=f"{key_prefix}_fill_device_id",
+            use_container_width=True,
+            disabled=not bool(selected.get("Device ID")),
+            on_click=_queue_mobsf_action,
+            kwargs={
+                "action_name": "fill_ios_device_id",
+                "payload": {"device_id": selected.get("Device ID", "")},
+            },
+        )
+
+    fetch_col1, fetch_col2, fetch_col3, fetch_col4 = st.columns(4)
+    with fetch_col1:
+        if st.button(
+            "直拉静态结果",
+            key=f"{key_prefix}_fetch_static_bundle",
+            use_container_width=True,
+            disabled=not bool(selected.get("Hash")),
+        ):
+            try:
+                _load_mobsf_static_bundle_by_hash(app_tool, selected.get("Hash", ""))
+                st.success("已根据所选记录拉取静态报告。")
+            except Exception as exc:
+                st.error(f"拉取静态报告失败: {exc}")
+    with fetch_col2:
+        if st.button(
+            "直拉Android动态",
+            key=f"{key_prefix}_fetch_android_dynamic_bundle",
+            use_container_width=True,
+            disabled=not bool(selected.get("Hash")),
+        ):
+            try:
+                _load_mobsf_android_dynamic_bundle(app_tool, selected.get("Hash", ""))
+                st.success("已根据所选记录拉取 Android 动态报告。")
+            except Exception as exc:
+                _handle_mobsf_android_dynamic_report_exception(
+                    app_tool,
+                    selected.get("Hash", ""),
+                    exc,
+                    "拉取 Android 动态报告",
+                )
+    with fetch_col3:
+        if st.button(
+            "直拉iOS动态",
+            key=f"{key_prefix}_fetch_ios_dynamic_bundle",
+            use_container_width=True,
+            disabled=not bool(selected.get("Instance ID")) or not bool(selected.get("Bundle ID") or selected.get("Package Name")),
+        ):
+            try:
+                bundle_id = selected.get("Bundle ID") or selected.get("Package Name") or ""
+                _load_mobsf_ios_dynamic_bundle(app_tool, selected.get("Instance ID", ""), bundle_id)
+                st.success("已根据所选记录拉取 iOS Corellium 动态报告。")
+            except Exception as exc:
+                st.error(f"拉取 iOS Corellium 动态报告失败: {exc}")
+    with fetch_col4:
+        if st.button(
+            "直拉iOS真机动态",
+            key=f"{key_prefix}_fetch_ios_device_dynamic_bundle",
+            use_container_width=True,
+            disabled=not bool(selected.get("Device ID")) or not bool(selected.get("Bundle ID") or selected.get("Package Name")),
+        ):
+            try:
+                bundle_id = selected.get("Bundle ID") or selected.get("Package Name") or ""
+                _load_mobsf_ios_device_dynamic_bundle(app_tool, selected.get("Device ID", ""), bundle_id)
+                st.success("已根据所选记录拉取 iOS 真机动态报告。")
+            except Exception as exc:
+                st.error(f"拉取 iOS 真机动态报告失败: {exc}")
+
+
+def _render_local_mobile_security_tab(app_tool: ApplicationSecurityTool):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">移动包安全扫描</div>', unsafe_allow_html=True)
-    st.caption("支持直接上传 .apk / .ipa 包，参考 ApplicationScanner 的清单思路扩展 Manifest/Info.plist、权限、组件、ATS、URL、密钥和关键字命中。")
+    st.caption("支持直接上传 .apk / .ipa / .appx 包，适合先做本地静态预检；更重的静态/动态能力可切到 MobSF 集成页。")
 
     left_col, right_col = st.columns([1.1, 1.0])
     with left_col:
         uploaded_package = st.file_uploader(
-            "上传 APK / IPA",
-            type=["apk", "ipa"],
+            "上传 APK / IPA / APPX",
+            type=["apk", "ipa", "appx"],
             key="app_sec_mobile_upload",
             help="静态扫描不会执行动态注入、运行时 Hook 或主动攻击动作。",
         )
@@ -1294,7 +1831,7 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
         with action_col1:
             if st.button("📱 执行包扫描", key="app_sec_mobile_scan", use_container_width=True):
                 if not uploaded_package:
-                    st.warning("请先上传 .apk 或 .ipa 文件。")
+                    st.warning("请先上传 .apk、.ipa 或 .appx 文件。")
                 else:
                     keywords = _parse_keyword_lines(st.session_state.get("app_sec_mobile_keywords_text", ""))
                     with st.spinner("正在分析应用包结构、权限、组件和外联线索..."):
@@ -1322,7 +1859,7 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
 
     report = st.session_state.get("app_sec_mobile_report")
     if not report:
-        st.info("上传一个 APK 或 IPA 后即可执行静态安全扫描。")
+        st.info("上传一个 APK、IPA 或 APPX 后即可执行静态安全扫描。")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
@@ -1345,7 +1882,7 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
         if report.get("platform") == "android":
             st.markdown("**Manifest 摘要**")
             st.json(report.get("manifest", {}), expanded=False)
-        else:
+        elif report.get("platform") == "ios":
             st.markdown("**Info.plist 摘要**")
             st.json(report.get("info_plist", {}), expanded=False)
             if report.get("entitlements"):
@@ -1354,6 +1891,9 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
             if report.get("macho_summary"):
                 st.markdown("**Mach-O 摘要**")
                 st.json(report.get("macho_summary", {}), expanded=False)
+        else:
+            st.markdown("**AppxManifest 摘要**")
+            st.json(report.get("appx_manifest", {}), expanded=False)
         if report.get("certificate"):
             st.markdown("**签名/证书线索**")
             st.json(report.get("certificate", {}), expanded=False)
@@ -1385,6 +1925,15 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
             if ios_rows:
                 st.markdown("**iOS 能力面**")
                 st.dataframe(pd.DataFrame(ios_rows), use_container_width=True, hide_index=True)
+        elif report.get("protocols") or report.get("app_services"):
+            windows_rows = []
+            for protocol in report.get("protocols", []):
+                windows_rows.append({"类型": "Protocol", "值": protocol})
+            for app_service in report.get("app_services", []):
+                windows_rows.append({"类型": "App Service", "值": app_service})
+            if windows_rows:
+                st.markdown("**Windows 能力面**")
+                st.dataframe(pd.DataFrame(windows_rows), use_container_width=True, hide_index=True)
         else:
             st.info("当前包中没有可展示的导出组件或 URL Scheme。")
 
@@ -1427,6 +1976,789 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
+    _apply_mobsf_pending_action()
+
+    st.markdown('<div class="security-section">', unsafe_allow_html=True)
+    st.markdown('<div class="security-section-title">MobSF 官方集成</div>', unsafe_allow_html=True)
+    st.caption("基于 MobSF 官方仓库和 REST API，支持 APK / IPA / APPX 静态分析接入，以及 Android / iOS 动态报告拉取、二次整理和导出。")
+
+    quick_start = app_tool.build_mobsf_quick_start(st.session_state.get("app_sec_mobsf_base_url", "http://127.0.0.1:8000"))
+
+    st.markdown(
+        f"""
+        <div class="security-note">
+            官方来源:
+            <a href="{app_tool.MOBSF_OFFICIAL_REPO}" target="_blank">GitHub 仓库</a> |
+            <a href="{app_tool.MOBSF_STATIC_API_SOURCE}" target="_blank">静态 API 源码</a> |
+            <a href="{app_tool.MOBSF_DYNAMIC_API_SOURCE}" target="_blank">动态 API 源码</a>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    current_base_url = str(st.session_state.get("app_sec_mobsf_base_url", "") or "").strip()
+    current_api_key = str(st.session_state.get("app_sec_mobsf_api_key", "") or "").strip()
+    current_profile_ready = bool(current_base_url and current_api_key)
+    profile_source = str(st.session_state.get("app_sec_mobsf_profile_source", "默认值") or "默认值")
+
+    profile_col1, profile_col2, profile_col3, profile_col4 = st.columns(4)
+    profile_col1.metric("使用模式", "极速模式" if current_profile_ready else "待配置")
+    profile_col2.metric("配置来源", profile_source)
+    profile_col3.metric("服务地址", current_base_url.replace("http://", "").replace("https://", "") or "-")
+    profile_col4.metric("API Key", "已配置" if current_api_key else "未配置")
+
+    if current_profile_ready:
+        st.success(f"已从 {profile_source} 加载 MobSF 预配置。正常使用只需要上传文件并点击扫描。")
+    else:
+        st.warning("还没有可用的 MobSF 预配置。展开下面的“一次性设置”填一次；部署到 Streamlit Community Cloud 时，优先使用 Secrets。")
+
+    with st.expander("⚙️ MobSF 高级配置 / 一次性设置", expanded=not current_profile_ready):
+        st.info("本地运行可保存到本地配置文件；部署到 Streamlit Community Cloud 时，建议把 MobSF 配置写入 `secrets.toml` 或 Cloud Secrets，避免临时文件丢失。")
+        config_col1, config_col2 = st.columns([1.05, 1.0])
+        with config_col1:
+            st.text_input(
+                "MobSF 服务地址",
+                key="app_sec_mobsf_base_url",
+                placeholder="http://127.0.0.1:8000",
+                help="例如本地 Docker 启动后的 http://127.0.0.1:8000",
+            )
+            inner_col1, inner_col2 = st.columns(2)
+            with inner_col1:
+                st.number_input("超时(秒)", min_value=10.0, max_value=600.0, step=10.0, key="app_sec_mobsf_timeout")
+            with inner_col2:
+                st.checkbox("校验证书", key="app_sec_mobsf_verify_ssl")
+            st.checkbox("拉取 PDF 报告", key="app_sec_mobsf_include_pdf", help="启用后会在静态分析完成后额外拉取 PDF 报告。")
+        with config_col2:
+            st.text_input(
+                "MobSF API Key",
+                key="app_sec_mobsf_api_key",
+                type="password",
+                help="MobSF REST API 默认通过 X-Mobsf-Api-Key 头鉴权。",
+            )
+            st.text_input(
+                "按 Hash 拉取报告",
+                key="app_sec_mobsf_hash_query",
+                placeholder="输入 MobSF 返回的 hash",
+            )
+            st.text_input(
+                "搜索历史扫描",
+                key="app_sec_mobsf_search_query",
+                placeholder="输入 hash 或关键字",
+            )
+
+        setup_col1, setup_col2, setup_col3 = st.columns(3)
+        with setup_col1:
+            if st.button("💾 保存当前配置到本地", key="app_sec_mobsf_save_local_profile", use_container_width=True):
+                _write_mobsf_local_profile(
+                    {
+                        "base_url": str(st.session_state.get("app_sec_mobsf_base_url", "") or "").strip(),
+                        "api_key": str(st.session_state.get("app_sec_mobsf_api_key", "") or "").strip(),
+                        "timeout_seconds": float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                        "verify_ssl": bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                        "include_pdf": bool(st.session_state.get("app_sec_mobsf_include_pdf", False)),
+                    }
+                )
+                st.session_state.app_sec_mobsf_profile_source = "本地配置"
+                st.session_state.app_sec_mobsf_profile_ready = bool(
+                    str(st.session_state.get("app_sec_mobsf_base_url", "") or "").strip()
+                    and str(st.session_state.get("app_sec_mobsf_api_key", "") or "").strip()
+                )
+                st.success(f"已保存到 {MOBSF_LOCAL_PROFILE_PATH}.")
+        with setup_col2:
+            st.button(
+                "🔄 重新读取预配置",
+                key="app_sec_mobsf_reload_profile",
+                use_container_width=True,
+                on_click=_queue_mobsf_action,
+                kwargs={"action_name": "reload_profile"},
+            )
+        with setup_col3:
+            st.button(
+                "🗑️ 清除本地配置",
+                key="app_sec_mobsf_clear_local_profile",
+                use_container_width=True,
+                on_click=_queue_mobsf_action,
+                kwargs={"action_name": "clear_local_profile"},
+            )
+
+        st.download_button(
+            "☁️ 下载 Streamlit Secrets 模板",
+            data=_build_mobsf_secrets_toml_example(),
+            file_name="secrets.toml.example",
+            mime="text/plain",
+            use_container_width=True,
+        )
+
+        st.caption(
+            "支持优先从环境变量、Streamlit Secrets、本地配置自动读取: "
+            "`MOBSF_BASE_URL`、`MOBSF_API_KEY`、`MOBSF_TIMEOUT`、`MOBSF_VERIFY_SSL`、`MOBSF_INCLUDE_PDF`。"
+        )
+        st.caption(f"本地配置文件: `{MOBSF_LOCAL_PROFILE_PATH}`。仅建议在本机可信环境使用；Community Cloud 中它不是长期持久配置。")
+
+    current_base_url = str(st.session_state.get("app_sec_mobsf_base_url", "") or "").strip()
+    current_api_key = str(st.session_state.get("app_sec_mobsf_api_key", "") or "").strip()
+    current_profile_ready = bool(current_base_url and current_api_key)
+
+    connection_col1, connection_col2 = st.columns([0.9, 2.1])
+    with connection_col1:
+        if st.button("🔌 检查连通性", key="app_sec_mobsf_check_connection", use_container_width=True):
+            try:
+                st.session_state.app_sec_mobsf_connection_status = app_tool.mobsf_check_connection(
+                    base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                    api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                    timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                    verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                )
+                payload = st.session_state.app_sec_mobsf_connection_status.get("payload")
+                if payload:
+                    st.session_state.app_sec_mobsf_recent_scans = payload
+            except Exception as exc:
+                st.session_state.app_sec_mobsf_connection_status = {
+                    "success": False,
+                    "reachable": False,
+                    "authenticated": False,
+                    "status_code": None,
+                    "recent_scan_count": 0,
+                    "message": str(exc),
+                }
+    with connection_col2:
+        connection_status = st.session_state.get("app_sec_mobsf_connection_status")
+        if connection_status:
+            message = str(connection_status.get("message", "") or "").strip()
+            if connection_status.get("success"):
+                st.success(message)
+            elif connection_status.get("reachable"):
+                st.warning(message)
+            else:
+                st.error(message)
+            status_cols = st.columns(3)
+            status_cols[0].metric("HTTP状态", connection_status.get("status_code") or "-")
+            status_cols[1].metric("最近扫描候选", connection_status.get("recent_scan_count", 0))
+            status_cols[2].metric("鉴权", "通过" if connection_status.get("authenticated") else "未通过")
+
+    with st.expander("🚀 MobSF 快速启动 / 官方能力", expanded=False):
+        st.markdown("**Docker 启动命令**")
+        st.code("\n".join(quick_start.get("docker_commands", [])), language="bash")
+        st.markdown("**静态分析 API**")
+        st.dataframe(pd.DataFrame(quick_start.get("static_endpoints", [])), use_container_width=True, hide_index=True)
+        dynamic_col1, dynamic_col2, dynamic_col3 = st.columns(3)
+        with dynamic_col1:
+            st.markdown("**Android 动态分析 API**")
+            st.dataframe(pd.DataFrame(quick_start.get("android_dynamic_endpoints", [])), use_container_width=True, hide_index=True)
+        with dynamic_col2:
+            st.markdown("**iOS Corellium 动态 API**")
+            st.dataframe(pd.DataFrame(quick_start.get("ios_dynamic_endpoints", [])), use_container_width=True, hide_index=True)
+        with dynamic_col3:
+            st.markdown("**iOS 越狱设备动态 API**")
+            st.dataframe(pd.DataFrame(quick_start.get("ios_device_dynamic_endpoints", [])), use_container_width=True, hide_index=True)
+        st.markdown("**curl 示例**")
+        for label, command in quick_start.get("curl_examples", {}).items():
+            st.code(command, language="bash")
+
+    uploaded_package = st.file_uploader(
+        "上传到 MobSF 的安装包 / 二进制",
+        type=["apk", "apks", "xapk", "aab", "ipa", "jar", "aar", "so", "zip", "dylib", "a", "appx"],
+        key="app_sec_mobsf_upload",
+        help="这里不会在本机解包分析，而是直接把文件上传到你配置的 MobSF 服务。当前按官方静态分析接口支持 apk、apks、xapk、aab、ipa、jar、aar、so、zip、dylib、a、appx。",
+    )
+
+    action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+    with action_col1:
+        if st.button(
+            "🚀 上传文件并自动扫描",
+            key="app_sec_mobsf_run_static",
+            use_container_width=True,
+            disabled=not current_profile_ready,
+        ):
+            if not uploaded_package:
+                st.warning("请先选择要上传到 MobSF 的安装包。")
+            else:
+                try:
+                    with st.spinner("正在调用 MobSF 上传、扫描并拉取报告..."):
+                        st.session_state.app_sec_mobsf_bundle = app_tool.run_mobsf_static_analysis(
+                            base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                            api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                            file_name=uploaded_package.name,
+                            file_bytes=uploaded_package.getvalue(),
+                            timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                            verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                            include_pdf=bool(st.session_state.get("app_sec_mobsf_include_pdf", False)),
+                        )
+                    st.success("MobSF 静态分析已完成。")
+                except Exception as exc:
+                    st.error(f"MobSF 静态分析失败: {exc}")
+    with action_col2:
+        if st.button("🕘 获取最近扫描", key="app_sec_mobsf_recent", use_container_width=True, disabled=not current_profile_ready):
+            try:
+                st.session_state.app_sec_mobsf_recent_scans = app_tool.mobsf_get_recent_scans(
+                    base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                    api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                    timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                    verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                )
+                st.success("最近扫描记录已刷新。")
+            except Exception as exc:
+                st.error(f"获取最近扫描失败: {exc}")
+    with action_col3:
+        if st.button("🔎 搜索历史扫描", key="app_sec_mobsf_search", use_container_width=True, disabled=not current_profile_ready):
+            query = str(st.session_state.get("app_sec_mobsf_search_query", "") or "").strip()
+            if not query:
+                st.warning("请先输入搜索关键字或 hash。")
+            else:
+                try:
+                    st.session_state.app_sec_mobsf_search_result = app_tool.mobsf_search(
+                        base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                        api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                        query=query,
+                        timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                        verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                    )
+                    st.success("MobSF 搜索已完成。")
+                except Exception as exc:
+                    st.error(f"搜索历史扫描失败: {exc}")
+    with action_col4:
+        if st.button("🧹 清空 MobSF 结果", key="app_sec_mobsf_clear", use_container_width=True):
+            for state_key in [
+                "app_sec_mobsf_bundle",
+                "app_sec_mobsf_recent_scans",
+                "app_sec_mobsf_search_result",
+                "app_sec_mobsf_hash_report",
+                "app_sec_mobsf_hash_scorecard",
+                "app_sec_mobsf_hash_pdf_bytes",
+                "app_sec_mobsf_android_dynamic_apps",
+                "app_sec_mobsf_android_dynamic_action_result",
+                "app_sec_mobsf_android_dynamic_bundle",
+                "app_sec_mobsf_ios_dynamic_bundle",
+                "app_sec_mobsf_ios_device_dynamic_bundle",
+            ]:
+                st.session_state.pop(state_key, None)
+            st.rerun()
+
+    hash_action_col1, hash_action_col2, hash_action_col3 = st.columns(3)
+    with hash_action_col1:
+        if st.button("📄 按 Hash 拉静态 JSON", key="app_sec_mobsf_get_report", use_container_width=True, disabled=not current_profile_ready):
+            query_hash = str(st.session_state.get("app_sec_mobsf_hash_query", "") or "").strip()
+            if not query_hash:
+                st.warning("请先输入需要查询的 hash。")
+            else:
+                try:
+                    bundle_from_hash = _load_mobsf_static_bundle_by_hash(app_tool, query_hash)
+                    st.session_state.app_sec_mobsf_hash_pdf_bytes = b""
+                    st.session_state.app_sec_mobsf_hash_report = bundle_from_hash.get("json_report", {})
+                    st.session_state.app_sec_mobsf_hash_scorecard = bundle_from_hash.get("scorecard", {})
+                    st.success("MobSF JSON 报告已拉取。")
+                except Exception as exc:
+                    st.error(f"获取 JSON 报告失败: {exc}")
+    with hash_action_col2:
+        if st.button("📊 按 Hash 拉静态 Scorecard", key="app_sec_mobsf_get_scorecard", use_container_width=True, disabled=not current_profile_ready):
+            query_hash = str(st.session_state.get("app_sec_mobsf_hash_query", "") or "").strip()
+            if not query_hash:
+                st.warning("请先输入需要查询的 hash。")
+            else:
+                try:
+                    bundle_from_hash = _load_mobsf_static_bundle_by_hash(app_tool, query_hash)
+                    st.session_state.app_sec_mobsf_hash_report = bundle_from_hash.get("json_report", {})
+                    st.session_state.app_sec_mobsf_hash_scorecard = bundle_from_hash.get("scorecard", {})
+                    st.session_state.app_sec_mobsf_hash_pdf_bytes = b""
+                    st.success("MobSF Scorecard 已拉取。")
+                except Exception as exc:
+                    st.error(f"获取 Scorecard 失败: {exc}")
+    with hash_action_col3:
+        if st.button("🧾 按 Hash 拉静态 PDF", key="app_sec_mobsf_get_pdf", use_container_width=True, disabled=not current_profile_ready):
+            query_hash = str(st.session_state.get("app_sec_mobsf_hash_query", "") or "").strip()
+            if not query_hash:
+                st.warning("请先输入需要查询的 hash。")
+            else:
+                try:
+                    bundle_from_hash = _load_mobsf_static_bundle_by_hash(app_tool, query_hash)
+                    st.session_state.app_sec_mobsf_hash_report = bundle_from_hash.get("json_report", {})
+                    st.session_state.app_sec_mobsf_hash_scorecard = bundle_from_hash.get("scorecard", {})
+                    st.session_state.app_sec_mobsf_hash_pdf_bytes = bundle_from_hash.get("pdf_bytes", b"")
+                    st.success("MobSF PDF 已拉取。")
+                except Exception as exc:
+                    st.error(f"获取 PDF 报告失败: {exc}")
+
+    bundle = st.session_state.get("app_sec_mobsf_bundle")
+    recent_scans = st.session_state.get("app_sec_mobsf_recent_scans")
+    search_result = st.session_state.get("app_sec_mobsf_search_result")
+    hash_report = st.session_state.get("app_sec_mobsf_hash_report")
+    hash_scorecard = st.session_state.get("app_sec_mobsf_hash_scorecard")
+    hash_pdf_bytes = st.session_state.get("app_sec_mobsf_hash_pdf_bytes", b"")
+    android_dynamic_apps = st.session_state.get("app_sec_mobsf_android_dynamic_apps")
+    android_dynamic_action_result = st.session_state.get("app_sec_mobsf_android_dynamic_action_result")
+    android_dynamic_bundle = st.session_state.get("app_sec_mobsf_android_dynamic_bundle")
+    ios_dynamic_bundle = st.session_state.get("app_sec_mobsf_ios_dynamic_bundle")
+    ios_device_dynamic_bundle = st.session_state.get("app_sec_mobsf_ios_device_dynamic_bundle")
+    hash_review_bundle = (
+        app_tool.build_mobsf_review_bundle(
+            report_json=hash_report,
+            scorecard=hash_scorecard,
+            file_hash=st.session_state.get("app_sec_mobsf_hash_query", ""),
+            analysis_mode="static",
+        )
+        if hash_report
+        else {}
+    )
+
+    tab_bundle, tab_review, tab_recent, tab_search, tab_dynamic, tab_export = st.tabs(
+        ["静态扫描结果", "二次整理", "最近扫描", "搜索结果", "动态分析", "导出"]
+    )
+
+    with tab_bundle:
+        if bundle:
+            summary = bundle.get("summary", {})
+            review_bundle = bundle.get("review_bundle", {})
+            metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
+            metric_col1.metric("Hash", summary.get("hash", "")[:12] or "-")
+            metric_col2.metric("类型", summary.get("scan_type", "") or "-")
+            metric_col3.metric("报告字段数", summary.get("report_keys", 0))
+            metric_col4.metric("Scorecard字段数", summary.get("scorecard_keys", 0))
+            metric_col5.metric("PDF", "已拉取" if summary.get("has_pdf") else "未拉取")
+            if review_bundle:
+                st.caption(
+                    f"二次整理: {review_bundle.get('summary', {}).get('issue_count', 0)} 个问题, "
+                    f"{review_bundle.get('summary', {}).get('regression_case_count', 0)} 条回归建议"
+                )
+
+            st.markdown("**上传结果**")
+            st.json(bundle.get("upload", {}), expanded=False)
+            st.markdown("**扫描结果**")
+            st.json(bundle.get("scan", {}), expanded=False)
+            st.markdown("**JSON 报告**")
+            _render_structured_payload(bundle.get("json_report"), "MobSF 尚未返回 JSON 报告。")
+            st.markdown("**Scorecard**")
+            _render_structured_payload(bundle.get("scorecard"), "MobSF 尚未返回 Scorecard。")
+            st.markdown("**当前静态结果快捷复用**")
+            _render_mobsf_prefill_candidates(app_tool, bundle, "当前静态扫描", "mobsf_bundle_prefill")
+        else:
+            st.info("还没有执行上传并静态扫描。")
+
+        if hash_report:
+            st.markdown("**按 Hash 拉取的 JSON 报告**")
+            _render_structured_payload(hash_report, "暂无按 Hash 拉取的报告。")
+        if hash_scorecard:
+            st.markdown("**按 Hash 拉取的 Scorecard**")
+            _render_structured_payload(hash_scorecard, "暂无按 Hash 拉取的 Scorecard。")
+        if not any([bundle, hash_report, hash_scorecard]):
+            st.info("还没有静态分析结果。可先上传安装包静态扫描，或按 Hash 拉取静态报告。")
+
+    with tab_review:
+        if bundle and bundle.get("review_bundle") and hash_review_bundle:
+            review_tab_current, review_tab_hash = st.tabs(["当前静态扫描", "按 Hash 拉取"])
+            with review_tab_current:
+                _render_mobsf_review_bundle(bundle.get("review_bundle", {}))
+            with review_tab_hash:
+                _render_mobsf_review_bundle(hash_review_bundle)
+        elif bundle and bundle.get("review_bundle"):
+            st.markdown("**当前静态扫描的二次整理**")
+            _render_mobsf_review_bundle(bundle.get("review_bundle", {}))
+        elif hash_review_bundle:
+            st.markdown("**按 Hash 拉取结果的二次整理**")
+            _render_mobsf_review_bundle(hash_review_bundle)
+        else:
+            st.info("先获取一份 MobSF JSON 报告，才能生成测试视角的二次整理结果。")
+
+    with tab_recent:
+        _render_structured_payload(recent_scans, "还没有获取最近扫描记录。")
+        if recent_scans:
+            st.markdown("**最近扫描回填助手**")
+            _render_mobsf_prefill_candidates(app_tool, recent_scans, "最近扫描", "mobsf_recent_prefill")
+
+    with tab_search:
+        _render_structured_payload(search_result, "还没有执行 MobSF 搜索。")
+        if search_result:
+            st.markdown("**搜索结果回填助手**")
+            _render_mobsf_prefill_candidates(app_tool, search_result, "搜索结果", "mobsf_search_prefill")
+
+    with tab_dynamic:
+        st.markdown(
+            '<div class="security-note">动态分析结果仍依赖 MobSF 侧已经准备好的模拟器、真机、Frida、Corellium 或越狱设备环境。当前页面负责按官方 REST API 拉取动态报告，并整理为测试视角的问题清单和复测建议。</div>',
+            unsafe_allow_html=True,
+        )
+        dyn_tab1, dyn_tab2, dyn_tab3 = st.tabs(["Android", "iOS Corellium", "iOS 越狱设备"])
+
+        with dyn_tab1:
+            st.caption("Android 动态报告官方要求 `hash`。可直接复用静态分析阶段返回的 hash。")
+            st.text_input(
+                "Android 动态报告 Hash",
+                key="app_sec_mobsf_dynamic_android_hash",
+                placeholder="输入 MobSF 动态分析对应的 hash",
+            )
+            android_action_col1, android_action_col2, android_action_col3, android_action_col4 = st.columns(4)
+            with android_action_col1:
+                if st.button(
+                    "📱 获取 Android 可分析应用",
+                    key="app_sec_mobsf_get_android_apps",
+                    use_container_width=True,
+                    disabled=not current_profile_ready,
+                ):
+                    try:
+                        st.session_state.app_sec_mobsf_android_dynamic_apps = app_tool.mobsf_get_android_dynamic_apps(
+                            base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                            api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                            timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                            verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                        )
+                        st.success("Android 可分析应用列表已刷新。")
+                    except Exception as exc:
+                        st.error(f"获取 Android 应用列表失败: {exc}")
+            with android_action_col2:
+                if st.button(
+                    "▶️ 启动动态分析",
+                    key="app_sec_mobsf_start_android_dynamic_report",
+                    use_container_width=True,
+                    disabled=not current_profile_ready,
+                ):
+                    android_hash = str(st.session_state.get("app_sec_mobsf_dynamic_android_hash", "") or "").strip()
+                    if not android_hash:
+                        st.warning("请先输入 Android 动态分析对应的 hash。")
+                    else:
+                        try:
+                            st.session_state.app_sec_mobsf_android_dynamic_action_result = app_tool.mobsf_start_android_dynamic_analysis(
+                                base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                                api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                                file_hash=android_hash,
+                                timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                                verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                            )
+                            st.success("Android 动态分析已启动。请在设备或模拟器里操作目标应用，完成后点“停止并收集结果”。")
+                        except Exception as exc:
+                            _render_mobsf_android_dynamic_environment_hint(app_tool, exc, "启动 Android 动态分析")
+            with android_action_col3:
+                if st.button(
+                    "⏹️ 停止并收集结果",
+                    key="app_sec_mobsf_stop_android_dynamic_report",
+                    use_container_width=True,
+                    disabled=not current_profile_ready,
+                ):
+                    android_hash = str(st.session_state.get("app_sec_mobsf_dynamic_android_hash", "") or "").strip()
+                    if not android_hash:
+                        st.warning("请先输入 Android 动态分析对应的 hash。")
+                    else:
+                        try:
+                            st.session_state.app_sec_mobsf_android_dynamic_action_result = app_tool.mobsf_stop_android_dynamic_analysis(
+                                base_url=st.session_state.get("app_sec_mobsf_base_url", ""),
+                                api_key=st.session_state.get("app_sec_mobsf_api_key", ""),
+                                file_hash=android_hash,
+                                timeout_seconds=float(st.session_state.get("app_sec_mobsf_timeout", 180.0) or 180.0),
+                                verify_ssl=bool(st.session_state.get("app_sec_mobsf_verify_ssl", True)),
+                            )
+                            try:
+                                _load_mobsf_android_dynamic_bundle(app_tool, android_hash)
+                                st.success("Android 动态分析已停止，报告已拉取。")
+                            except Exception as report_exc:
+                                if app_tool.is_mobsf_dynamic_report_unavailable_error(report_exc):
+                                    st.success("Android 动态分析已停止，MobSF 正在收集结果。")
+                                    _render_mobsf_android_dynamic_report_unavailable_hint(app_tool, android_hash)
+                                else:
+                                    st.warning(f"Android 动态分析已停止，但自动拉报告失败: {report_exc}")
+                        except Exception as exc:
+                            _render_mobsf_android_dynamic_environment_hint(app_tool, exc, "停止 Android 动态分析")
+            with android_action_col4:
+                if st.button(
+                    "📥 拉 Android 动态报告",
+                    key="app_sec_mobsf_get_android_dynamic_report",
+                    use_container_width=True,
+                    disabled=not current_profile_ready,
+                ):
+                    android_hash = str(st.session_state.get("app_sec_mobsf_dynamic_android_hash", "") or "").strip()
+                    if not android_hash:
+                        st.warning("请先输入 Android 动态分析对应的 hash。")
+                    else:
+                        try:
+                            _load_mobsf_android_dynamic_bundle(app_tool, android_hash)
+                            st.success("Android 动态报告已拉取。")
+                        except Exception as exc:
+                            _handle_mobsf_android_dynamic_report_exception(
+                                app_tool,
+                                android_hash,
+                                exc,
+                                "获取 Android 动态报告",
+                            )
+            if android_dynamic_apps:
+                st.markdown("**Android 可分析应用**")
+                _render_structured_payload(android_dynamic_apps, "暂无 Android 可分析应用数据。")
+                _render_mobsf_android_dynamic_apps_hint(android_dynamic_apps)
+                _render_mobsf_prefill_candidates(app_tool, android_dynamic_apps, "Android 可分析应用", "mobsf_android_apps_prefill")
+            if android_dynamic_action_result:
+                st.markdown("**Android 动态执行状态**")
+                _render_structured_payload(android_dynamic_action_result, "暂无 Android 动态执行状态。")
+            _render_mobsf_runtime_bundle(android_dynamic_bundle, "还没有拉取 Android 动态报告。")
+
+        with dyn_tab2:
+            st.caption("iOS Corellium 动态报告官方要求 `instance_id + bundle_id`。")
+            ios_col1, ios_col2 = st.columns(2)
+            with ios_col1:
+                st.text_input(
+                    "Corellium Instance ID",
+                    key="app_sec_mobsf_dynamic_ios_instance_id",
+                    placeholder="输入 MobSF / Corellium instance_id",
+                )
+            with ios_col2:
+                st.text_input(
+                    "iOS Bundle ID",
+                    key="app_sec_mobsf_dynamic_ios_bundle_id",
+                    placeholder="例如 com.demo.app",
+                )
+            if st.button("🍎 拉 iOS Corellium 动态报告", key="app_sec_mobsf_get_ios_dynamic_report", use_container_width=True):
+                instance_id = str(st.session_state.get("app_sec_mobsf_dynamic_ios_instance_id", "") or "").strip()
+                bundle_id = str(st.session_state.get("app_sec_mobsf_dynamic_ios_bundle_id", "") or "").strip()
+                if not instance_id or not bundle_id:
+                    st.warning("请先输入 instance_id 和 bundle_id。")
+                else:
+                    try:
+                        _load_mobsf_ios_dynamic_bundle(app_tool, instance_id, bundle_id)
+                        st.success("iOS Corellium 动态报告已拉取。")
+                    except Exception as exc:
+                        st.error(f"获取 iOS Corellium 动态报告失败: {exc}")
+            _render_mobsf_runtime_bundle(ios_dynamic_bundle, "还没有拉取 iOS Corellium 动态报告。")
+
+        with dyn_tab3:
+            st.caption("越狱 iOS 真机动态报告官方要求 `device_id + bundle_id`。")
+            ios_device_col1, ios_device_col2 = st.columns(2)
+            with ios_device_col1:
+                st.text_input(
+                    "iOS Device ID",
+                    key="app_sec_mobsf_dynamic_ios_device_id",
+                    placeholder="输入越狱 iOS 设备 device_id",
+                )
+            with ios_device_col2:
+                st.text_input(
+                    "iOS Device Bundle ID",
+                    key="app_sec_mobsf_dynamic_ios_device_bundle_id",
+                    placeholder="例如 com.demo.app",
+                )
+            if st.button("📲 拉 iOS 真机动态报告", key="app_sec_mobsf_get_ios_device_dynamic_report", use_container_width=True):
+                device_id = str(st.session_state.get("app_sec_mobsf_dynamic_ios_device_id", "") or "").strip()
+                bundle_id = str(st.session_state.get("app_sec_mobsf_dynamic_ios_device_bundle_id", "") or "").strip()
+                if not device_id or not bundle_id:
+                    st.warning("请先输入 device_id 和 bundle_id。")
+                else:
+                    try:
+                        _load_mobsf_ios_device_dynamic_bundle(app_tool, device_id, bundle_id)
+                        st.success("iOS 真机动态报告已拉取。")
+                    except Exception as exc:
+                        st.error(f"获取 iOS 真机动态报告失败: {exc}")
+            _render_mobsf_runtime_bundle(ios_device_dynamic_bundle, "还没有拉取 iOS 真机动态报告。")
+
+        st.markdown("**准备建议**")
+        for note in quick_start.get("notes", []):
+            st.markdown(f"- {note}")
+
+    with tab_export:
+        def append_review_exports(export_items: List[Dict[str, Any]], label_prefix: str, file_prefix: str, review_bundle: Dict[str, Any]):
+            if not review_bundle:
+                return
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}二次整理 JSON",
+                    "data": json.dumps(review_bundle, ensure_ascii=False, indent=2),
+                    "file_name": f"{file_prefix}_review.json",
+                    "mime": "application/json",
+                }
+            )
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}问题清单 CSV",
+                    "data": pd.DataFrame(review_bundle.get("issue_register", [])).to_csv(index=False),
+                    "file_name": f"{file_prefix}_issue_register.csv",
+                    "mime": "text/csv",
+                }
+            )
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}回归套件 CSV",
+                    "data": pd.DataFrame(review_bundle.get("regression_suite", [])).to_csv(index=False),
+                    "file_name": f"{file_prefix}_regression_suite.csv",
+                    "mime": "text/csv",
+                }
+            )
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}二次整理 Markdown",
+                    "data": review_bundle.get("markdown", ""),
+                    "file_name": f"{file_prefix}_review.md",
+                    "mime": "text/markdown",
+                }
+            )
+
+        def append_runtime_bundle_exports(export_items: List[Dict[str, Any]], label_prefix: str, file_prefix: str, runtime_bundle: Dict[str, Any]):
+            if not runtime_bundle:
+                return
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}Bundle JSON",
+                    "data": json.dumps(runtime_bundle, ensure_ascii=False, indent=2),
+                    "file_name": f"{file_prefix}_bundle.json",
+                    "mime": "application/json",
+                }
+            )
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}动态报告 JSON",
+                    "data": json.dumps(runtime_bundle.get("json_report", {}), ensure_ascii=False, indent=2),
+                    "file_name": f"{file_prefix}_report.json",
+                    "mime": "application/json",
+                }
+            )
+            append_review_exports(export_items, label_prefix, file_prefix, runtime_bundle.get("review_bundle", {}))
+
+        export_items = [
+            {
+                "label": "下载 MobSF 快速上手 Markdown",
+                "data": "\n".join([
+                    "# MobSF 集成说明",
+                    "",
+                    f"- 官方仓库: {quick_start.get('official_repo', '')}",
+                    "",
+                    "## Docker 启动",
+                    *[f"- `{command}`" for command in quick_start.get("docker_commands", [])],
+                    "",
+                    "## 静态分析 API",
+                    *[
+                        f"- {item['method']} {item['path']} : {item['description']}"
+                        for item in quick_start.get("static_endpoints", [])
+                    ],
+                    "",
+                    "## Android 动态分析 API",
+                    *[
+                        f"- {item['method']} {item['path']} : {item['description']}"
+                        for item in quick_start.get("android_dynamic_endpoints", [])
+                    ],
+                    "",
+                    "## iOS 动态分析 API",
+                    *[
+                        f"- {item['method']} {item['path']} : {item['description']}"
+                        for item in quick_start.get("ios_dynamic_endpoints", [])
+                    ],
+                    "",
+                    "## iOS 越狱设备动态 API",
+                    *[
+                        f"- {item['method']} {item['path']} : {item['description']}"
+                        for item in quick_start.get("ios_device_dynamic_endpoints", [])
+                    ],
+                ]),
+                "file_name": "mobsf_quick_start.md",
+                "mime": "text/markdown",
+            },
+        ]
+        if bundle:
+            export_items.append(
+                {
+                    "label": "下载 MobSF 静态分析 Bundle JSON",
+                    "data": json.dumps({k: v for k, v in bundle.items() if k != "pdf_bytes"}, ensure_ascii=False, indent=2),
+                    "file_name": "mobsf_static_bundle.json",
+                    "mime": "application/json",
+                }
+            )
+            export_items.append(
+                {
+                    "label": "下载 MobSF JSON 报告",
+                    "data": json.dumps(bundle.get("json_report", {}), ensure_ascii=False, indent=2),
+                    "file_name": f"mobsf_report_{bundle.get('hash', 'latest')}.json",
+                    "mime": "application/json",
+                }
+            )
+            export_items.append(
+                {
+                    "label": "下载 MobSF Scorecard",
+                    "data": json.dumps(bundle.get("scorecard", {}), ensure_ascii=False, indent=2),
+                    "file_name": f"mobsf_scorecard_{bundle.get('hash', 'latest')}.json",
+                    "mime": "application/json",
+                }
+            )
+            if bundle.get("review_bundle"):
+                append_review_exports(
+                    export_items,
+                    "MobSF 静态分析",
+                    f"mobsf_static_{bundle.get('hash', 'latest')}",
+                    bundle.get("review_bundle", {}),
+                )
+            if bundle.get("pdf_bytes"):
+                export_items.append(
+                    {
+                        "label": "下载 MobSF PDF 报告",
+                        "data": bundle.get("pdf_bytes", b""),
+                        "file_name": f"mobsf_report_{bundle.get('hash', 'latest')}.pdf",
+                        "mime": "application/pdf",
+                    }
+                )
+        if hash_report:
+            export_items.append(
+                {
+                    "label": "下载按 Hash 拉取的 JSON 报告",
+                    "data": json.dumps(hash_report, ensure_ascii=False, indent=2),
+                    "file_name": "mobsf_hash_report.json",
+                    "mime": "application/json",
+                }
+            )
+            if hash_review_bundle:
+                append_review_exports(export_items, "按 Hash 静态结果", "mobsf_hash_static", hash_review_bundle)
+        if hash_scorecard:
+            export_items.append(
+                {
+                    "label": "下载按 Hash 拉取的 Scorecard",
+                    "data": json.dumps(hash_scorecard, ensure_ascii=False, indent=2),
+                    "file_name": "mobsf_hash_scorecard.json",
+                    "mime": "application/json",
+                }
+            )
+        if hash_pdf_bytes:
+            export_items.append(
+                {
+                    "label": "下载按 Hash 拉取的 PDF",
+                    "data": hash_pdf_bytes,
+                    "file_name": "mobsf_hash_report.pdf",
+                    "mime": "application/pdf",
+                }
+            )
+        if android_dynamic_apps:
+            export_items.append(
+                {
+                    "label": "下载 Android 可分析应用 JSON",
+                    "data": json.dumps(android_dynamic_apps, ensure_ascii=False, indent=2),
+                    "file_name": "mobsf_android_dynamic_apps.json",
+                    "mime": "application/json",
+                }
+            )
+        append_runtime_bundle_exports(export_items, "Android 动态", "mobsf_android_dynamic", android_dynamic_bundle)
+        append_runtime_bundle_exports(export_items, "iOS Corellium 动态", "mobsf_ios_dynamic", ios_dynamic_bundle)
+        append_runtime_bundle_exports(export_items, "iOS 真机动态", "mobsf_ios_device_dynamic", ios_device_dynamic_bundle)
+
+        render_download_panel(
+            title="MobSF 导出区",
+            description="统一导出 MobSF 快速上手说明、静态/动态分析结果和按 Hash 拉取的报告。",
+            items=export_items,
+            key_prefix="mobsf_security_exports",
+            metrics=[
+                {"label": "最近扫描", "value": str(len(recent_scans) if isinstance(recent_scans, list) else int(bool(recent_scans)))},
+                {"label": "搜索结果", "value": str(len(search_result) if isinstance(search_result, list) else int(bool(search_result)))},
+                {
+                    "label": "动态结果",
+                    "value": str(
+                        sum(
+                            1
+                            for item in [android_dynamic_bundle, ios_dynamic_bundle, ios_device_dynamic_bundle]
+                            if item
+                        )
+                    ),
+                },
+            ],
+            empty_message="先执行 MobSF 上传扫描、拉取静态或动态报告后才能导出。",
+        )
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
+    mobile_tab1, mobile_tab2 = st.tabs(["本地静态扫描", "MobSF 集成"])
+    with mobile_tab1:
+        _render_local_mobile_security_tab(app_tool)
+    with mobile_tab2:
+        _render_mobsf_mobile_security_tab(app_tool)
 
 
 def _render_web_security_tab(app_tool: ApplicationSecurityTool):
@@ -1583,7 +2915,7 @@ def render_api_security_test_page():
         """
         <div class="security-banner">
             <h3>🛡️ 应用安全测试</h3>
-            <p>统一的应用安全工作台，覆盖 API 文档安全、移动端 APK/IPA 静态扫描和 Web 站点基线扫描。默认坚持安全边界，只做授权范围内的低风险探测和清单化审计。</p>
+            <p>统一的应用安全工作台，覆盖 API 文档安全、移动端 APK/IPA/APPX 静态扫描、MobSF 官方集成和 Web 站点基线扫描。默认坚持安全边界，只做授权范围内的低风险探测和清单化审计。</p>
         </div>
         """,
         unsafe_allow_html=True,
@@ -1601,7 +2933,7 @@ def render_api_security_test_page():
         tips=["默认坚持低风险探测", "适合授权环境", "自动发现后仍建议人工复核"],
         eyebrow="页面向导",
     )
-    tab_api, tab_mobile, tab_web = st.tabs(["API 文档安全", "移动包(.apk/.ipa)", "Web 站点 URL"])
+    tab_api, tab_mobile, tab_web = st.tabs(["API 文档安全", "移动包 / MobSF", "Web 站点 URL"])
 
     with tab_api:
         _render_source_section(core)

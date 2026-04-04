@@ -441,7 +441,7 @@ class EnhancedReportGenerator:
     <body>
     <div class="container">
         <div class='heading'>
-            <h1>🚀 接口自动化测试报告</h1>
+            <h1>🤖 接口自动化测试报告</h1>
             <p class='attribute'><strong>开始时间:</strong> {timestamp}</p>
             <p class='attribute'><strong>运行时长:</strong> {duration:.2f} 秒</p>
             <p class='attribute'><strong>测试框架:</strong> {framework}</p>

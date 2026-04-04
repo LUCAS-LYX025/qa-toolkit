@@ -651,7 +651,7 @@ TOOL_CATEGORIES = {
         "color": "#3182ce"
     },
     "接口自动化测试": {
-        "icon": "🚀",
+        "icon": "🤖",
         "description": "基于接口文档自动生成和执行测试用例"
     },
 }

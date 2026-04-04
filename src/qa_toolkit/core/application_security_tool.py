@@ -1,6 +1,7 @@
 import io
 import ipaddress
 import json
+import os
 import plistlib
 import re
 import socket
@@ -8,6 +9,7 @@ import ssl
 import struct
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 import zipfile
 from collections import deque
 from datetime import datetime
@@ -20,7 +22,158 @@ from bs4 import BeautifulSoup
 
 
 class ApplicationSecurityTool:
-    """应用安全测试工具，支持 APK/IPA 静态包分析和 Web 站点基线扫描。"""
+    """应用安全测试工具，支持 APK/IPA/APPX 静态包分析、MobSF 集成和 Web 站点基线扫描。"""
+
+    MOBSF_OFFICIAL_REPO = "https://github.com/MobSF/Mobile-Security-Framework-MobSF"
+    MOBSF_STATIC_API_SOURCE = (
+        "https://raw.githubusercontent.com/MobSF/Mobile-Security-Framework-MobSF/master/"
+        "mobsf/MobSF/views/api/api_static_analysis.py"
+    )
+    MOBSF_DYNAMIC_API_SOURCE = (
+        "https://raw.githubusercontent.com/MobSF/Mobile-Security-Framework-MobSF/master/"
+        "mobsf/MobSF/views/api/api_android_dynamic_analysis.py"
+    )
+    MOBSF_URLS_SOURCE = (
+        "https://raw.githubusercontent.com/MobSF/Mobile-Security-Framework-MobSF/master/"
+        "mobsf/MobSF/urls.py"
+    )
+    MOBSF_DOCKER_IMAGE = "opensecurity/mobile-security-framework-mobsf:latest"
+    MOBSF_STATIC_ENDPOINTS = [
+        {"name": "upload", "method": "POST", "path": "/api/v1/upload", "description": "上传 APK / IPA / APPX 等包到 MobSF"},
+        {"name": "scan", "method": "POST", "path": "/api/v1/scan", "description": "按 hash 触发静态分析"},
+        {"name": "report_json", "method": "POST", "path": "/api/v1/report_json", "description": "获取静态分析 JSON 报告"},
+        {"name": "download_pdf", "method": "POST", "path": "/api/v1/download_pdf", "description": "下载 PDF 报告"},
+        {"name": "scorecard", "method": "POST", "path": "/api/v1/scorecard", "description": "获取 AppSec Scorecard"},
+        {"name": "scans", "method": "GET", "path": "/api/v1/scans", "description": "查询最近扫描记录"},
+        {"name": "search", "method": "POST", "path": "/api/v1/search", "description": "按 hash 或关键字搜索历史扫描"},
+    ]
+    MOBSF_ANDROID_DYNAMIC_ENDPOINTS = [
+        {"name": "dynamic_get_apps", "method": "GET", "path": "/api/v1/dynamic/get_apps", "description": "获取可用于动态分析的 Android 应用"},
+        {"name": "dynamic_start_analysis", "method": "POST", "path": "/api/v1/dynamic/start_analysis", "description": "启动 Android 动态分析"},
+        {"name": "dynamic_stop_analysis", "method": "POST", "path": "/api/v1/dynamic/stop_analysis", "description": "停止 Android 动态分析并收集结果"},
+        {"name": "android_tls_tests", "method": "POST", "path": "/api/v1/android/tls_tests", "description": "执行 TLS/SSL 测试"},
+        {"name": "frida_api_monitor", "method": "POST", "path": "/api/v1/frida/api_monitor", "description": "获取 Android API Monitor 结果"},
+        {"name": "frida_logs", "method": "POST", "path": "/api/v1/frida/logs", "description": "获取 Android Frida 日志"},
+        {"name": "frida_instrument", "method": "POST", "path": "/api/v1/frida/instrument", "description": "注入 Frida Hook"},
+        {"name": "dynamic_report_json", "method": "POST", "path": "/api/v1/dynamic/report_json", "description": "获取 Android 动态分析报告"},
+    ]
+    MOBSF_IOS_DYNAMIC_ENDPOINTS = [
+        {"name": "ios_dynamic_analysis", "method": "POST", "path": "/api/v1/ios/dynamic_analysis", "description": "初始化 iOS 动态分析"},
+        {"name": "ios_setup_environment", "method": "POST", "path": "/api/v1/ios/setup_environment", "description": "为 Corellium iOS 实例准备动态分析环境"},
+        {"name": "ios_dynamic_analyzer", "method": "POST", "path": "/api/v1/ios/dynamic_analyzer", "description": "执行 iOS 动态分析会话"},
+        {"name": "ios_run_app", "method": "POST", "path": "/api/v1/ios/run_app", "description": "在 Corellium 实例中启动 iOS 应用"},
+        {"name": "ios_network_capture", "method": "POST", "path": "/api/v1/ios/network_capture", "description": "启停 iOS 网络抓包"},
+        {"name": "ios_take_screenshot", "method": "POST", "path": "/api/v1/ios/take_screenshot", "description": "获取 iOS 动态测试截图"},
+        {"name": "ios_report_json", "method": "POST", "path": "/api/v1/dynamic/ios_report_json", "description": "获取 iOS 动态分析报告"},
+    ]
+    MOBSF_IOS_DEVICE_DYNAMIC_ENDPOINTS = [
+        {"name": "ios_device_dynamic_analysis", "method": "POST", "path": "/api/v1/ios/device_dynamic_analysis", "description": "初始化越狱 iOS 真机动态分析"},
+        {"name": "ios_device_dynamic_analyzer", "method": "POST", "path": "/api/v1/ios/device_dynamic_analyzer", "description": "执行越狱 iOS 真机动态分析会话"},
+        {"name": "ios_device_api_monitor", "method": "POST", "path": "/api/v1/ios/device_api_monitor", "description": "获取越狱 iOS 真机 API Monitor 结果"},
+        {"name": "ios_device_report_json", "method": "POST", "path": "/api/v1/ios/device_report_json", "description": "获取越狱 iOS 真机动态分析报告"},
+    ]
+    MOBSF_UPLOAD_CONTENT_TYPES = {
+        ".a": "application/octet-stream",
+        ".aab": "application/octet-stream",
+        ".aar": "application/octet-stream",
+        ".apk": "application/vnd.android.package-archive",
+        ".apks": "application/octet-stream",
+        ".appx": "application/vns.ms-appx",
+        ".dylib": "application/octet-stream",
+        ".ipa": "application/x-itunes-ipa",
+        ".jar": "application/java-archive",
+        ".so": "application/octet-stream",
+        ".xapk": "application/octet-stream",
+        ".zip": "application/zip",
+    }
+    MOBSF_SECTION_RULES = [
+        {
+            "keywords": ["permission", "capability"],
+            "category": "权限能力",
+            "severity": "medium",
+            "title": "权限 / Capability 复核",
+            "focus": "最小权限、敏感能力边界、运行时授权说明",
+        },
+        {
+            "keywords": ["manifest", "plist", "entitlement", "exported", "component", "service", "receiver", "provider"],
+            "category": "组件暴露",
+            "severity": "high",
+            "title": "组件 / 配置暴露复核",
+            "focus": "导出组件、调试配置、备份与沙盒边界",
+        },
+        {
+            "keywords": ["network", "ats", "domain", "url", "ip", "certificate", "ssl", "tls"],
+            "category": "传输外联",
+            "severity": "medium",
+            "title": "网络 / 证书 / 外联面复核",
+            "focus": "明文流量、证书校验、外联域名与环境地址",
+        },
+        {
+            "keywords": ["secret", "key", "token", "password", "credential"],
+            "category": "密钥凭证",
+            "severity": "high",
+            "title": "疑似密钥 / 凭证复核",
+            "focus": "硬编码密钥、固定 Token、调试凭证、证书材料",
+        },
+        {
+            "keywords": ["tracker", "firebase", "analytics", "thirdparty", "third_party", "sdk"],
+            "category": "三方依赖",
+            "severity": "low",
+            "title": "第三方 SDK / Tracker 复核",
+            "focus": "第三方依赖、隐私采集、SDK 最小暴露面",
+        },
+        {
+            "keywords": ["code", "binary", "api", "string", "source"],
+            "category": "代码实现",
+            "severity": "medium",
+            "title": "代码 / 二进制线索复核",
+            "focus": "危险 API、调试线索、反调试与抗篡改策略",
+        },
+        {
+            "keywords": ["dynamic", "runtime", "frida", "logcat", "traffic", "api_monitor", "tls", "network_capture"],
+            "category": "运行时行为",
+            "severity": "medium",
+            "title": "运行时行为 / 动态探针复核",
+            "focus": "TLS 抓包、运行时日志、API Monitor、Hook 结果和敏感调用链",
+        },
+    ]
+    MOBSF_TERM_RULES = [
+        {
+            "terms": ["http://", "cleartext", "allow arbitrary loads", "network security"],
+            "category": "传输外联",
+            "severity": "medium",
+            "title": "发现明文传输或网络配置风险线索",
+            "focus": "HTTPS、ATS、Network Security Config、证书校验",
+        },
+        {
+            "terms": ["allowbackup", "debuggable", "test-keys", "get-task-allow", "runfulltrust"],
+            "category": "组件暴露",
+            "severity": "high",
+            "title": "发现调试或高风险配置线索",
+            "focus": "调试签名、备份策略、调试开关、全信任运行",
+        },
+        {
+            "terms": ["exported", "deeplink", "scheme", "associated", "appservice", "protocol"],
+            "category": "组件暴露",
+            "severity": "medium",
+            "title": "发现组件或唤起面暴露线索",
+            "focus": "导出组件、Deep Link、URL Scheme、App Service",
+        },
+        {
+            "terms": ["token", "secret", "apikey", "api_key", "private key", "password", "credential"],
+            "category": "密钥凭证",
+            "severity": "high",
+            "title": "发现疑似密钥或凭证线索",
+            "focus": "固定凭证、硬编码密钥、证书材料、敏感字符串",
+        },
+        {
+            "terms": ["root", "jailbreak", "xposed", "frida", "ssl pinning", "certificate pinning"],
+            "category": "代码实现",
+            "severity": "medium",
+            "title": "发现运行时安全相关线索",
+            "focus": "Root/Jailbreak、Frida、Xposed、证书绑定、反调试",
+        },
+    ]
 
     APK_COMPONENT_TAGS = {"activity", "activity-alias", "service", "receiver", "provider"}
     APK_HIGH_RISK_PERMISSIONS = {
@@ -57,6 +210,23 @@ class ApplicationSecurityTool:
         "android.permission.BIND_ACCESSIBILITY_SERVICE",
         "android.permission.WRITE_SETTINGS",
         "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    }
+    APPX_HIGH_RISK_CAPABILITIES = {
+        "runFullTrust",
+        "enterpriseAuthentication",
+        "sharedUserCertificates",
+        "broadFileSystemAccess",
+        "documentsLibrary",
+    }
+    APPX_MEDIUM_RISK_CAPABILITIES = {
+        "internetClientServer",
+        "privateNetworkClientServer",
+        "location",
+        "webcam",
+        "microphone",
+        "contacts",
+        "picturesLibrary",
+        "videosLibrary",
     }
     SDK_HINTS = {
         "Firebase": ["firebase", "googleanalytics", "crashlytics"],
@@ -240,8 +410,10 @@ class ApplicationSecurityTool:
                 result = self._scan_apk_package(package_path, file_bytes, keywords)
             elif suffix == ".ipa":
                 result = self._scan_ipa_package(package_path, file_bytes, keywords)
+            elif suffix == ".appx":
+                result = self._scan_appx_package(package_path, file_bytes, keywords)
             else:
-                raise ValueError("仅支持上传 .apk 或 .ipa 文件。")
+                raise ValueError("仅支持上传 .apk、.ipa 或 .appx 文件。")
 
         result["summary"] = self._build_summary(result.get("findings", []))
         result["report_markdown"] = self.build_mobile_report_markdown(result)
@@ -424,6 +596,1107 @@ class ApplicationSecurityTool:
         result["report_markdown"] = self.build_web_report_markdown(result)
         return result
 
+    def build_mobsf_quick_start(self, base_url: str = "http://127.0.0.1:8000") -> Dict[str, Any]:
+        normalized_base_url = self._normalize_mobsf_base_url(base_url)
+        return {
+            "official_repo": self.MOBSF_OFFICIAL_REPO,
+            "docker_image": self.MOBSF_DOCKER_IMAGE,
+            "docker_commands": [
+                f"docker pull {self.MOBSF_DOCKER_IMAGE}",
+                f"docker run -it --rm -p 8000:8000 {self.MOBSF_DOCKER_IMAGE}",
+            ],
+            "static_endpoints": self.MOBSF_STATIC_ENDPOINTS,
+            "android_dynamic_endpoints": self.MOBSF_ANDROID_DYNAMIC_ENDPOINTS,
+            "ios_dynamic_endpoints": self.MOBSF_IOS_DYNAMIC_ENDPOINTS,
+            "ios_device_dynamic_endpoints": self.MOBSF_IOS_DEVICE_DYNAMIC_ENDPOINTS,
+            "curl_examples": {
+                "upload": (
+                    "curl -X POST "
+                    f"'{normalized_base_url}/api/v1/upload' "
+                    "-H 'X-Mobsf-Api-Key: <api-key>' "
+                    "-F 'file=@sample.apk'"
+                ),
+                "scan": (
+                    "curl -X POST "
+                    f"'{normalized_base_url}/api/v1/scan' "
+                    "-H 'X-Mobsf-Api-Key: <api-key>' "
+                    "-F 'hash=<scan-hash>'"
+                ),
+                "report_json": (
+                    "curl -X POST "
+                    f"'{normalized_base_url}/api/v1/report_json' "
+                    "-H 'X-Mobsf-Api-Key: <api-key>' "
+                    "-F 'hash=<scan-hash>'"
+                ),
+                "android_dynamic_report": (
+                    "curl -X POST "
+                    f"'{normalized_base_url}/api/v1/dynamic/report_json' "
+                    "-H 'X-Mobsf-Api-Key: <api-key>' "
+                    "-F 'hash=<scan-hash>'"
+                ),
+                "ios_dynamic_report": (
+                    "curl -X POST "
+                    f"'{normalized_base_url}/api/v1/dynamic/ios_report_json' "
+                    "-H 'X-Mobsf-Api-Key: <api-key>' "
+                    "-F 'instance_id=<corellium-instance-id>' "
+                    "-F 'bundle_id=<ios-bundle-id>'"
+                ),
+            },
+            "notes": [
+                "静态分析支持 APK、IPA、APPX 等移动包格式。",
+                "动态分析需要额外准备真机、模拟器、Frida 或 Corellium 等环境。",
+                "MobSF REST API 默认使用 X-Mobsf-Api-Key 或 Authorization 头做鉴权。",
+            ],
+            "sources": [
+                self.MOBSF_OFFICIAL_REPO,
+                self.MOBSF_STATIC_API_SOURCE,
+                self.MOBSF_DYNAMIC_API_SOURCE,
+                self.MOBSF_URLS_SOURCE,
+            ],
+        }
+
+    def run_mobsf_static_analysis(
+        self,
+        base_url: str,
+        api_key: str,
+        file_name: str,
+        file_bytes: bytes,
+        timeout_seconds: float = 180.0,
+        verify_ssl: bool = True,
+        include_pdf: bool = False,
+    ) -> Dict[str, Any]:
+        upload_result = self.mobsf_upload_file(
+            base_url=base_url,
+            api_key=api_key,
+            file_name=file_name,
+            file_bytes=file_bytes,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+        file_hash = self._pick_mobsf_hash(upload_result)
+        if not file_hash:
+            raise ValueError("MobSF 上传成功，但响应中未返回可用的 hash。")
+
+        scan_result = self.mobsf_scan_hash(
+            base_url=base_url,
+            api_key=api_key,
+            file_hash=file_hash,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+        report_json = self.mobsf_get_json_report(
+            base_url=base_url,
+            api_key=api_key,
+            file_hash=file_hash,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+
+        try:
+            scorecard = self.mobsf_get_scorecard(
+                base_url=base_url,
+                api_key=api_key,
+                file_hash=file_hash,
+                timeout_seconds=timeout_seconds,
+                verify_ssl=verify_ssl,
+            )
+        except Exception as exc:
+            scorecard = {"error": str(exc)}
+
+        pdf_bytes = b""
+        if include_pdf:
+            try:
+                pdf_bytes = self.mobsf_get_pdf_report(
+                    base_url=base_url,
+                    api_key=api_key,
+                    file_hash=file_hash,
+                    timeout_seconds=timeout_seconds,
+                    verify_ssl=verify_ssl,
+                )
+            except Exception:
+                pdf_bytes = b""
+
+        return {
+            "generated_at": self._now(),
+            "base_url": self._normalize_mobsf_base_url(base_url),
+            "official_repo": self.MOBSF_OFFICIAL_REPO,
+            "sources": self.build_mobsf_quick_start(base_url).get("sources", []),
+            "upload": upload_result,
+            "scan": scan_result,
+            "hash": file_hash,
+            "json_report": report_json,
+            "scorecard": scorecard,
+            "pdf_bytes": pdf_bytes,
+            "review_bundle": self.build_mobsf_review_bundle(
+                report_json=report_json,
+                scorecard=scorecard,
+                file_hash=file_hash,
+                scan_type=scan_result.get("scan_type") or upload_result.get("scan_type") or "",
+                app_name=upload_result.get("file_name") or report_json.get("app_name") or "",
+                analysis_mode="static",
+                platform=self._mobsf_platform_from_scan_type(
+                    scan_result.get("scan_type") or upload_result.get("scan_type") or report_json.get("scan_type") or ""
+                ),
+            ),
+            "summary": self.summarize_mobsf_bundle(
+                upload_result=upload_result,
+                scan_result=scan_result,
+                report_json=report_json,
+                scorecard=scorecard,
+                pdf_bytes=pdf_bytes,
+            ),
+        }
+
+    def mobsf_upload_file(
+        self,
+        base_url: str,
+        api_key: str,
+        file_name: str,
+        file_bytes: bytes,
+        timeout_seconds: float = 180.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/upload",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            files={"file": self._build_mobsf_upload_file_part(file_name, file_bytes)},
+        )
+
+    def mobsf_scan_hash(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 180.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/scan",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def mobsf_get_json_report(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/report_json",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def mobsf_get_pdf_report(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 120.0,
+        verify_ssl: bool = True,
+    ) -> bytes:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/download_pdf",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+            expect_json=False,
+        )
+
+    def mobsf_get_scorecard(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/scorecard",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def mobsf_get_recent_scans(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "GET",
+            base_url,
+            "/api/v1/scans",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+
+    def mobsf_check_connection(
+        self,
+        base_url: str,
+        api_key: str = "",
+        timeout_seconds: float = 20.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        normalized_base_url = self._normalize_mobsf_base_url(base_url)
+        headers: Dict[str, str] = {}
+        api_token = str(api_key or "").strip()
+        if api_token:
+            headers["X-Mobsf-Api-Key"] = api_token
+
+        url = normalized_base_url + "/api/v1/scans"
+        try:
+            response = requests.request(
+                "GET",
+                url,
+                headers=headers,
+                timeout=max(float(timeout_seconds), 1.0),
+                verify=bool(verify_ssl),
+            )
+        except requests.RequestException as exc:
+            return {
+                "success": False,
+                "reachable": False,
+                "authenticated": False,
+                "base_url": normalized_base_url,
+                "status_code": None,
+                "message": f"无法连接 MobSF 服务: {exc}",
+                "recent_scan_count": 0,
+                "payload": {},
+            }
+
+        payload: Dict[str, Any]
+        try:
+            json_payload = response.json()
+            payload = json_payload if isinstance(json_payload, dict) else {"items": json_payload}
+        except Exception:
+            payload = {"raw_text": (response.text or "").strip()[:300]}
+
+        candidates = self.mobsf_extract_reference_candidates(payload, source_name="连通性检查")
+        if response.status_code < 400:
+            return {
+                "success": True,
+                "reachable": True,
+                "authenticated": True,
+                "base_url": normalized_base_url,
+                "status_code": response.status_code,
+                "message": "MobSF 服务可达，API 鉴权通过。",
+                "recent_scan_count": len(candidates),
+                "payload": payload,
+            }
+
+        error_text = str(payload.get("error") or payload.get("raw_text") or f"HTTP {response.status_code}")
+        if response.status_code in {401, 403}:
+            message = f"MobSF 服务可达，但 API Key 无效或权限不足: {error_text}"
+        elif response.status_code == 404:
+            message = (
+                "MobSF 服务可达，但接口路径不符合官方 API。"
+                f"如果你的 MobSF 走了反向代理子路径，请把服务地址填成子路径根地址，例如 `http://host/mobsf`。原始响应: {error_text}"
+            )
+        else:
+            message = f"MobSF 服务响应异常: HTTP {response.status_code} {error_text}"
+        return {
+            "success": False,
+            "reachable": True,
+            "authenticated": False,
+            "base_url": normalized_base_url,
+            "status_code": response.status_code,
+            "message": message,
+            "recent_scan_count": len(candidates),
+            "payload": payload,
+        }
+
+    def resolve_mobsf_profile(
+        self,
+        env: Optional[Dict[str, Any]] = None,
+        secrets: Optional[Dict[str, Any]] = None,
+        local_profile: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        env_map = dict(env or os.environ)
+        secrets_map = dict(secrets or {})
+        local_map = dict(local_profile or {})
+        sources_used: List[str] = []
+
+        def mark_source(source_name: str):
+            if source_name not in sources_used:
+                sources_used.append(source_name)
+
+        def pick_text(env_key: str, secret_key: str, local_key: str, default: str) -> str:
+            env_value = str(env_map.get(env_key) or "").strip()
+            if env_value:
+                mark_source("环境变量")
+                return env_value
+            secret_value = str(secrets_map.get(secret_key) or "").strip()
+            if secret_value:
+                mark_source("Streamlit Secrets")
+                return secret_value
+            local_value = str(local_map.get(local_key) or "").strip()
+            if local_value:
+                mark_source("本地配置")
+                return local_value
+            return default
+
+        def pick_float(env_key: str, secret_key: str, local_key: str, default: float) -> float:
+            env_value = str(env_map.get(env_key) or "").strip()
+            if env_value:
+                mark_source("环境变量")
+                try:
+                    return max(float(env_value), 1.0)
+                except Exception:
+                    return default
+            secret_value = secrets_map.get(secret_key)
+            if secret_value not in (None, ""):
+                mark_source("Streamlit Secrets")
+                try:
+                    return max(float(secret_value), 1.0)
+                except Exception:
+                    return default
+            local_value = local_map.get(local_key)
+            if local_value not in (None, ""):
+                mark_source("本地配置")
+                try:
+                    return max(float(local_value), 1.0)
+                except Exception:
+                    return default
+            return default
+
+        def pick_bool(env_key: str, secret_key: str, local_key: str, default: bool) -> bool:
+            env_value = str(env_map.get(env_key) or "").strip()
+            if env_value:
+                mark_source("环境变量")
+                normalized = env_value.lower()
+                if normalized in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "n", "off"}:
+                    return False
+                return default
+            if secret_key in secrets_map:
+                mark_source("Streamlit Secrets")
+                value = secrets_map.get(secret_key)
+                if isinstance(value, bool):
+                    return value
+                normalized = str(value or "").strip().lower()
+                if normalized in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "n", "off"}:
+                    return False
+                return default
+            if local_key in local_map:
+                mark_source("本地配置")
+                value = local_map.get(local_key)
+                if isinstance(value, bool):
+                    return value
+                normalized = str(value or "").strip().lower()
+                if normalized in {"1", "true", "yes", "y", "on"}:
+                    return True
+                if normalized in {"0", "false", "no", "n", "off"}:
+                    return False
+            return default
+
+        profile = {
+            "base_url": pick_text("MOBSF_BASE_URL", "base_url", "base_url", "http://127.0.0.1:8000"),
+            "api_key": pick_text("MOBSF_API_KEY", "api_key", "api_key", ""),
+            "timeout_seconds": pick_float("MOBSF_TIMEOUT", "timeout_seconds", "timeout_seconds", 180.0),
+            "verify_ssl": pick_bool("MOBSF_VERIFY_SSL", "verify_ssl", "verify_ssl", True),
+            "include_pdf": pick_bool("MOBSF_INCLUDE_PDF", "include_pdf", "include_pdf", False),
+        }
+        profile["ready"] = bool(str(profile["base_url"]).strip() and str(profile["api_key"]).strip())
+        profile["source"] = " + ".join(sources_used) if sources_used else "默认值"
+        return profile
+
+    def mobsf_get_android_dynamic_apps(
+        self,
+        base_url: str,
+        api_key: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "GET",
+            base_url,
+            "/api/v1/dynamic/get_apps",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+
+    def mobsf_start_android_dynamic_analysis(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/dynamic/start_analysis",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def mobsf_stop_android_dynamic_analysis(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/dynamic/stop_analysis",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def mobsf_get_android_dynamic_report(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/dynamic/report_json",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"hash": file_hash},
+        )
+
+    def is_mobsf_dynamic_report_unavailable_error(self, error: Any) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        patterns = [
+            "dynamic analysis report is not available",
+            "perform dynamic analysis and generate the report",
+            "dynamic report is not available",
+        ]
+        return any(pattern in text for pattern in patterns)
+
+    def is_mobsf_android_dynamic_analysis_failed_error(self, error: Any) -> bool:
+        text = str(error or "").strip().lower()
+        if not text:
+            return False
+        patterns = [
+            "dynamic analysis failed",
+            "failed to start dynamic analysis",
+            "unable to start dynamic analysis",
+        ]
+        return any(pattern in text for pattern in patterns)
+
+    def mobsf_get_ios_dynamic_report(
+        self,
+        base_url: str,
+        api_key: str,
+        instance_id: str,
+        bundle_id: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/dynamic/ios_report_json",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"instance_id": instance_id, "bundle_id": bundle_id},
+        )
+
+    def mobsf_get_ios_device_dynamic_report(
+        self,
+        base_url: str,
+        api_key: str,
+        device_id: str,
+        bundle_id: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/ios/device_report_json",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"device_id": device_id, "bundle_id": bundle_id},
+        )
+
+    def mobsf_search(
+        self,
+        base_url: str,
+        api_key: str,
+        query: str,
+        timeout_seconds: float = 60.0,
+        verify_ssl: bool = True,
+    ) -> Dict[str, Any]:
+        return self._mobsf_request(
+            "POST",
+            base_url,
+            "/api/v1/search",
+            api_key,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+            data={"query": query},
+        )
+
+    def mobsf_extract_reference_candidates(
+        self,
+        payload: Any,
+        source_name: str = "",
+        max_items: int = 24,
+    ) -> List[Dict[str, Any]]:
+        candidates: List[Dict[str, Any]] = []
+        seen: Set[Tuple[str, str, str, str, str, str]] = set()
+
+        def visit(node: Any, path: str):
+            if len(candidates) >= max_items:
+                return
+            if isinstance(node, dict):
+                candidate = self._mobsf_candidate_from_node(node, path, source_name)
+                if candidate:
+                    dedupe_key = (
+                        candidate.get("Hash", ""),
+                        candidate.get("Scan Type", ""),
+                        candidate.get("App Name", ""),
+                        candidate.get("Package Name", ""),
+                        candidate.get("Instance ID", ""),
+                        candidate.get("Device ID", ""),
+                    )
+                    if dedupe_key not in seen:
+                        seen.add(dedupe_key)
+                        candidates.append(candidate)
+                for key, child in list(node.items())[:20]:
+                    if isinstance(child, (dict, list, tuple)):
+                        child_path = f"{path}.{key}" if path else str(key)
+                        visit(child, child_path)
+                return
+            if isinstance(node, (list, tuple)):
+                for index, child in enumerate(list(node)[:20]):
+                    visit(child, f"{path}[{index}]")
+
+        visit(payload, "")
+        return candidates
+
+    def summarize_mobsf_bundle(
+        self,
+        upload_result: Dict[str, Any],
+        scan_result: Dict[str, Any],
+        report_json: Dict[str, Any],
+        scorecard: Optional[Dict[str, Any]] = None,
+        pdf_bytes: bytes = b"",
+    ) -> Dict[str, Any]:
+        file_hash = self._pick_mobsf_hash(upload_result) or self._pick_mobsf_hash(scan_result) or self._pick_mobsf_hash(report_json)
+        scan_type = (
+            upload_result.get("scan_type")
+            or upload_result.get("file_type")
+            or scan_result.get("scan_type")
+            or report_json.get("scan_type")
+            or report_json.get("type")
+            or ""
+        )
+        app_name = (
+            upload_result.get("file_name")
+            or report_json.get("app_name")
+            or report_json.get("file_name")
+            or report_json.get("package_name")
+            or ""
+        )
+        return {
+            "hash": file_hash,
+            "scan_type": scan_type,
+            "app_name": app_name,
+            "report_keys": len(report_json.keys()) if isinstance(report_json, dict) else 0,
+            "scorecard_keys": len(scorecard.keys()) if isinstance(scorecard, dict) else 0,
+            "has_pdf": bool(pdf_bytes),
+        }
+
+    def build_mobsf_static_bundle_from_hash(
+        self,
+        base_url: str,
+        api_key: str,
+        file_hash: str,
+        timeout_seconds: float = 180.0,
+        verify_ssl: bool = True,
+        include_pdf: bool = False,
+    ) -> Dict[str, Any]:
+        normalized_hash = str(file_hash or "").strip()
+        if not normalized_hash:
+            raise ValueError("请输入有效的 MobSF hash。")
+
+        report_json = self.mobsf_get_json_report(
+            base_url=base_url,
+            api_key=api_key,
+            file_hash=normalized_hash,
+            timeout_seconds=timeout_seconds,
+            verify_ssl=verify_ssl,
+        )
+
+        try:
+            scorecard = self.mobsf_get_scorecard(
+                base_url=base_url,
+                api_key=api_key,
+                file_hash=normalized_hash,
+                timeout_seconds=timeout_seconds,
+                verify_ssl=verify_ssl,
+            )
+        except Exception as exc:
+            scorecard = {"error": str(exc)}
+
+        pdf_bytes = b""
+        if include_pdf:
+            try:
+                pdf_bytes = self.mobsf_get_pdf_report(
+                    base_url=base_url,
+                    api_key=api_key,
+                    file_hash=normalized_hash,
+                    timeout_seconds=timeout_seconds,
+                    verify_ssl=verify_ssl,
+                )
+            except Exception:
+                pdf_bytes = b""
+
+        summary_seed = {
+            "hash": normalized_hash,
+            "scan_type": str(report_json.get("scan_type") or report_json.get("type") or "").strip(),
+        }
+        return {
+            "generated_at": self._now(),
+            "base_url": self._normalize_mobsf_base_url(base_url),
+            "official_repo": self.MOBSF_OFFICIAL_REPO,
+            "sources": self.build_mobsf_quick_start(base_url).get("sources", []),
+            "upload": {},
+            "scan": summary_seed,
+            "hash": normalized_hash,
+            "json_report": report_json,
+            "scorecard": scorecard,
+            "pdf_bytes": pdf_bytes,
+            "review_bundle": self.build_mobsf_review_bundle(
+                report_json=report_json,
+                scorecard=scorecard,
+                file_hash=normalized_hash,
+                scan_type=summary_seed.get("scan_type", ""),
+                app_name=str(report_json.get("app_name") or report_json.get("package_name") or report_json.get("file_name") or "").strip(),
+                analysis_mode="static",
+                platform=self._mobsf_platform_from_scan_type(summary_seed.get("scan_type", "")),
+            ),
+            "summary": self.summarize_mobsf_bundle(
+                upload_result={},
+                scan_result=summary_seed,
+                report_json=report_json,
+                scorecard=scorecard,
+                pdf_bytes=pdf_bytes,
+            ),
+        }
+
+    def build_mobsf_dynamic_bundle(
+        self,
+        report_json: Optional[Dict[str, Any]],
+        platform: str,
+        analysis_mode: str,
+        identifier: str = "",
+        runtime_target: str = "",
+        app_name: str = "",
+    ) -> Dict[str, Any]:
+        payload = report_json if isinstance(report_json, dict) else {}
+        normalized_platform = str(platform or "").strip()
+        normalized_mode = str(analysis_mode or "").strip()
+        review_bundle = self.build_mobsf_review_bundle(
+            report_json=payload,
+            scorecard={},
+            file_hash=identifier,
+            scan_type=normalized_mode,
+            app_name=app_name or str(payload.get("app_name") or payload.get("package_name") or payload.get("file_name") or "").strip(),
+            analysis_mode=normalized_mode,
+            platform=normalized_platform,
+            runtime_target=runtime_target,
+        )
+        return {
+            "generated_at": self._now(),
+            "official_repo": self.MOBSF_OFFICIAL_REPO,
+            "platform": normalized_platform,
+            "analysis_mode": normalized_mode,
+            "identifier": identifier,
+            "runtime_target": runtime_target,
+            "json_report": payload,
+            "review_bundle": review_bundle,
+            "summary": {
+                "platform": normalized_platform or "-",
+                "analysis_mode": normalized_mode or "-",
+                "identifier": identifier or self._pick_mobsf_hash(payload) or "-",
+                "runtime_target": runtime_target or "-",
+                "report_keys": len(payload.keys()) if isinstance(payload, dict) else 0,
+                "issue_count": review_bundle.get("summary", {}).get("issue_count", 0),
+                "regression_case_count": review_bundle.get("summary", {}).get("regression_case_count", 0),
+            },
+        }
+
+    def build_mobsf_review_bundle(
+        self,
+        report_json: Optional[Dict[str, Any]],
+        scorecard: Optional[Dict[str, Any]] = None,
+        file_hash: str = "",
+        scan_type: str = "",
+        app_name: str = "",
+        analysis_mode: str = "",
+        platform: str = "",
+        runtime_target: str = "",
+    ) -> Dict[str, Any]:
+        report_json = report_json if isinstance(report_json, dict) else {}
+        scorecard = scorecard if isinstance(scorecard, dict) else {}
+
+        issue_register = self._build_mobsf_issue_register(report_json, scorecard)
+        category_groups = self._group_mobile_findings(issue_register, "Category")
+        severity_groups = self._group_mobile_findings(issue_register, "Severity")
+        regression_suite = self._build_mobsf_regression_suite(issue_register, report_json, scorecard)
+        focus_areas = self._build_mobsf_focus_areas(issue_register)
+
+        summary = {
+            "hash": file_hash or self._pick_mobsf_hash(report_json),
+            "scan_type": scan_type or str(report_json.get("scan_type") or report_json.get("type") or "").strip(),
+            "app_name": app_name or str(report_json.get("app_name") or report_json.get("package_name") or report_json.get("file_name") or "").strip(),
+            "analysis_mode": analysis_mode or "static",
+            "platform": platform or self._mobsf_platform_from_scan_type(scan_type or str(report_json.get("scan_type") or report_json.get("type") or "").strip()),
+            "runtime_target": runtime_target,
+            "issue_count": len(issue_register),
+            "high": sum(1 for item in issue_register if str(item.get("Severity", "")).lower() == "high"),
+            "medium": sum(1 for item in issue_register if str(item.get("Severity", "")).lower() == "medium"),
+            "low": sum(1 for item in issue_register if str(item.get("Severity", "")).lower() == "low"),
+            "info": sum(1 for item in issue_register if str(item.get("Severity", "")).lower() == "info"),
+            "regression_case_count": len(regression_suite),
+            "focus_area_count": len(focus_areas),
+            "security_score": self._extract_mobsf_score(scorecard),
+        }
+
+        return {
+            "summary": summary,
+            "issue_register": issue_register,
+            "category_groups": category_groups,
+            "severity_groups": severity_groups,
+            "focus_areas": focus_areas,
+            "regression_suite": regression_suite,
+            "markdown": self.build_mobsf_review_markdown(
+                summary=summary,
+                issue_register=issue_register,
+                regression_suite=regression_suite,
+                focus_areas=focus_areas,
+            ),
+        }
+
+    def build_mobsf_review_markdown(
+        self,
+        summary: Dict[str, Any],
+        issue_register: Sequence[Dict[str, Any]],
+        regression_suite: Sequence[Dict[str, Any]],
+        focus_areas: Sequence[str],
+    ) -> str:
+        lines = [
+            "# MobSF 结果二次整理",
+            "",
+            f"- Hash: {summary.get('hash', '') or '-'}",
+            f"- 类型: {summary.get('scan_type', '') or '-'}",
+            f"- 应用: {summary.get('app_name', '') or '-'}",
+            f"- 平台: {summary.get('platform', '') or '-'}",
+            f"- 分析模式: {summary.get('analysis_mode', '') or '-'}",
+            f"- 问题数: {summary.get('issue_count', 0)}",
+            f"- High/Medium/Low/Info: {summary.get('high', 0)}/{summary.get('medium', 0)}/{summary.get('low', 0)}/{summary.get('info', 0)}",
+            f"- 回归场景数: {summary.get('regression_case_count', 0)}",
+        ]
+        if summary.get("runtime_target"):
+            lines.append(f"- 运行时目标: {summary.get('runtime_target')}")
+        if summary.get("security_score") is not None:
+            lines.append(f"- Scorecard 分数: {summary.get('security_score')}")
+
+        lines.extend(["", "## 重点关注"])
+        if not focus_areas:
+            lines.append("- 当前没有自动提炼出重点方向，建议直接查看原始 MobSF 报告。")
+        else:
+            for item in focus_areas:
+                lines.append(f"- {item}")
+
+        lines.extend(["", "## 问题清单"])
+        if not issue_register:
+            lines.append("- 当前没有从 MobSF 原始结果中自动提炼出问题项。")
+        else:
+            for index, item in enumerate(issue_register[:20], start=1):
+                lines.append(f"{index}. [{str(item.get('Severity', '')).upper()}] {item.get('Title', '')}")
+                lines.append(f"   - 分类: {item.get('Category', '')}")
+                lines.append(f"   - 证据: {item.get('Evidence', '')}")
+                lines.append(f"   - 建议: {item.get('Suggested Check', '')}")
+
+        lines.extend(["", "## 回归建议"])
+        if not regression_suite:
+            lines.append("- 当前没有可自动生成的回归场景。")
+        else:
+            for item in regression_suite[:15]:
+                lines.append(f"- [{item.get('Priority', '')}] {item.get('Scenario', '')}")
+                lines.append(f"  预期: {item.get('Expected', '')}")
+
+        return "\n".join(lines)
+
+    def _build_mobsf_issue_register(
+        self,
+        report_json: Dict[str, Any],
+        scorecard: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        issues: List[Dict[str, Any]] = []
+        top_level = report_json if isinstance(report_json, dict) else {}
+
+        for key, value in top_level.items():
+            normalized_key = str(key).lower()
+            rule = self._match_mobsf_section_rule(normalized_key)
+            if not rule:
+                continue
+            if not self._mobsf_section_has_signal(value):
+                continue
+            evidence = self._mobsf_section_preview(value)
+            issues.append(
+                {
+                    "Severity": rule["severity"],
+                    "Category": rule["category"],
+                    "Title": rule["title"],
+                    "Source": str(key),
+                    "Evidence": evidence,
+                    "Suggested Check": rule["focus"],
+                    "Regression Focus": rule["focus"],
+                }
+            )
+
+        for path, preview in self._flatten_payload_for_review(report_json):
+            normalized_path = path.lower()
+            preview_lower = preview.lower()
+            for rule in self.MOBSF_TERM_RULES:
+                if not any(term in normalized_path or term in preview_lower for term in rule["terms"]):
+                    continue
+                issues.append(
+                    {
+                        "Severity": rule["severity"],
+                        "Category": rule["category"],
+                        "Title": rule["title"],
+                        "Source": path,
+                        "Evidence": preview[:220],
+                        "Suggested Check": rule["focus"],
+                        "Regression Focus": rule["focus"],
+                    }
+                )
+                break
+
+        score_value = self._extract_mobsf_score(scorecard)
+        if score_value is not None and score_value < 80:
+            issues.append(
+                {
+                    "Severity": "medium" if score_value >= 60 else "high",
+                    "Category": "综合评分",
+                    "Title": "MobSF Scorecard 分数偏低",
+                    "Source": "scorecard",
+                    "Evidence": f"security_score={score_value}",
+                    "Suggested Check": "优先处理高风险和中风险问题，再复测整体评分变化。",
+                    "Regression Focus": "高风险问题关闭验证、评分回归",
+                }
+            )
+
+        deduped = self._dedupe_findings(issues)
+        return [
+            {
+                "Severity": item.get("Severity", ""),
+                "Category": item.get("Category", ""),
+                "Title": item.get("Title", ""),
+                "Source": item.get("Source", ""),
+                "Evidence": item.get("Evidence", ""),
+                "Suggested Check": item.get("Suggested Check", item.get("Recommendation", "")),
+                "Regression Focus": item.get("Regression Focus", item.get("Suggested Check", "")),
+            }
+            for item in deduped
+        ]
+
+    def _build_mobsf_regression_suite(
+        self,
+        issue_register: Sequence[Dict[str, Any]],
+        report_json: Dict[str, Any],
+        scorecard: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        cases: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+
+        for item in issue_register[:20]:
+            category = str(item.get("Category", "")).strip()
+            title = str(item.get("Title", "")).strip()
+            severity = str(item.get("Severity", "info")).lower()
+            scenario = f"{category} - {title}"
+            if scenario in seen:
+                continue
+            seen.add(scenario)
+            cases.append(
+                {
+                    "Priority": self._severity_to_priority(severity),
+                    "Scenario": scenario,
+                    "Objective": str(item.get("Regression Focus", "") or item.get("Suggested Check", "")),
+                    "Steps": f"1. 打开 MobSF 原始报告中的 `{item.get('Source', '')}`；2. 核对证据 `{item.get('Evidence', '')}`；3. 修复后重新上传安装包并复测。",
+                    "Expected": f"相关问题关闭或风险下降，{category} 方向不再出现相同告警。",
+                    "Source": str(item.get("Source", "")).strip(),
+                }
+            )
+
+        score_value = self._extract_mobsf_score(scorecard)
+        if score_value is not None:
+            cases.append(
+                {
+                    "Priority": "P1" if score_value >= 60 else "P0",
+                    "Scenario": "Scorecard 分数回归",
+                    "Objective": "确认修复后整体安全评分提升。",
+                    "Steps": "1. 修复问题后重新在 MobSF 中执行静态分析；2. 拉取新的 Scorecard；3. 对比修复前后的安全分数和风险分布。",
+                    "Expected": "安全分数高于修复前，且高风险/中风险项减少。",
+                    "Source": "scorecard",
+                }
+            )
+
+        return cases
+
+    def _build_mobsf_focus_areas(self, issue_register: Sequence[Dict[str, Any]]) -> List[str]:
+        focus_areas: List[str] = []
+        grouped: Dict[str, int] = {}
+        for item in issue_register:
+            category = str(item.get("Category", "")).strip() or "未分类"
+            grouped[category] = grouped.get(category, 0) + 1
+        for category, count in sorted(grouped.items(), key=lambda kv: (-kv[1], kv[0]))[:5]:
+            focus_areas.append(f"{category}: {count} 项")
+        return focus_areas
+
+    def _match_mobsf_section_rule(self, key: str) -> Optional[Dict[str, str]]:
+        normalized_key = str(key or "").lower()
+        for rule in self.MOBSF_SECTION_RULES:
+            if any(keyword in normalized_key for keyword in rule["keywords"]):
+                return rule
+        return None
+
+    def _mobsf_section_has_signal(self, value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return bool(value)
+        if isinstance(value, (int, float)):
+            return value > 0
+        if isinstance(value, str):
+            return bool(value.strip())
+        if isinstance(value, dict):
+            return any(self._mobsf_section_has_signal(item) for item in value.values())
+        if isinstance(value, (list, tuple, set)):
+            return any(self._mobsf_section_has_signal(item) for item in value)
+        return False
+
+    def _mobsf_section_preview(self, value: Any) -> str:
+        if isinstance(value, dict):
+            keys = [str(key) for key in list(value.keys())[:5]]
+            return f"字段: {', '.join(keys)}"
+        if isinstance(value, (list, tuple, set)):
+            preview_items = [self._shorten_text(item) for item in list(value)[:3]]
+            return f"{len(value)} 项: {' | '.join(preview_items)}"
+        return self._shorten_text(value)
+
+    def _flatten_payload_for_review(self, value: Any, prefix: str = "", max_rows: int = 120) -> List[Tuple[str, str]]:
+        rows: List[Tuple[str, str]] = []
+
+        def visit(node: Any, path: str):
+            if len(rows) >= max_rows:
+                return
+            if isinstance(node, dict):
+                for key, child in list(node.items())[:20]:
+                    child_path = f"{path}.{key}" if path else str(key)
+                    visit(child, child_path)
+                return
+            if isinstance(node, (list, tuple)):
+                for index, child in enumerate(list(node)[:10]):
+                    child_path = f"{path}[{index}]"
+                    visit(child, child_path)
+                return
+            if node is None:
+                return
+            preview = self._shorten_text(node)
+            if preview:
+                rows.append((path or "root", preview))
+
+        visit(value, prefix)
+        return rows
+
+    def _group_mobile_findings(self, findings: Sequence[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
+        grouped: Dict[str, Dict[str, Any]] = {}
+        for item in findings:
+            key = str(item.get(field, "") or "未分类")
+            bucket = grouped.setdefault(
+                key,
+                {
+                    "Group": key,
+                    "Count": 0,
+                    "Top Severity": "info",
+                    "Sample": "",
+                },
+            )
+            bucket["Count"] += 1
+            severity = str(item.get("Severity", "info")).lower()
+            if self._severity_rank(severity) < self._severity_rank(bucket["Top Severity"]):
+                bucket["Top Severity"] = severity
+                bucket["Sample"] = str(item.get("Title", "") or "")
+        rows = list(grouped.values())
+        rows.sort(key=lambda item: (self._severity_rank(item.get("Top Severity", "info")), -item.get("Count", 0), item.get("Group", "")))
+        return rows
+
+    def _extract_mobsf_score(self, scorecard: Dict[str, Any]) -> Optional[float]:
+        for path, preview in self._flatten_payload_for_review(scorecard, max_rows=50):
+            if "score" not in path.lower():
+                continue
+            try:
+                return float(preview)
+            except Exception:
+                match = re.search(r"\d+(?:\.\d+)?", preview)
+                if match:
+                    return float(match.group(0))
+        return None
+
+    def _shorten_text(self, value: Any, limit: int = 160) -> str:
+        text = str(value).strip().replace("\n", " ").replace("\r", " ")
+        text = re.sub(r"\s+", " ", text)
+        return text[:limit]
+
+    def _severity_to_priority(self, severity: str) -> str:
+        mapping = {"high": "P0", "medium": "P1", "low": "P2", "info": "P3"}
+        return mapping.get(str(severity).lower(), "P2")
+
     def build_mobile_report_markdown(self, report: Dict[str, Any]) -> str:
         summary = report.get("summary", {})
         overview = report.get("overview", {})
@@ -441,7 +1714,16 @@ class ApplicationSecurityTool:
             "",
             "## 概览",
         ]
-        for key in ["min_sdk", "target_sdk", "permissions_count", "exported_component_count", "url_count", "sdk_count"]:
+        for key in [
+            "min_sdk",
+            "target_sdk",
+            "permissions_count",
+            "capabilities_count",
+            "exported_component_count",
+            "protocol_count",
+            "url_count",
+            "sdk_count",
+        ]:
             if key in overview:
                 lines.append(f"- {key}: {overview.get(key)}")
 
@@ -897,6 +2179,272 @@ class ApplicationSecurityTool:
             "findings": self._dedupe_findings(findings),
         }
         return result
+
+    def _scan_appx_package(
+        self,
+        package_path: Path,
+        file_bytes: bytes,
+        custom_keywords: Sequence[str],
+    ) -> Dict[str, Any]:
+        findings: List[Dict[str, Any]] = []
+        external_urls: List[Dict[str, Any]] = []
+        ip_hits: List[Dict[str, Any]] = []
+        secret_hits: List[Dict[str, Any]] = []
+        keyword_hits: List[Dict[str, Any]] = []
+        sdk_inventory: Set[str] = set()
+        manifest_summary: Dict[str, Any] = {}
+
+        with zipfile.ZipFile(io.BytesIO(file_bytes)) as archive:
+            names = archive.namelist()
+            manifest_data = b""
+            manifest_candidates = [
+                "AppxManifest.xml",
+                "AppXManifest.xml",
+                "AppxBundleManifest.xml",
+                "AppxMetadata/AppxBundleManifest.xml",
+            ]
+            for candidate in manifest_candidates:
+                if candidate in names:
+                    manifest_data = archive.read(candidate)
+                    break
+
+            if manifest_data:
+                manifest_summary = self._parse_appx_manifest(manifest_data)
+                findings.extend(self._appx_manifest_findings(manifest_summary))
+
+            for name in names:
+                scan_level = self._zip_entry_scan_level(name)
+                if scan_level == "skip":
+                    continue
+                info = archive.getinfo(name)
+                if info.file_size > 20 * 1024 * 1024:
+                    continue
+                data = archive.read(name)
+                text_items = self._extract_text_items(data, binary_mode=scan_level == "binary")
+                signal = self._harvest_text_indicators(name, text_items, custom_keywords)
+                external_urls.extend(signal["urls"])
+                ip_hits.extend(signal["ips"])
+                secret_hits.extend(signal["secrets"])
+                keyword_hits.extend(signal["keywords"])
+                sdk_inventory.update(signal["sdks"])
+
+        if any(item.get("Value", "").startswith("http://") for item in external_urls):
+            findings.append(
+                self._make_finding(
+                    "medium",
+                    "network",
+                    "APPX 中发现明文 HTTP 外联地址",
+                    manifest_summary.get("identity_name", package_path.name),
+                    "；".join(
+                        item.get("Value", "")
+                        for item in external_urls
+                        if item.get("Value", "").startswith("http://")
+                    )[:260],
+                    "建议优先切换为 HTTPS，并复核 Windows 应用与后端服务之间的传输加密和证书校验逻辑。",
+                    "OWASP MASVS-NETWORK",
+                )
+            )
+        if any(any(hint in item.get("Value", "").lower() for hint in self.DEBUG_HOST_HINTS) for item in external_urls):
+            findings.append(
+                self._make_finding(
+                    "low",
+                    "network",
+                    "APPX 中存在测试/内网环境地址线索",
+                    manifest_summary.get("identity_name", package_path.name),
+                    "；".join(item.get("Value", "") for item in external_urls[:12]),
+                    "建议确认 Windows 包中未固化测试、预发或内网地址。",
+                    "OWASP MASVS-RESILIENCE",
+                )
+            )
+        if secret_hits:
+            findings.append(
+                self._make_finding(
+                    "high" if any(item.get("Type") == "Private Key" for item in secret_hits) else "medium",
+                    "secret",
+                    "APPX 中发现疑似密钥/令牌",
+                    manifest_summary.get("identity_name", package_path.name),
+                    "；".join(f"{item.get('Type')}@{item.get('Source')}" for item in secret_hits[:8]),
+                    "建议确认这些值是否为真实凭证、证书或调试令牌，并尽量改为运行时安全获取。",
+                    "OWASP MASVS-STORAGE",
+                )
+            )
+        if keyword_hits:
+            findings.append(
+                self._make_finding(
+                    "info",
+                    "keyword",
+                    "命中自定义关键字清单",
+                    manifest_summary.get("identity_name", package_path.name),
+                    "；".join(f"{item.get('Keyword')}@{item.get('Source')}" for item in keyword_hits[:10]),
+                    "可结合命中结果继续做定向配置审计或人工逆向分析。",
+                    "Checklist / Custom Review",
+                )
+            )
+
+        deduped_external_urls = self._dedupe_dict_rows(external_urls, ("Source", "Value"))
+        deduped_ip_hits = self._dedupe_dict_rows(ip_hits, ("Source", "Value"))
+        deduped_secret_hits = self._dedupe_dict_rows(secret_hits, ("Type", "Source", "Evidence"))
+        deduped_keyword_hits = self._dedupe_dict_rows(keyword_hits, ("Keyword", "Source", "Evidence"))
+        capabilities = manifest_summary.get("capabilities", {})
+        protocols = manifest_summary.get("protocols", [])
+        overview = {
+            "file_name": package_path.name,
+            "package_type": "appx",
+            "file_size": len(file_bytes),
+            "file_count": len(names),
+            "identifier": manifest_summary.get("identity_name", ""),
+            "version_name": manifest_summary.get("version", ""),
+            "publisher": manifest_summary.get("publisher", ""),
+            "capabilities_count": len(capabilities.get("all", [])),
+            "url_count": len(deduped_external_urls),
+            "sdk_count": len(sdk_inventory),
+            "protocol_count": len(protocols),
+        }
+
+        return {
+            "generated_at": self._now(),
+            "scan_type": "mobile",
+            "platform": "windows",
+            "overview": overview,
+            "appx_manifest": manifest_summary,
+            "permissions": capabilities,
+            "protocols": protocols,
+            "app_services": manifest_summary.get("app_services", []),
+            "external_urls": deduped_external_urls,
+            "ip_hits": deduped_ip_hits,
+            "secret_hits": deduped_secret_hits,
+            "keyword_hits": deduped_keyword_hits,
+            "sdk_inventory": [{"Name": item} for item in sorted(sdk_inventory)],
+            "findings": self._dedupe_findings(findings),
+        }
+
+    def _parse_appx_manifest(self, manifest_data: bytes) -> Dict[str, Any]:
+        root = ET.fromstring(manifest_data)
+        identity = root.find(".//{*}Identity")
+        properties = root.find(".//{*}Properties")
+        applications = root.findall(".//{*}Applications/{*}Application")
+
+        capability_rows: List[Dict[str, str]] = []
+        for capability in root.findall(".//{*}Capabilities/*"):
+            local_name = capability.tag.split("}")[-1]
+            capability_name = str(capability.attrib.get("Name") or local_name).strip()
+            if capability_name:
+                capability_rows.append({"type": local_name, "name": capability_name})
+
+        all_capabilities = []
+        high_risk = []
+        medium_risk = []
+        for item in capability_rows:
+            capability_name = item["name"]
+            if capability_name not in all_capabilities:
+                all_capabilities.append(capability_name)
+            if capability_name in self.APPX_HIGH_RISK_CAPABILITIES and capability_name not in high_risk:
+                high_risk.append(capability_name)
+            if capability_name in self.APPX_MEDIUM_RISK_CAPABILITIES and capability_name not in medium_risk:
+                medium_risk.append(capability_name)
+
+        protocols: List[str] = []
+        app_services: List[str] = []
+        for extension in root.findall(".//{*}Extension"):
+            category = str(extension.attrib.get("Category") or "").strip()
+            lowered_category = category.lower()
+            for child in list(extension):
+                name = str(child.attrib.get("Name") or "").strip()
+                if not name:
+                    continue
+                if "protocol" in lowered_category and name not in protocols:
+                    protocols.append(name)
+                if "appservice" in lowered_category and name not in app_services:
+                    app_services.append(name)
+
+        display_name = ""
+        publisher_display_name = ""
+        if properties is not None:
+            display_name = str(properties.findtext(".//{*}DisplayName") or "").strip()
+            publisher_display_name = str(properties.findtext(".//{*}PublisherDisplayName") or "").strip()
+
+        app_entries = []
+        for application in applications:
+            app_entries.append(
+                {
+                    "id": str(application.attrib.get("Id") or "").strip(),
+                    "entry_point": str(application.attrib.get("EntryPoint") or "").strip(),
+                    "executable": str(application.attrib.get("Executable") or "").strip(),
+                }
+            )
+
+        return {
+            "identity_name": str(identity.attrib.get("Name") or "").strip() if identity is not None else "",
+            "version": str(identity.attrib.get("Version") or "").strip() if identity is not None else "",
+            "publisher": str(identity.attrib.get("Publisher") or "").strip() if identity is not None else "",
+            "processor_architecture": str(identity.attrib.get("ProcessorArchitecture") or "").strip() if identity is not None else "",
+            "display_name": display_name,
+            "publisher_display_name": publisher_display_name,
+            "applications": app_entries,
+            "protocols": protocols,
+            "app_services": app_services,
+            "capabilities": {
+                "all": all_capabilities,
+                "high_risk": high_risk,
+                "medium_risk": medium_risk,
+                "details": capability_rows,
+            },
+        }
+
+    def _appx_manifest_findings(self, manifest_summary: Dict[str, Any]) -> List[Dict[str, Any]]:
+        findings: List[Dict[str, Any]] = []
+        identity_name = manifest_summary.get("identity_name", "") or "Windows 应用"
+        capabilities = manifest_summary.get("capabilities", {})
+
+        if capabilities.get("high_risk"):
+            findings.append(
+                self._make_finding(
+                    "high",
+                    "capability",
+                    "APPX 声明高风险能力",
+                    identity_name,
+                    ", ".join(capabilities.get("high_risk", [])[:10]),
+                    "建议重点复核广泛文件系统访问、全信任运行、企业认证、共享证书等高敏能力的真实必要性。",
+                    "OWASP MASVS-PLATFORM",
+                )
+            )
+        if capabilities.get("medium_risk"):
+            findings.append(
+                self._make_finding(
+                    "medium",
+                    "capability",
+                    "APPX 声明中风险能力",
+                    identity_name,
+                    ", ".join(capabilities.get("medium_risk", [])[:10]),
+                    "建议按最小权限原则复核网络、位置、摄像头、麦克风、联系人等能力的使用边界。",
+                    "OWASP MASVS-PLATFORM",
+                )
+            )
+        if manifest_summary.get("protocols"):
+            findings.append(
+                self._make_finding(
+                    "info",
+                    "deeplink",
+                    "APPX 声明自定义协议",
+                    identity_name,
+                    ", ".join(manifest_summary.get("protocols", [])[:10]),
+                    "建议继续复核协议参数校验、唤起链路鉴权和来源校验，避免被恶意链接滥用。",
+                    "OWASP MASVS-PLATFORM",
+                )
+            )
+        if manifest_summary.get("app_services"):
+            findings.append(
+                self._make_finding(
+                    "low",
+                    "app_service",
+                    "APPX 暴露 App Service",
+                    identity_name,
+                    ", ".join(manifest_summary.get("app_services", [])[:10]),
+                    "建议确认服务调用方范围、参数校验和跨应用调用边界。",
+                    "OWASP MASVS-ARCHITECTURE",
+                )
+            )
+        return findings
 
     def _parse_apk_manifest(self, manifest_data: bytes) -> Dict[str, Any]:
         events = self._parse_axml_events(manifest_data)
@@ -1389,11 +2937,11 @@ class ApplicationSecurityTool:
         lowered = name.lower()
         if lowered.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp3", ".mp4", ".mov", ".ttf", ".woff", ".woff2", ".nib")):
             return "skip"
-        if lowered.endswith((".dex", ".so")):
+        if lowered.endswith((".dex", ".so", ".dll", ".exe", ".winmd")):
             return "binary"
         if ".app/" in lowered and "." not in PurePosixPath(lowered).name:
             return "binary"
-        if lowered.endswith((".plist", ".xml", ".json", ".txt", ".html", ".js", ".properties", ".cfg", ".conf")):
+        if lowered.endswith((".plist", ".xml", ".json", ".txt", ".html", ".js", ".properties", ".cfg", ".conf", ".xaml", ".cs", ".resw", ".ini", ".yml", ".yaml")):
             return "text"
         if "/assets/" in lowered or lowered.startswith("assets/"):
             return "binary"
@@ -1851,6 +3399,154 @@ class ApplicationSecurityTool:
         mapping = {"high": 0, "medium": 1, "low": 2, "info": 3}
         return mapping.get(str(severity).lower(), 4)
 
+    def _normalize_mobsf_base_url(self, base_url: str) -> str:
+        raw = str(base_url or "").strip()
+        if not raw:
+            raise ValueError("请输入 MobSF 服务地址，例如 http://127.0.0.1:8000")
+        if "://" not in raw:
+            raw = "http://" + raw
+        parsed = urlparse(raw)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("请输入有效的 MobSF 服务地址，例如 http://127.0.0.1:8000")
+        normalized_path = re.sub(r"/+", "/", parsed.path or "").rstrip("/")
+        lowered_path = normalized_path.lower()
+        api_index = lowered_path.find("/api/v1")
+        if api_index != -1:
+            normalized_path = normalized_path[:api_index]
+        if normalized_path in {"", "/"}:
+            normalized_path = ""
+        elif not normalized_path.startswith("/"):
+            normalized_path = "/" + normalized_path
+        return f"{parsed.scheme}://{parsed.netloc}{normalized_path}".rstrip("/")
+
+    def _pick_mobsf_hash(self, payload: Optional[Dict[str, Any]]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in ["hash", "md5", "MD5", "scan_hash", "checksum"]:
+            value = str(payload.get(key) or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _mobsf_candidate_from_node(self, node: Dict[str, Any], path: str, source_name: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(node, dict):
+            return None
+
+        hash_value = self._pick_mobsf_hash(node)
+        scan_type = self._pick_first_text(
+            node,
+            ["scan_type", "type", "file_type", "platform", "SCAN_TYPE"],
+        )
+        app_name = self._pick_first_text(
+            node,
+            ["app_name", "file_name", "name", "PACKAGE", "APP_NAME", "title"],
+        )
+        package_name = self._pick_first_text(
+            node,
+            ["package_name", "package", "Package Name", "identifier", "app_id"],
+        )
+        bundle_id = self._pick_first_text(
+            node,
+            ["bundle_id", "Bundle ID", "identifier", "package_name", "package"],
+        )
+        instance_id = self._pick_first_text(node, ["instance_id", "Instance ID"])
+        device_id = self._pick_first_text(node, ["device_id", "Device ID"])
+
+        if not any([hash_value, scan_type, app_name, package_name, bundle_id, instance_id, device_id]):
+            return None
+
+        source = source_name or "MobSF"
+        primary_name = app_name or package_name or bundle_id or hash_value or instance_id or device_id
+        label_parts = [source, primary_name]
+        if scan_type:
+            label_parts.append(scan_type)
+        if hash_value:
+            label_parts.append(hash_value[:10])
+        label = " · ".join(part for part in label_parts if part)
+
+        return {
+            "Label": label,
+            "Source": path or "root",
+            "Hash": hash_value,
+            "Scan Type": scan_type,
+            "App Name": app_name,
+            "Package Name": package_name,
+            "Bundle ID": bundle_id,
+            "Instance ID": instance_id,
+            "Device ID": device_id,
+        }
+
+    def _mobsf_platform_from_scan_type(self, scan_type: Any) -> str:
+        normalized = str(scan_type or "").strip().lower()
+        if normalized in {"apk", "xapk", "aab", "jar"}:
+            return "android"
+        if normalized in {"ipa"}:
+            return "ios"
+        if normalized in {"appx", "msix"}:
+            return "windows"
+        return ""
+
+    def _mobsf_request(
+        self,
+        method: str,
+        base_url: str,
+        path: str,
+        api_key: str,
+        timeout_seconds: float,
+        verify_ssl: bool,
+        data: Optional[Dict[str, Any]] = None,
+        files: Optional[Dict[str, Any]] = None,
+        expect_json: bool = True,
+    ) -> Any:
+        normalized_base_url = self._normalize_mobsf_base_url(base_url)
+        api_token = str(api_key or "").strip()
+        if not api_token:
+            raise ValueError("请输入 MobSF API Key。")
+
+        url = normalized_base_url + path
+        headers = {"X-Mobsf-Api-Key": api_token}
+        try:
+            response = requests.request(
+                method.upper(),
+                url,
+                headers=headers,
+                data=data,
+                files=files,
+                timeout=max(float(timeout_seconds), 1.0),
+                verify=bool(verify_ssl),
+            )
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            response = getattr(exc, "response", None)
+            error_text = ""
+            if response is not None:
+                try:
+                    error_payload = response.json()
+                    if isinstance(error_payload, dict):
+                        error_text = str(error_payload.get("error") or error_payload)
+                    else:
+                        error_text = str(error_payload)
+                except Exception:
+                    error_text = (response.text or "").strip()
+            raise ValueError(f"MobSF 请求失败: {method.upper()} {path} {error_text or exc}") from exc
+
+        if expect_json:
+            try:
+                return response.json()
+            except ValueError as exc:
+                raise ValueError(f"MobSF 返回的不是 JSON: {response.text[:200]}") from exc
+        return response.content
+
+    def _pick_first_text(self, payload: Dict[str, Any], keys: Sequence[str]) -> str:
+        if not isinstance(payload, dict):
+            return ""
+        for key in keys:
+            value = payload.get(key)
+            text = str(value or "").strip()
+            if text:
+                return text
+        return ""
+
     def _normalize_keywords(self, custom_keywords: Optional[Sequence[str]]) -> List[str]:
         keywords: List[str] = []
         for item in custom_keywords or []:
@@ -1858,6 +3554,17 @@ class ApplicationSecurityTool:
             if text and text not in keywords:
                 keywords.append(text)
         return keywords
+
+    def _build_mobsf_upload_file_part(self, file_name: str, file_bytes: bytes) -> Tuple[str, bytes, str]:
+        normalized_name = Path(str(file_name or "").strip()).name
+        if not normalized_name:
+            raise ValueError("请选择要上传到 MobSF 的文件。")
+        suffix = Path(normalized_name).suffix.lower()
+        content_type = self.MOBSF_UPLOAD_CONTENT_TYPES.get(suffix)
+        if not content_type:
+            supported = ", ".join(ext.lstrip(".") for ext in sorted(self.MOBSF_UPLOAD_CONTENT_TYPES))
+            raise ValueError(f"MobSF 上传暂不支持当前文件类型: {suffix or '无后缀'}。支持: {supported}")
+        return normalized_name, file_bytes, content_type
 
     def _normalize_list(self, value: Any) -> List[str]:
         if isinstance(value, (list, tuple, set)):

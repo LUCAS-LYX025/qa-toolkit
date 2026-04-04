@@ -52,7 +52,7 @@
 | 接口研发辅助 | 文档标准化、变更分析、Mock、断言、调试代码 | JSON、Markdown、Mock 脚本、代码片段 |
 | 接口自动化测试 | 解析接口文档、生成并执行自动化测试 | 测试脚本、HTML 报告 |
 | 接口性能测试 | JMeter 风格接口压测、参数化和事务链路 | HTML、JSON、CSV 报告 |
-| 接口安全测试 | API 安全基线、APK/IPA 静态扫描、Web 基线扫描 | Markdown、JSON、CSV 报告 |
+| 接口安全测试 | API 安全基线、APK/IPA/APPX 静态扫描、MobSF 静态/动态集成、Web 基线扫描 | Markdown、JSON、CSV、PDF 报告 |
 | 禅道绩效统计 | 测试/开发绩效统计、超时响应分析 | Excel、CSV |
 | 通用效率工具 | 文本、JSON、正则、时间、图片、加密、IP、日志、BI | 对应格式结果或下载文件 |
 
@@ -267,13 +267,15 @@ pytest tests/test_test_case_generator.py
 适用场景：
 
 - 接口上线前做安全基线自查
-- 对 APK/IPA 做静态安全预检
+- 对 APK/IPA/APPX 做静态安全预检
+- 通过 MobSF 官方能力补强移动端静态分析、动态报告拉取与测试视角整理
 - 对 Web 站点做轻量头部和暴露面扫描
 
 主要功能：
 
 - API 文档安全方案与基线检查
-- APK / IPA 静态扫描
+- APK / IPA / APPX 静态扫描
+- MobSF 官方静态/动态集成、一次性预配置、连通性检查、结果回填、一键拉报告与二次整理
 - Web 站点轻量扫描
 - OWASP API Top 10 清单
 - 权限矩阵
@@ -284,15 +286,19 @@ pytest tests/test_test_case_generator.py
 
 1. 导入接口文档，确认测试范围和 Base URL
 2. 做 API 基线检查
-3. 如有移动端包，上传 APK / IPA 做静态扫描
-4. 如有 Web 入口，补一轮站点基线扫描
-5. 最后导出报告或回归清单
+3. 如有移动端包，先上传 APK / IPA / APPX 做本地静态扫描
+4. 如需更完整能力，配置 MobSF 地址和 API Key，执行官方静态分析、动态报告拉取和测试视角二次整理
+5. 如有 Web 入口，补一轮站点基线扫描
+6. 最后导出报告或回归清单
 
 注意事项：
 
 - 当前更偏向“安全基线”和“低风险检查”，不是主动攻击平台
 - 适合已授权目标，不建议拿来直接打生产环境
 - 自动化发现不能替代人工安全测试
+- MobSF 动态分析需要其自身侧准备设备、模拟器、Frida 或 Corellium 等环境
+- 部署到 Streamlit Community Cloud 时，MobSF 建议改为“远程服务模式”，通过 `st.secrets` 或环境变量提供 `base_url/api_key`
+- Streamlit Community Cloud 不提供本机 Docker、ADB、Frida、Android 模拟器，因此不能在云端直接启动本地 MobSF 或 Android 动态环境
 
 ### 6.7 禅道绩效统计
 
@@ -426,11 +432,32 @@ brew install tesseract tesseract-lang
 
 Streamlit Cloud 部署：
 
+- 如果你只想看最短上线步骤，直接看 `DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md`
+- 如果你准备现在就发布，优先看其中的“上线前最后检查清单”和“Cloud 后台填写模板”
+- 如果已经上线但遇到问题，直接看其中的“故障排查速查表”
+
 - 根目录的 `packages.txt` 已声明系统依赖：
   - `tesseract-ocr`
   - `tesseract-ocr-chi-sim`
+  - `poppler-utils`
+  - `libgl1`
+  - `libglib2.0-0`
 - Streamlit Cloud 构建时会按 `packages.txt` 安装 Linux 系统依赖
 - 更新依赖后建议重新部署或手动 `Reboot app`
+- 根目录的 `.streamlit/config.toml` 已设置上传和消息体大小为 `200MB`
+- 如需在 Cloud 中使用 MobSF，建议在应用 Secrets 中配置：
+
+```toml
+[mobsf]
+base_url = "https://your-mobsf.example.com"
+api_key = "replace-with-your-mobsf-api-key"
+timeout_seconds = 180
+verify_ssl = true
+include_pdf = false
+```
+
+- 仓库提供示例文件：`.streamlit/secrets.toml.example`
+- Community Cloud 中本地文件系统是临时的，`workspace/mobsf_profile.local.json` 只适合本机，不适合当长期云端配置
 
 推荐配置：
 
@@ -444,6 +471,9 @@ Streamlit Cloud 部署：
 
 ```text
 .
+├── .streamlit/
+│   ├── config.toml
+│   └── secrets.toml.example
 ├── packages.txt
 ├── requirements.txt
 ├── streamlit_app.py
@@ -540,4 +570,3 @@ Streamlit Cloud 部署：
 - `assets/bin/tesseract` 仅作为本地资源保留，不作为云端依赖
 - `assets/fonts/` 下的字体资源路径没有被改坏
 - 新增系统依赖是否同步到了 `packages.txt`
-

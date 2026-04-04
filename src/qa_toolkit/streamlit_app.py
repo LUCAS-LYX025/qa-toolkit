@@ -7446,70 +7446,112 @@ elif tool_category == "接口自动化测试":
 elif tool_category == "BI数据分析工具":
     show_doc("bi_analyzer")
 
-    # 初始化BI分析器
     bi_tool = BIAnalyzer()
+    st.session_state.setdefault("bi_active_dataset_signature", "")
 
-    # 显示模板下载和文件上传
     uploaded_file = bi_tool.show_upload_section()
 
     if uploaded_file is not None:
-        # 加载数据
-        df, message = bi_tool.load_data(uploaded_file)
+        selected_sheet_name = None
+        file_name = uploaded_file.name.lower()
+
+        if file_name.endswith((".xlsx", ".xls")):
+            sheet_names = bi_tool.get_excel_sheet_names(uploaded_file)
+            if sheet_names:
+                if len(sheet_names) == 1:
+                    selected_sheet_name = sheet_names[0]
+                    st.caption(f"当前工作表: `{selected_sheet_name}`")
+                else:
+                    selected_sheet_name = st.selectbox(
+                        "选择工作表",
+                        sheet_names,
+                        key="bi_sheet_selector",
+                        help="多工作表文件可先切换工作表，再做分析。",
+                    )
+            else:
+                st.warning("未能读取 Excel 工作表名称，将尝试直接读取第一个工作表。")
+
+        file_size = getattr(uploaded_file, "size", None)
+        if file_size is None:
+            file_size = len(uploaded_file.getvalue())
+        dataset_signature = f"{uploaded_file.name}:{file_size}:{selected_sheet_name or ''}"
+
+        if st.session_state.bi_active_dataset_signature != dataset_signature:
+            bi_tool.reset_runtime_state()
+            st.session_state.bi_active_dataset_signature = dataset_signature
+
+        df, message = bi_tool.load_data(uploaded_file, sheet_name=selected_sheet_name)
 
         if df is not None:
             st.success(message)
+            st.caption(
+                f"当前数据: `{uploaded_file.name}` | 行数 `{len(df):,}` | 列数 `{len(df.columns)}`"
+                + (f" | 工作表 `{selected_sheet_name}`" if selected_sheet_name else "")
+            )
+            context = bi_tool.build_analysis_context(df)
 
-            # 创建选项卡界面
-            tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-                "📋 数据预览",
+            tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+                "🧭 数据总览",
+                "🩺 质量诊断",
+                "🧪 测试校验",
+                "🧩 开发/大数据",
                 "📊 统计分析",
-                "🔍 数据透视",
-                "📈 趋势分析",
+                "🔍 透视/趋势",
                 "🎯 数据仪表板",
-                "💾 导出报告"
+                "💾 导出报告",
             ])
 
             with tab1:
-                bi_tool.data_preview(df)
+                bi_tool.scenario_insights(df, context)
+                st.markdown("---")
+                bi_tool.data_preview(df, context)
 
             with tab2:
-                bi_tool.basic_statistics(df)
-                bi_tool.correlation_analysis(df)
+                bi_tool.data_quality_analysis(df, context)
 
             with tab3:
-                bi_tool.create_pivot_table(df)
+                bi_tool.validation_workbench(df, context)
 
             with tab4:
-                bi_tool.time_series_analysis(df)
+                bi_tool.developer_workbench(df, context)
 
             with tab5:
-                bi_tool.create_dashboard(df)
+                bi_tool.basic_statistics(df, context)
+                st.markdown("---")
+                bi_tool.correlation_analysis(df, context)
 
             with tab6:
-                bi_tool.export_report(df)
+                bi_tool.create_pivot_table(df, context)
+                st.markdown("---")
+                bi_tool.time_series_analysis(df, context)
+
+            with tab7:
+                bi_tool.create_dashboard(df, context)
+
+            with tab8:
+                bi_tool.export_report(df, context)
 
         else:
             st.error(message)
     else:
-        # 显示使用说明
         st.info("""
         ### 🚀 BI数据分析工具使用说明
 
         **功能特点:**
-        - 📊 **数据可视化**: 多种图表类型，直观展示数据
-        - 📈 **统计分析**: 描述性统计、相关性分析
-        - 🔍 **数据透视**: 灵活的数据透视表分析
-        - 📉 **趋势分析**: 时间序列分析和预测
-        - 🎯 **交互式仪表板**: 自定义数据仪表板
-        - 💾 **报告导出**: 多种格式的数据报告
+        - 🧭 **场景洞察**: 自动识别测试、开发日志、埋点事件、业务报表等常见场景
+        - 🩺 **质量诊断**: 缺失值、重复行、常量列、高基数字段快速排查
+        - 🧪 **测试校验**: 必填字段、唯一键、非负数、时间格式等规则校验
+        - 🧩 **开发/大数据辅助**: JSON 字段展开、快速过滤、日志排障
+        - 📊 **统计与趋势**: 描述性统计、相关性、透视分析、时间趋势
+        - 💾 **报告导出**: Excel / CSV / HTML 报告
 
         **使用流程:**
-        1. 下载数据模板（推荐先使用模板了解格式要求）
-        2. 准备您的数据文件
-        3. 上传数据文件
-        4. 使用不同分析功能探索数据
-        5. 创建可视化图表和仪表板
-        6. 导出分析报告
+        1. 先下载场景模板，按自己的数据结构替换字段或样例值
+        2. 上传 CSV / Excel / JSON 数据，Excel 可切换到指定工作表
+        3. 在数据总览里先看场景洞察和字段画像
+        4. 在质量诊断、测试校验、开发/大数据页分别处理问题和辅助分析
+        5. 用统计分析、透视趋势、仪表板生成可视化结果
+        6. 导出报告用于复盘、验数或分享
         """)
 # 初始化并使用留言区
 feedback_section = FeedbackSection()

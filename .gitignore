@@ -12,3 +12,5 @@ workspace/reports/*
 !workspace/reports/.gitkeep
 workspace/uploads/*
 !workspace/uploads/.gitkeep
+workspace/mobsf_profile.local.json
+.streamlit/secrets.toml
