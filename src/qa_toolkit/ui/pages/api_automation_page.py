@@ -640,7 +640,7 @@ def render_api_automation_test_page() -> None:
 
     auto_test_tool = st.session_state.auto_test_tool
 
-    st.markdown('<div class="category-card">🚀 接口自动化测试工具</div>', unsafe_allow_html=True)
+    st.markdown('<div class="category-card">🤖 接口自动化测试工具</div>', unsafe_allow_html=True)
     render_workflow_guide(
         title="三步完成接口自动化回归",
         description="先导入接口定义，再配置环境与鉴权，最后生成脚本并执行。页面会统一保留生成产物和执行结果，方便回看与导出。",

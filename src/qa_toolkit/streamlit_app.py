@@ -14,6 +14,7 @@ import codecs
 import datetime
 import hashlib
 import hmac
+import zipfile
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
@@ -4001,25 +4002,269 @@ elif tool_category == "图片处理工具":
         st.info("请确保 image_processor.py 文件存在于正确的位置")
         st.stop()
 
+    try:
+        from streamlit_cropper import st_cropper
+        interactive_crop_available = True
+    except ImportError:
+        st_cropper = None
+        interactive_crop_available = False
+
     show_doc("image_processor")
 
     # 初始化session state
-    if 'original_image' not in st.session_state:
-        st.session_state.original_image = None
-    if 'processed_image' not in st.session_state:
+    image_session_defaults = {
+        "original_image": None,
+        "processed_image": None,
+        "image_info": None,
+        "processed_info": None,
+        "crop_coordinates": None,
+        "crop_preview": None,
+        "processed_image_data": None,
+        "processed_image_format": None,
+        "processed_download_name": None,
+        "processed_mime": None,
+        "image_upload_signature": None,
+        "image_batch_results": None,
+        "image_batch_zip_data": None,
+        "image_batch_zip_name": None,
+        "image_batch_preview_data": None,
+        "image_batch_preview_name": None,
+        "image_batch_output_format": None,
+        "image_batch_template_name": None,
+    }
+    for session_key, default_value in image_session_defaults.items():
+        if session_key not in st.session_state:
+            st.session_state[session_key] = default_value
+
+    def format_image_size(byte_size):
+        """格式化文件大小显示。"""
+        if byte_size >= 1024 * 1024:
+            return f"{byte_size / (1024 * 1024):.2f} MB"
+        if byte_size >= 1024:
+            return f"{byte_size / 1024:.2f} KB"
+        return f"{byte_size} B"
+
+    def build_image_info(file_name, image_obj, file_size, image_format=None):
+        """构建图片信息展示。"""
+        return {
+            "文件名": file_name,
+            "格式": image_format or image_obj.format or "未知",
+            "模式": image_obj.mode,
+            "尺寸": f"{image_obj.width} × {image_obj.height} 像素",
+            "文件大小": format_image_size(file_size),
+            "原始大小字节": file_size,
+        }
+
+    def open_image_from_bytes(image_data):
+        """从字节中重新加载图片对象。"""
+        new_buffer = io.BytesIO(image_data)
+        image_obj = Image.open(new_buffer)
+        image_obj.load()
+        new_buffer.close()
+        return image_obj
+
+    def reset_image_tool_state():
+        """清空图片工具状态。"""
+        for state_key in image_session_defaults:
+            st.session_state[state_key] = image_session_defaults[state_key]
+        if "image_uploader" in st.session_state:
+            st.session_state.image_uploader = None
+
+    def clear_single_result_state():
+        """清空单图处理结果。"""
         st.session_state.processed_image = None
-    if 'image_info' not in st.session_state:
-        st.session_state.image_info = None
-    if 'processed_info' not in st.session_state:
         st.session_state.processed_info = None
-    if 'crop_coordinates' not in st.session_state:
-        st.session_state.crop_coordinates = None
-    if 'crop_preview' not in st.session_state:
-        st.session_state.crop_preview = None
-    if 'processed_image_data' not in st.session_state:
         st.session_state.processed_image_data = None
-    if 'processed_image_format' not in st.session_state:
         st.session_state.processed_image_format = None
+        st.session_state.processed_download_name = None
+        st.session_state.processed_mime = None
+
+    def clear_batch_result_state():
+        """清空批量处理结果。"""
+        st.session_state.image_batch_results = None
+        st.session_state.image_batch_zip_data = None
+        st.session_state.image_batch_zip_name = None
+        st.session_state.image_batch_preview_data = None
+        st.session_state.image_batch_preview_name = None
+        st.session_state.image_batch_output_format = None
+        st.session_state.image_batch_template_name = None
+
+    def get_output_extension(target_format):
+        """获取输出扩展名。"""
+        return "jpg" if target_format.upper() in {"JPG", "JPEG"} else target_format.lower()
+
+    def get_output_mime(target_format):
+        """获取下载 MIME 类型。"""
+        mime_map = {
+            "JPG": "image/jpeg",
+            "JPEG": "image/jpeg",
+            "PNG": "image/png",
+            "GIF": "image/gif",
+            "BMP": "image/bmp",
+            "WEBP": "image/webp",
+        }
+        return mime_map.get(target_format.upper(), "application/octet-stream")
+
+    def sanitize_file_label(text):
+        """清理文件名片段。"""
+        return re.sub(r"[^\w\u4e00-\u9fff-]+", "_", text).strip("_") or "processed"
+
+    def normalize_crop_coordinates(left, top, right, bottom, image_width, image_height):
+        """标准化裁剪坐标，确保不越界。"""
+        left = max(0, min(int(round(left)), image_width - 1))
+        top = max(0, min(int(round(top)), image_height - 1))
+        right = max(left + 1, min(int(round(right)), image_width))
+        bottom = max(top + 1, min(int(round(bottom)), image_height))
+        return left, top, right, bottom
+
+    def crop_box_to_coordinates(box, image_width, image_height):
+        """将组件返回的 box 转为 PIL 裁剪坐标。"""
+        if not box:
+            return None
+
+        left = box.get("left", 0)
+        top = box.get("top", 0)
+        width = box.get("width", image_width)
+        height = box.get("height", image_height)
+        return normalize_crop_coordinates(left, top, left + width, top + height, image_width, image_height)
+
+    def get_safe_crop_coordinates(image_width, image_height):
+        """获取当前安全可用的裁剪坐标。"""
+        current_crop = st.session_state.crop_coordinates or (0, 0, image_width, image_height)
+        return normalize_crop_coordinates(*current_crop, image_width, image_height)
+
+    def to_cropper_default_coords(crop_coords, image_width, image_height):
+        """将内部坐标顺序转换为 st_cropper 所需的 default_coords。"""
+        left, top, right, bottom = normalize_crop_coordinates(*crop_coords, image_width, image_height)
+        return left, right, top, bottom
+
+    def get_crop_metrics(crop_coords, image_width, image_height):
+        """计算裁剪区域信息。"""
+        left, top, right, bottom = crop_coords
+        crop_width = right - left
+        crop_height = bottom - top
+        usage_ratio = (crop_width * crop_height) / max(1, image_width * image_height) * 100
+        return crop_width, crop_height, usage_ratio
+
+    def format_target_size_label(byte_size):
+        """格式化目标体积标签。"""
+        if byte_size >= 1024 * 1024:
+            value = byte_size / (1024 * 1024)
+            return f"{int(value) if value.is_integer() else value:g} MB"
+        value = byte_size / 1024
+        return f"{int(value) if value.is_integer() else value:g} KB"
+
+    def format_target_size_tag(byte_size):
+        """生成适合文件名的体积标签。"""
+        return format_target_size_label(byte_size).replace(" ", "").replace(".", "_")
+
+    def parse_custom_target_sizes(raw_text):
+        """解析批量自定义大小。支持 80KB、1.5MB 或纯数字(按 KB)。"""
+        targets = []
+        invalid_tokens = []
+        seen_bytes = set()
+
+        for token in re.split(r"[,，;\n；]+", raw_text or ""):
+            normalized = token.strip().upper().replace(" ", "")
+            if not normalized:
+                continue
+
+            matched = re.fullmatch(r"(\d+(?:\.\d+)?)(KB|MB)?", normalized)
+            if not matched:
+                invalid_tokens.append(token.strip())
+                continue
+
+            value = float(matched.group(1))
+            unit = matched.group(2) or "KB"
+            multiplier = 1024 if unit == "KB" else 1024 * 1024
+            byte_size = int(value * multiplier)
+
+            if byte_size <= 0 or byte_size in seen_bytes:
+                continue
+
+            seen_bytes.add(byte_size)
+            targets.append((format_target_size_label(byte_size), byte_size))
+
+        return targets, invalid_tokens
+
+    def build_download_name(processing_mode, target_format, image_obj, file_size):
+        """生成更友好的下载文件名。"""
+        original_name = "processed_image"
+        if st.session_state.image_info:
+            original_name = st.session_state.image_info.get("文件名", original_name)
+        base_name = sanitize_file_label(os.path.splitext(original_name)[0])
+        mode_name = sanitize_file_label(processing_mode)
+        dimension_label = f"{image_obj.width}x{image_obj.height}"
+        if file_size >= 1024 * 1024:
+            volume_label = f"{file_size / (1024 * 1024):.2f}MB".replace(".", "_")
+        else:
+            volume_label = f"{max(1, round(file_size / 1024))}KB"
+        extension = get_output_extension(target_format)
+        return f"{base_name}_{mode_name}_{dimension_label}_{volume_label}.{extension}"
+
+    def build_batch_entry_name(target_format, image_obj, target_bytes, actual_bytes):
+        """生成批量 ZIP 中的图片文件名。"""
+        original_name = "processed_image"
+        if st.session_state.image_info:
+            original_name = st.session_state.image_info.get("文件名", original_name)
+        base_name = sanitize_file_label(os.path.splitext(original_name)[0])
+        extension = get_output_extension(target_format)
+        return (
+            f"{base_name}_{format_target_size_tag(target_bytes)}_"
+            f"{image_obj.width}x{image_obj.height}_{format_target_size_tag(actual_bytes)}.{extension}"
+        )
+
+    def build_batch_zip_name(target_format, batch_count, template_label=None):
+        """生成批量 ZIP 文件名。"""
+        original_name = "processed_image"
+        if st.session_state.image_info:
+            original_name = st.session_state.image_info.get("文件名", original_name)
+        base_name = sanitize_file_label(os.path.splitext(original_name)[0])
+        extension = get_output_extension(target_format)
+        template_part = f"_{sanitize_file_label(template_label)}" if template_label else ""
+        return f"{base_name}{template_part}_测试图片包_{batch_count}个_{extension}.zip"
+
+    def summarize_size_change(original_size, processed_size):
+        """描述处理前后的体积变化。"""
+        if original_size <= 0:
+            return "无可用对比"
+        if processed_size == original_size:
+            return "无变化"
+        ratio = abs(processed_size - original_size) / original_size * 100
+        if processed_size < original_size:
+            return f"减少 {ratio:.1f}%"
+        return f"增加 {ratio:.1f}%"
+
+    def render_custom_size_inputs(prefix, default_width, default_height):
+        """渲染支持锁定宽高比的尺寸输入。"""
+        keep_ratio = st.checkbox("保持原始宽高比", value=True, key=f"{prefix}_keep_ratio")
+        if keep_ratio:
+            anchor = st.radio("按哪一边调整", ["按宽度", "按高度"], horizontal=True, key=f"{prefix}_anchor")
+            if anchor == "按宽度":
+                new_width = int(
+                    st.number_input("宽度(像素)", min_value=1, value=default_width, step=1, key=f"{prefix}_width")
+                )
+                new_height = max(1, int(round(new_width * default_height / max(1, default_width))))
+                st.caption(f"高度自动计算为 {new_height} 像素")
+            else:
+                new_height = int(
+                    st.number_input("高度(像素)", min_value=1, value=default_height, step=1, key=f"{prefix}_height")
+                )
+                new_width = max(1, int(round(new_height * default_width / max(1, default_height))))
+                st.caption(f"宽度自动计算为 {new_width} 像素")
+        else:
+            width_col, height_col = st.columns(2)
+            with width_col:
+                new_width = int(
+                    st.number_input("宽度(像素)", min_value=1, value=default_width, step=1, key=f"{prefix}_width")
+                )
+            with height_col:
+                new_height = int(
+                    st.number_input("高度(像素)", min_value=1, value=default_height, step=1, key=f"{prefix}_height")
+                )
+
+        st.write(f"输出尺寸: {new_width} × {new_height} 像素")
+        return new_width, new_height
 
     st.markdown('<div class="category-card">🖼️ 图片处理工具</div>', unsafe_allow_html=True)
 
@@ -4032,7 +4277,14 @@ elif tool_category == "图片处理工具":
         key="image_uploader"
     )
 
-    if uploaded_file is not None:
+    uploaded_file_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
+    uploaded_file_size = len(uploaded_file_bytes) if uploaded_file_bytes is not None else None
+    uploaded_signature = (
+        f"{uploaded_file.name}:{uploaded_file_size}:{hashlib.md5(uploaded_file_bytes).hexdigest()}"
+        if uploaded_file is not None else None
+    )
+
+    if uploaded_file is not None and st.session_state.image_upload_signature != uploaded_signature:
         try:
             # 打开图片并保存到session state
             image = Image.open(uploaded_file)
@@ -4041,19 +4293,15 @@ elif tool_category == "图片处理工具":
 
             # 获取图片信息
             img_format = image.format
-            img_size = image.size
-            img_mode = image.mode
-            file_size = len(uploaded_file.getvalue())
+            file_size = uploaded_file_size
 
             # 保存图片信息
-            st.session_state.image_info = {
-                "文件名": uploaded_file.name,
-                "格式": img_format,
-                "模式": img_mode,
-                "尺寸": f"{img_size[0]} × {img_size[1]} 像素",
-                "文件大小": f"{file_size / 1024:.2f} KB",
-                "原始大小字节": file_size
-            }
+            st.session_state.image_info = build_image_info(uploaded_file.name, image, file_size, image_format=img_format)
+            clear_single_result_state()
+            clear_batch_result_state()
+            st.session_state.crop_coordinates = None
+            st.session_state.crop_preview = None
+            st.session_state.image_upload_signature = uploaded_signature
 
         except Exception as e:
             st.error(f"图片读取失败: {e}")
@@ -4061,6 +4309,13 @@ elif tool_category == "图片处理工具":
     # 显示原图信息
     if st.session_state.original_image and st.session_state.image_info:
         st.markdown("### 2. 原图信息")
+        action_col, info_col = st.columns([1, 3])
+        with action_col:
+            if st.button("🧹 清空当前图片", use_container_width=True, key="clear_current_image_btn"):
+                reset_image_tool_state()
+                st.rerun()
+        with info_col:
+            st.caption("上传后可多次切换处理模式；结果也可以直接回填为新的原图继续处理。")
 
         col1, col2 = st.columns(2)
         with col1:
@@ -4078,7 +4333,7 @@ elif tool_category == "图片处理工具":
         # 处理模式选择
         processing_mode = st.radio(
             "处理模式",
-            ["格式转换和质量调整", "调整尺寸", "图片翻转", "图片旋转", "图片裁剪", "添加水印"],
+            ["格式转换和质量调整", "指定文件大小", "调整尺寸", "图片翻转", "图片旋转", "图片裁剪", "添加水印"],
             horizontal=True
         )
 
@@ -4103,11 +4358,128 @@ elif tool_category == "图片处理工具":
             with col3:
                 resize_option = st.radio("尺寸调整", ["保持原尺寸", "自定义尺寸"], horizontal=True)
                 if resize_option == "自定义尺寸":
-                    new_width = st.number_input("宽度(像素)", min_value=1, value=st.session_state.original_image.width)
-                    new_height = st.number_input("高度(像素)", min_value=1, value=st.session_state.original_image.height)
+                    new_width, new_height = render_custom_size_inputs(
+                        "format_resize",
+                        st.session_state.original_image.width,
+                        st.session_state.original_image.height
+                    )
                 else:
                     new_width = st.session_state.original_image.width
                     new_height = st.session_state.original_image.height
+
+        elif processing_mode == "指定文件大小":
+            st.markdown("**按目标文件大小输出**")
+            st.caption("适合上传边界测试。JPG / WEBP 更容易逼近目标大小；可选“严格补齐”做精确体积测试。")
+
+            target_size_presets = {
+                "自定义": None,
+                "50 KB": 50 * 1024,
+                "100 KB": 100 * 1024,
+                "200 KB": 200 * 1024,
+                "500 KB": 500 * 1024,
+                "1 MB": 1 * 1024 * 1024,
+                "2 MB": 2 * 1024 * 1024,
+                "5 MB": 5 * 1024 * 1024,
+                "10 MB": 10 * 1024 * 1024,
+            }
+            generation_mode = st.radio(
+                "生成方式",
+                ["单个文件", "批量生成测试包"],
+                horizontal=True,
+                key="target_size_generation_mode"
+            )
+            batch_template_options = {
+                "常用上传边界包": ["50 KB", "100 KB", "200 KB", "500 KB", "1 MB", "2 MB", "5 MB"],
+                "小体积验证包": ["50 KB", "100 KB", "200 KB", "500 KB"],
+                "大文件边界包": ["1 MB", "2 MB", "5 MB", "10 MB"],
+                "图片站点回归包": ["200 KB", "500 KB", "1 MB", "2 MB"],
+                "完全自定义": [],
+            }
+            col1, col2, col3 = st.columns(3)
+            batch_targets = []
+            invalid_size_tokens = []
+            selected_batch_template = None
+
+            with col1:
+                if generation_mode == "单个文件":
+                    target_size_preset = st.selectbox("常用测试体积", list(target_size_presets.keys()))
+                    if target_size_preset == "自定义":
+                        target_size_value = st.number_input("目标大小", min_value=1.0, value=500.0, step=50.0)
+                        target_size_unit = st.selectbox("单位", ["KB", "MB"], index=0)
+                        unit_multiplier = 1024 if target_size_unit == "KB" else 1024 * 1024
+                        target_bytes = int(target_size_value * unit_multiplier)
+                    else:
+                        target_bytes = target_size_presets[target_size_preset]
+                        st.info(f"目标体积: {format_image_size(target_bytes)}")
+                else:
+                    selected_batch_template = st.selectbox(
+                        "快捷模板包",
+                        list(batch_template_options.keys()),
+                        index=0,
+                        help="一键选中一组常用上传测试体积，可继续手动增删。"
+                    )
+                    batch_preset_options = [label for label in target_size_presets if label != "自定义"]
+                    template_defaults = batch_template_options[selected_batch_template]
+                    selected_batch_presets = st.multiselect(
+                        "批量体积预设",
+                        batch_preset_options,
+                        default=template_defaults,
+                        key=f"batch_size_presets_{sanitize_file_label(selected_batch_template)}",
+                        help="一次生成多档体积，适合上传边界和分层测试。"
+                    )
+                    custom_target_text = st.text_area(
+                        "附加自定义大小",
+                        placeholder="例如: 80KB, 256KB, 1.5MB",
+                        height=96
+                    )
+                    custom_targets, invalid_size_tokens = parse_custom_target_sizes(custom_target_text)
+                    batch_targets.extend((label, target_size_presets[label]) for label in selected_batch_presets)
+                    batch_targets.extend(custom_targets)
+                    deduped_targets = []
+                    seen_batch_bytes = set()
+                    for label, byte_size in batch_targets:
+                        if byte_size in seen_batch_bytes:
+                            continue
+                        seen_batch_bytes.add(byte_size)
+                        deduped_targets.append((label, byte_size))
+                    batch_targets = sorted(deduped_targets, key=lambda item: item[1])
+                    st.info(f"本次将生成 {len(batch_targets)} 个目标体积")
+                    if selected_batch_template != "完全自定义" and template_defaults:
+                        st.caption("模板默认项: " + " / ".join(template_defaults))
+
+            with col2:
+                output_format = st.selectbox("输出格式", ["JPG", "PNG", "WEBP"], index=0, key="target_size_output_format")
+                exact_padding = st.checkbox(
+                    "严格补齐到目标大小（测试专用）",
+                    value=True,
+                    help="会在文件尾部补齐填充字节，便于做上传边界测试；极少数严格校验服务可能拒绝这类文件。"
+                )
+                allow_resize = st.checkbox("必要时自动缩小尺寸", value=True)
+                if output_format in ["JPG", "WEBP"]:
+                    min_quality = st.slider("最低质量底线", 1, 100, 10)
+                else:
+                    min_quality = 100
+                    st.info("PNG 模式不调质量，会通过无损压缩和必要的缩尺寸来逼近目标。")
+
+            with col3:
+                resize_step_percent = st.slider("每轮缩小比例 (%)", 70, 98, 92)
+                st.metric("原图大小", format_image_size(st.session_state.image_info["原始大小字节"]))
+                if generation_mode == "单个文件":
+                    st.metric("目标大小", format_image_size(target_bytes))
+                    size_gap = target_bytes - st.session_state.image_info["原始大小字节"]
+                    st.caption(
+                        "目标与原图差值: "
+                        f"{'+' if size_gap >= 0 else '-'}{format_image_size(abs(size_gap))}"
+                    )
+                else:
+                    total_target_bytes = sum(byte_size for _, byte_size in batch_targets)
+                    st.metric("目标数量", len(batch_targets))
+                    st.metric("总目标体积", format_image_size(total_target_bytes) if batch_targets else "0 B")
+                    if batch_targets:
+                        st.caption("目标列表: " + " / ".join(label for label, _ in batch_targets[:6]))
+
+            if invalid_size_tokens:
+                st.warning("以下自定义大小未识别，已忽略: " + "，".join(invalid_size_tokens))
 
         elif processing_mode == "调整尺寸":
             st.markdown("**调整图片尺寸**")
@@ -4116,8 +4488,11 @@ elif tool_category == "图片处理工具":
             with col1:
                 resize_method = st.radio("调整方式", ["自定义尺寸", "按比例缩放", "预设尺寸"], horizontal=True)
                 if resize_method == "自定义尺寸":
-                    new_width = st.number_input("宽度(像素)", min_value=1, value=st.session_state.original_image.width)
-                    new_height = st.number_input("高度(像素)", min_value=1, value=st.session_state.original_image.height)
+                    new_width, new_height = render_custom_size_inputs(
+                        "resize_mode",
+                        st.session_state.original_image.width,
+                        st.session_state.original_image.height
+                    )
                 elif resize_method == "按比例缩放":
                     scale_percent = st.slider("缩放比例 (%)", 10, 200, 100)
                     original_width = st.session_state.original_image.width
@@ -4167,90 +4542,235 @@ elif tool_category == "图片处理工具":
             original_height = st.session_state.original_image.height
 
             # 裁剪方式选择
-            crop_method = st.radio("裁剪方式", ["手动设置区域", "按比例裁剪"], horizontal=True)
+            crop_method = st.radio("裁剪方式", ["自由裁剪", "按比例裁剪"], horizontal=True)
+            crop_interaction_options = ["拖拽裁剪框", "数值微调"] if interactive_crop_available else ["数值微调"]
+            crop_interaction_mode = st.radio("裁剪交互", crop_interaction_options, horizontal=True)
+            if not interactive_crop_available:
+                st.info("当前环境未安装 `streamlit-cropper`，已自动回退为数值微调模式。")
 
-            if crop_method == "手动设置区域":
-                col_setting, col_preview = st.columns([1, 1])
+            ratio_map = {
+                "1:1 (正方形)": (1, 1),
+                "16:9 (宽屏)": (16, 9),
+                "4:3 (标准)": (4, 3),
+                "3:2 (照片)": (3, 2),
+                "9:16 (竖屏)": (9, 16)
+            }
+            aspect_ratio_tuple = None
 
-                with col_setting:
-                    st.markdown("**设置裁剪区域：**")
-                    left = st.slider("左边距", 0, original_width - 1, 0, help="从图片左边开始裁剪的像素数")
-                    top = st.slider("上边距", 0, original_height - 1, 0, help="从图片顶部开始裁剪的像素数")
-                    right = st.slider("右边距", left + 1, original_width, original_width, help="裁剪到图片右边的像素位置")
-                    bottom = st.slider("下边距", top + 1, original_height, original_height, help="裁剪到图片底部的像素位置")
-
-                    crop_width = right - left
-                    crop_height = bottom - top
-                    st.success(f"**裁剪区域尺寸:** {crop_width} × {crop_height} 像素")
-                    st.session_state.crop_coordinates = (left, top, right, bottom)
-
-                with col_preview:
-                    st.markdown("**实时预览：**")
-                    try:
-                        if st.session_state.crop_coordinates:
-                            left, top, right, bottom = st.session_state.crop_coordinates
-                            crop_preview = st.session_state.original_image.crop((left, top, right, bottom))
-                            st.image(crop_preview, caption=f"裁剪预览 ({crop_width}×{crop_height})",
-                                     use_container_width=True)
-                            st.info(f"""
-                                **裁剪信息:**
-                                - 位置: ({left}, {top}) 到 ({right}, {bottom})
-                                - 尺寸: {crop_width} × {crop_height} 像素
-                                - 原图利用率: {(crop_width * crop_height) / (original_width * original_height) * 100:.1f}%
-                                """)
-                    except Exception as e:
-                        st.error(f"预览生成失败: {e}")
-
-            elif crop_method == "按比例裁剪":
-                aspect_ratio = st.selectbox("裁剪比例",
-                                            ["1:1 (正方形)", "16:9 (宽屏)", "4:3 (标准)", "3:2 (照片)", "9:16 (竖屏)", "自定义"])
+            if crop_method == "按比例裁剪":
+                aspect_ratio = st.selectbox(
+                    "裁剪比例",
+                    ["1:1 (正方形)", "16:9 (宽屏)", "4:3 (标准)", "3:2 (照片)", "9:16 (竖屏)", "自定义"]
+                )
 
                 if aspect_ratio == "自定义":
                     col_ratio1, col_ratio2 = st.columns(2)
                     with col_ratio1:
-                        ratio_w = st.number_input("宽度比例", min_value=1, value=1)
+                        ratio_w = int(st.number_input("宽度比例", min_value=1, value=1))
                     with col_ratio2:
-                        ratio_h = st.number_input("高度比例", min_value=1, value=1)
+                        ratio_h = int(st.number_input("高度比例", min_value=1, value=1))
                 else:
-                    ratio_map = {
-                        "1:1 (正方形)": (1, 1),
-                        "16:9 (宽屏)": (16, 9),
-                        "4:3 (标准)": (4, 3),
-                        "3:2 (照片)": (3, 2),
-                        "9:16 (竖屏)": (9, 16)
-                    }
                     ratio_w, ratio_h = ratio_map[aspect_ratio]
 
-                target_ratio = ratio_w / ratio_h
-                current_ratio = original_width / original_height
+                aspect_ratio_tuple = (ratio_w, ratio_h)
+                st.caption(f"当前固定比例: {ratio_w}:{ratio_h}")
 
-                if current_ratio > target_ratio:
-                    crop_width = int(original_height * target_ratio)
-                    crop_height = original_height
-                    left = (original_width - crop_width) // 2
-                    top = 0
+            if crop_interaction_mode == "拖拽裁剪框":
+                st.caption("直接拖动裁剪框边框、四角或框内区域，实时调整保留范围。")
+                safe_default_crop = get_safe_crop_coordinates(original_width, original_height)
+                st.session_state.crop_coordinates = safe_default_crop
+                cropper_default_coords = to_cropper_default_coords(
+                    safe_default_crop,
+                    original_width,
+                    original_height
+                )
+                cropper_col, info_col = st.columns([1.4, 1])
+                with cropper_col:
+                    cropped_image, crop_box = st_cropper(
+                        st.session_state.original_image,
+                        realtime_update=True,
+                        default_coords=cropper_default_coords,
+                        box_color="#FF6B35",
+                        aspect_ratio=aspect_ratio_tuple,
+                        return_type="both",
+                        should_resize_image=True,
+                        stroke_width=2,
+                        key=(
+                            f"image_cropper_{crop_method}_"
+                            f"{aspect_ratio_tuple[0] if aspect_ratio_tuple else 'free'}_"
+                            f"{aspect_ratio_tuple[1] if aspect_ratio_tuple else 'free'}_"
+                            f"{st.session_state.image_upload_signature}"
+                        )
+                    )
+
+                with info_col:
+                    crop_coords = crop_box_to_coordinates(crop_box, original_width, original_height)
+                    if crop_coords:
+                        st.session_state.crop_coordinates = crop_coords
+                        st.session_state.crop_preview = cropped_image
+                        left, top, right, bottom = crop_coords
+                        crop_width, crop_height, usage_ratio = get_crop_metrics(
+                            crop_coords,
+                            original_width,
+                            original_height
+                        )
+                        st.success(f"**裁剪区域尺寸:** {crop_width} × {crop_height} 像素")
+                        st.image(cropped_image, caption=f"裁剪预览 ({crop_width}×{crop_height})", use_container_width=True)
+                        st.info(f"""
+                            **裁剪信息:**
+                            - 位置: ({left}, {top}) 到 ({right}, {bottom})
+                            - 尺寸: {crop_width} × {crop_height} 像素
+                            - 原图利用率: {usage_ratio:.1f}%
+                            """)
+            else:
+                default_crop = get_safe_crop_coordinates(original_width, original_height)
+                default_left, default_top, default_right, default_bottom = normalize_crop_coordinates(
+                    *default_crop,
+                    original_width,
+                    original_height
+                )
+
+                if crop_method == "自由裁剪":
+                    col_setting, col_preview = st.columns([1, 1])
+
+                    with col_setting:
+                        st.markdown("**设置裁剪区域：**")
+                        left = st.slider("左边距", 0, original_width - 1, default_left, help="从图片左边开始裁剪的像素数")
+                        top = st.slider("上边距", 0, original_height - 1, default_top, help="从图片顶部开始裁剪的像素数")
+                        right = st.slider("右边距", left + 1, original_width, default_right, help="裁剪到图片右边的像素位置")
+                        bottom = st.slider("下边距", top + 1, original_height, default_bottom, help="裁剪到图片底部的像素位置")
+                        st.session_state.crop_coordinates = (left, top, right, bottom)
+
+                    with col_preview:
+                        st.markdown("**实时预览：**")
+                        try:
+                            crop_coords = st.session_state.crop_coordinates
+                            crop_width, crop_height, usage_ratio = get_crop_metrics(
+                                crop_coords,
+                                original_width,
+                                original_height
+                            )
+                            crop_preview = st.session_state.original_image.crop(crop_coords)
+                            st.session_state.crop_preview = crop_preview
+                            st.image(crop_preview, caption=f"裁剪预览 ({crop_width}×{crop_height})", use_container_width=True)
+                            st.info(f"""
+                                **裁剪信息:**
+                                - 位置: ({crop_coords[0]}, {crop_coords[1]}) 到 ({crop_coords[2]}, {crop_coords[3]})
+                                - 尺寸: {crop_width} × {crop_height} 像素
+                                - 原图利用率: {usage_ratio:.1f}%
+                                """)
+                        except Exception as e:
+                            st.error(f"预览生成失败: {e}")
+
                 else:
-                    crop_width = original_width
-                    crop_height = int(original_width / target_ratio)
-                    left = 0
-                    top = (original_height - crop_height) // 2
+                    target_ratio = ratio_w / ratio_h
+                    current_ratio = original_width / original_height
 
-                right = left + crop_width
-                bottom = top + crop_height
+                    if current_ratio > target_ratio:
+                        max_crop_width = int(original_height * target_ratio)
+                        max_crop_height = original_height
+                    else:
+                        max_crop_width = original_width
+                        max_crop_height = int(original_width / target_ratio)
 
-                col_ratio_setting, col_ratio_preview = st.columns([1, 1])
-                with col_ratio_setting:
-                    st.success(f"**自动计算区域:** {crop_width} × {crop_height} 像素")
-                    st.info(f"裁剪比例: {ratio_w}:{ratio_h}")
-                    st.session_state.crop_coordinates = (left, top, right, bottom)
+                    current_crop = st.session_state.crop_coordinates
+                    if current_crop:
+                        current_left, current_top, current_right, current_bottom = normalize_crop_coordinates(
+                            *current_crop,
+                            original_width,
+                            original_height
+                        )
+                        current_crop_width = current_right - current_left
+                        current_crop_height = current_bottom - current_top
+                        current_ratio_value = current_crop_width / max(1, current_crop_height)
+                        ratio_matches = abs(current_ratio_value - target_ratio) < 0.03
+                    else:
+                        current_left = current_top = 0
+                        current_crop_width = max_crop_width
+                        current_crop_height = max_crop_height
+                        ratio_matches = False
 
-                with col_ratio_preview:
-                    st.markdown("**预览效果：**")
-                    try:
-                        crop_preview = st.session_state.original_image.crop((left, top, right, bottom))
-                        st.image(crop_preview, caption=f"比例裁剪预览 ({crop_width}×{crop_height})", use_container_width=True)
-                    except Exception as e:
-                        st.error(f"预览生成失败: {e}")
+                    if not ratio_matches:
+                        current_crop_width = max_crop_width
+                        current_crop_height = max_crop_height
+                        current_left = max(0, (original_width - current_crop_width) // 2)
+                        current_top = max(0, (original_height - current_crop_height) // 2)
+
+                    default_scale_percent = int(round(current_crop_width / max(1, max_crop_width) * 100))
+                    default_scale_percent = max(10, min(100, default_scale_percent))
+
+                    col_ratio_setting, col_ratio_preview = st.columns([1, 1])
+                    with col_ratio_setting:
+                        st.markdown("**固定比例裁剪框设置：**")
+                        scale_percent = st.slider(
+                            "裁剪框大小 (%)",
+                            10,
+                            100,
+                            default_scale_percent,
+                            help="100% 表示当前比例下可容纳的最大裁剪框。"
+                        )
+                        crop_width = max(1, int(round(max_crop_width * scale_percent / 100)))
+                        crop_height = max(1, int(round(crop_width / target_ratio)))
+                        if crop_height > max_crop_height:
+                            crop_height = max_crop_height
+                            crop_width = max(1, int(round(crop_height * target_ratio)))
+
+                        max_left = max(0, original_width - crop_width)
+                        max_top = max(0, original_height - crop_height)
+                        default_left = min(max(0, current_left), max_left)
+                        default_top = min(max(0, current_top), max_top)
+
+                        left = st.slider(
+                            "水平位置",
+                            0,
+                            max_left if max_left > 0 else 0,
+                            default_left,
+                            help="拖动可在保持比例的前提下左右移动裁剪框。"
+                        )
+                        top = st.slider(
+                            "垂直位置",
+                            0,
+                            max_top if max_top > 0 else 0,
+                            default_top,
+                            help="拖动可在保持比例的前提下上下移动裁剪框。"
+                        )
+
+                        if st.button("🎯 裁剪框居中", use_container_width=True, key="center_ratio_crop_btn"):
+                            left = max_left // 2
+                            top = max_top // 2
+
+                        right = left + crop_width
+                        bottom = top + crop_height
+                        crop_coords = normalize_crop_coordinates(left, top, right, bottom, original_width, original_height)
+                        st.session_state.crop_coordinates = crop_coords
+                        st.success(f"**裁剪区域尺寸:** {crop_width} × {crop_height} 像素")
+                        st.info(
+                            f"固定比例 {ratio_w}:{ratio_h}，当前位置 ({crop_coords[0]}, {crop_coords[1]})"
+                        )
+
+                    with col_ratio_preview:
+                        st.markdown("**预览效果：**")
+                        try:
+                            crop_preview = st.session_state.original_image.crop(st.session_state.crop_coordinates)
+                            st.session_state.crop_preview = crop_preview
+                            preview_width, preview_height, usage_ratio = get_crop_metrics(
+                                st.session_state.crop_coordinates,
+                                original_width,
+                                original_height
+                            )
+                            st.image(
+                                crop_preview,
+                                caption=f"比例裁剪预览 ({preview_width}×{preview_height})",
+                                use_container_width=True
+                            )
+                            st.info(f"""
+                                **裁剪信息:**
+                                - 位置: ({st.session_state.crop_coordinates[0]}, {st.session_state.crop_coordinates[1]}) 到 ({st.session_state.crop_coordinates[2]}, {st.session_state.crop_coordinates[3]})
+                                - 尺寸: {preview_width} × {preview_height} 像素
+                                - 原图利用率: {usage_ratio:.1f}%
+                                """)
+                        except Exception as e:
+                            st.error(f"预览生成失败: {e}")
 
             output_format = st.selectbox("输出格式", ["JPG", "PNG", "WEBP"], index=0)
 
@@ -4277,41 +4797,113 @@ elif tool_category == "图片处理工具":
             try:
                 with st.spinner("正在处理图片..."):
                     processed_img = st.session_state.original_image.copy()
-                    output_buffer = io.BytesIO()
+                    processed_image_data = None
+                    extra_processed_info = {}
 
                     if processing_mode == "格式转换和质量调整":
+                        clear_batch_result_state()
                         if resize_option == "自定义尺寸" and (
                                 new_width != processed_img.width or new_height != processed_img.height):
                             processed_img = processed_img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=quality)
 
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
+                    elif processing_mode == "指定文件大小":
+                        if generation_mode == "单个文件":
+                            clear_batch_result_state()
+                            target_result = image_tool.convert_to_target_filesize(
+                                processed_img,
+                                target_bytes=target_bytes,
+                                output_format=output_format,
+                                exact_padding=exact_padding,
+                                min_quality=min_quality,
+                                max_quality=100,
+                                allow_resize=allow_resize,
+                                resize_step=resize_step_percent / 100,
+                            )
+                            processed_img = target_result["image"]
+                            processed_image_data = target_result["data"]
+                            extra_processed_info = {
+                                "目标大小": format_image_size(target_bytes),
+                                "实际大小": format_image_size(target_result["size_bytes"]),
+                                "补齐策略": "已补齐" if target_result["padding_applied"] else "未补齐",
+                            }
+                            if target_result["quality"] is not None:
+                                extra_processed_info["最终质量"] = str(target_result["quality"])
+                            if abs(target_result["scale_ratio"] - 1.0) > 1e-6:
+                                extra_processed_info["尺寸调整"] = f"{target_result['scale_ratio'] * 100:.0f}%"
+                        else:
+                            if not batch_targets:
+                                raise ValueError("请至少选择一个目标文件大小")
 
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=quality, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "GIF":
-                            processed_img.save(output_buffer, format='GIF', optimize=True)
-                        elif output_format == "BMP":
-                            processed_img.save(output_buffer, format='BMP')
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=quality, optimize=True)
+                            clear_single_result_state()
+                            batch_results = image_tool.convert_to_multiple_filesizes(
+                                processed_img,
+                                batch_targets,
+                                output_format=output_format,
+                                exact_padding=exact_padding,
+                                min_quality=min_quality,
+                                max_quality=100,
+                                allow_resize=allow_resize,
+                                resize_step=resize_step_percent / 100,
+                            )
+
+                            archive_buffer = io.BytesIO()
+                            batch_rows = []
+                            preview_data = None
+                            preview_name = None
+
+                            with zipfile.ZipFile(archive_buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                                for item in batch_results:
+                                    batch_image = item["image"]
+                                    actual_size = item["size_bytes"]
+                                    entry_name = build_batch_entry_name(
+                                        output_format,
+                                        batch_image,
+                                        item["target_bytes"],
+                                        actual_size
+                                    )
+                                    archive.writestr(entry_name, item["data"])
+                                    if preview_data is None:
+                                        preview_data = item["data"]
+                                        preview_name = entry_name
+
+                                    batch_rows.append({
+                                        "文件名": entry_name,
+                                        "目标大小": format_image_size(item["target_bytes"]),
+                                        "实际大小": format_image_size(actual_size),
+                                        "尺寸": f"{batch_image.width} × {batch_image.height}",
+                                        "最终质量": item["quality"] if item["quality"] is not None else "-",
+                                        "补齐": "是" if item["padding_applied"] else "否",
+                                    })
+
+                            st.session_state.image_batch_results = batch_rows
+                            st.session_state.image_batch_zip_data = archive_buffer.getvalue()
+                            st.session_state.image_batch_zip_name = build_batch_zip_name(
+                                output_format,
+                                len(batch_rows),
+                                template_label=selected_batch_template if selected_batch_template != "完全自定义" else None
+                            )
+                            st.session_state.image_batch_preview_data = preview_data
+                            st.session_state.image_batch_preview_name = preview_name
+                            st.session_state.image_batch_output_format = output_format
+                            st.session_state.image_batch_template_name = selected_batch_template
+                            st.success(f"已生成 {len(batch_rows)} 张测试图片并打包完成。")
+                            processed_image_data = None
 
                     elif processing_mode == "图片裁剪":
+                        clear_batch_result_state()
                         if st.session_state.crop_coordinates:
-                            left, top, right, bottom = st.session_state.crop_coordinates
+                            left, top, right, bottom = normalize_crop_coordinates(
+                                *st.session_state.crop_coordinates,
+                                processed_img.width,
+                                processed_img.height
+                            )
+                            st.session_state.crop_coordinates = (left, top, right, bottom)
                             processed_img = processed_img.crop((left, top, right, bottom))
-
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
-
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=95, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=95, optimize=True)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=95)
 
                     elif processing_mode == "调整尺寸":
+                        clear_batch_result_state()
                         resample_map = {
                             "LANCZOS (高质量)": Image.Resampling.LANCZOS,
                             "BILINEAR (平衡)": Image.Resampling.BILINEAR,
@@ -4319,16 +4911,10 @@ elif tool_category == "图片处理工具":
                         }
                         resample_algo = resample_map.get(resample_method, Image.Resampling.LANCZOS)
                         processed_img = processed_img.resize((new_width, new_height), resample_algo)
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
-
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=95, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=95, optimize=True)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=95)
 
                     elif processing_mode == "图片翻转":
+                        clear_batch_result_state()
                         if flip_direction == "上下翻转":
                             processed_img = processed_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
                         elif flip_direction == "左右翻转":
@@ -4336,17 +4922,10 @@ elif tool_category == "图片处理工具":
                         elif flip_direction == "同时翻转":
                             processed_img = processed_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
                             processed_img = processed_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
-
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=95, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=95, optimize=True)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=95)
 
                     elif processing_mode == "图片旋转":
+                        clear_batch_result_state()
                         actual_angle = rotation_angle if rotation_direction == "顺时针" else -rotation_angle
                         if rotation_angle % 90 == 0:
                             if actual_angle == 90 or actual_angle == -270:
@@ -4356,22 +4935,13 @@ elif tool_category == "图片处理工具":
                             elif actual_angle == 270 or actual_angle == -90:
                                 processed_img = processed_img.transpose(Image.Transpose.ROTATE_270)
                         else:
-                            from PIL import ImageOps
-
                             bg_rgb = tuple(int(bg_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
                             processed_img = processed_img.rotate(actual_angle, expand=True,
                                                                  resample=Image.Resampling.BICUBIC, fillcolor=bg_rgb)
-
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
-
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=95, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=95, optimize=True)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=95)
 
                     elif processing_mode == "添加水印":
+                        clear_batch_result_state()
                         color_rgb = tuple(int(text_color.lstrip('#')[i:i + 2], 16) for i in (0, 2, 4))
                         processed_img = image_tool.add_watermark(
                             processed_img,
@@ -4382,42 +4952,39 @@ elif tool_category == "图片处理工具":
                             opacity,
                             rotation
                         )
-                        processed_img = image_tool.convert_image_for_format(processed_img, output_format)
+                        processed_image_data = image_tool.save_image_to_bytes(processed_img, output_format, quality=95)
 
-                        if output_format == "JPG":
-                            processed_img.save(output_buffer, format='JPEG', quality=95, optimize=True)
-                        elif output_format == "PNG":
-                            processed_img.save(output_buffer, format='PNG', optimize=True)
-                        elif output_format == "WEBP":
-                            processed_img.save(output_buffer, format='WEBP', quality=95, optimize=True)
+                    if processed_image_data is not None:
+                        # 获取处理后的图片数据
+                        processed_image_obj = open_image_from_bytes(processed_image_data)
 
-                    # 获取处理后的图片数据
-                    processed_image_data = output_buffer.getvalue()
-                    new_buffer = io.BytesIO(processed_image_data)
-                    processed_image_obj = Image.open(new_buffer)
-                    processed_image_obj.load()
-                    output_buffer.close()
-                    new_buffer.close()
+                        # 保存处理后的图片对象和数据
+                        st.session_state.processed_image = processed_image_obj
+                        st.session_state.processed_image_data = processed_image_data
 
-                    # 保存处理后的图片对象和数据
-                    st.session_state.processed_image = processed_image_obj
-                    st.session_state.processed_image_data = processed_image_data
+                        # 计算处理后的信息
+                        processed_size = len(processed_image_data)
+                        original_size = st.session_state.image_info["原始大小字节"]
 
-                    # 计算处理后的信息
-                    processed_size = len(processed_image_data)
-                    original_size = st.session_state.image_info["原始大小字节"]
-                    compression_ratio = (1 - processed_size / original_size) * 100
+                        st.session_state.processed_info = {
+                            "处理模式": processing_mode,
+                            "格式": output_format,
+                            "模式": processed_image_obj.mode,
+                            "尺寸": f"{processed_image_obj.width} × {processed_image_obj.height} 像素",
+                            "文件大小": format_image_size(processed_size),
+                            "大小变化": summarize_size_change(original_size, processed_size)
+                        }
+                        st.session_state.processed_info.update(extra_processed_info)
 
-                    st.session_state.processed_info = {
-                        "格式": output_format,
-                        "模式": processed_image_obj.mode,
-                        "尺寸": f"{processed_image_obj.width} × {processed_image_obj.height} 像素",
-                        "文件大小": f"{processed_size / 1024:.2f} KB",
-                        "压缩率": f"{compression_ratio:.1f}%"
-                    }
-
-                    st.session_state.processed_image_format = output_format.lower()
-                    st.success("图片处理完成！")
+                        st.session_state.processed_image_format = get_output_extension(output_format)
+                        st.session_state.processed_download_name = build_download_name(
+                            processing_mode,
+                            output_format,
+                            processed_image_obj,
+                            processed_size
+                        )
+                        st.session_state.processed_mime = get_output_mime(output_format)
+                        st.success("图片处理完成！")
             except Exception as e:
                 st.error(f"图片处理失败: {e}")
                 import traceback
@@ -4440,14 +5007,63 @@ elif tool_category == "图片处理工具":
             for key, value in st.session_state.processed_info.items():
                 st.write(f"**{key}:** {value}")
 
-            file_name = f"processed_image.{st.session_state.processed_image_format}"
             st.download_button(
                 label="📥 下载处理后的图片",
                 data=st.session_state.processed_image_data,
-                file_name=file_name,
-                mime=f"image/{st.session_state.processed_image_format}",
+                file_name=st.session_state.processed_download_name or f"processed_image.{st.session_state.processed_image_format}",
+                mime=st.session_state.processed_mime or f"image/{st.session_state.processed_image_format}",
                 use_container_width=True
             )
+
+            if st.button("↩️ 将结果设为新的原图", use_container_width=True, key="promote_processed_image_btn"):
+                promoted_image = open_image_from_bytes(st.session_state.processed_image_data)
+                promoted_file_name = st.session_state.processed_download_name or (
+                    f"processed_image.{st.session_state.processed_image_format}"
+                )
+                st.session_state.original_image = promoted_image
+                st.session_state.image_info = build_image_info(
+                    promoted_file_name,
+                    promoted_image,
+                    len(st.session_state.processed_image_data),
+                    image_format=st.session_state.processed_info.get("格式")
+                )
+                st.session_state.processed_image = None
+                st.session_state.processed_info = None
+                st.session_state.crop_coordinates = None
+                st.session_state.crop_preview = None
+                st.session_state.processed_image_data = None
+                st.session_state.processed_image_format = None
+                st.session_state.processed_download_name = None
+                st.session_state.processed_mime = None
+                clear_batch_result_state()
+                st.rerun()
+
+    if (st.session_state.image_batch_results is not None and
+            st.session_state.image_batch_zip_data is not None):
+        st.markdown("### 4. 批量结果")
+
+        preview_col, summary_col = st.columns([1, 1])
+        with preview_col:
+            if st.session_state.image_batch_preview_data is not None:
+                preview_caption = st.session_state.image_batch_preview_name or "批量结果预览"
+                st.image(st.session_state.image_batch_preview_data, caption=preview_caption, use_container_width=True)
+
+        with summary_col:
+            st.markdown("**批量生成摘要:**")
+            if st.session_state.image_batch_template_name:
+                st.write(f"**模板包:** {st.session_state.image_batch_template_name}")
+            st.write(f"**输出格式:** {st.session_state.image_batch_output_format or '未知'}")
+            st.write(f"**生成数量:** {len(st.session_state.image_batch_results)}")
+            st.write(f"**压缩包大小:** {format_image_size(len(st.session_state.image_batch_zip_data))}")
+            st.download_button(
+                label="📦 下载批量测试图片包",
+                data=st.session_state.image_batch_zip_data,
+                file_name=st.session_state.image_batch_zip_name or "image_test_pack.zip",
+                mime="application/zip",
+                use_container_width=True
+            )
+
+        st.dataframe(pd.DataFrame(st.session_state.image_batch_results), use_container_width=True, hide_index=True)
 
     # 如果没有上传图片，显示使用说明
     if not st.session_state.original_image:
@@ -4455,12 +5071,15 @@ elif tool_category == "图片处理工具":
             ### 使用说明：
             1. **上传图片**: 支持 JPG、PNG、GIF、BMP、WEBP 格式
             2. **查看原图信息**: 显示文件名、格式、尺寸、文件大小
-            3. **选择处理模式**: 包括格式转换、调整尺寸、图片裁剪、添加水印等
-            4. **转换并下载**: 查看处理结果并下载新图片
+            3. **选择处理模式**: 包括格式转换、指定文件大小、调整尺寸、图片裁剪、添加水印等
+            4. **单个或批量生成**: 指定文件大小支持单图输出和多档测试包
+            5. **转换并下载**: 查看处理结果并下载新图片或 ZIP 压缩包
+            6. **继续处理**: 可将处理结果直接设为新的原图继续加工
 
             ### 图片裁剪功能：
-            - ✂️ **手动设置区域**: 通过滑块精确设置裁剪区域，实时预览效果
-            - 📐 **按比例裁剪**: 选择常见比例或自定义比例自动计算裁剪区域
+            - ✂️ **拖拽裁剪框**: 直接拖动边框、角点或框内区域调整保留范围
+            - 🎯 **数值微调**: 通过滑块精确设置裁剪区域，适合像素级控制
+            - 📐 **按比例裁剪**: 选择常见比例或自定义比例，并可移动固定比例裁剪框
             - 👀 **实时预览**: 设置后立即看到裁剪效果
             - 📊 **详细信息**: 显示裁剪位置、尺寸和原图利用率
             """)

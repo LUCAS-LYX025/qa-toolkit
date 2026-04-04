@@ -1,13 +1,25 @@
+import io
+
 from PIL import Image
-import streamlit as st
 
 from qa_toolkit.paths import FONTS_DIR
+
 
 class ImageProcessor:
     """
     图片处理工具类
     提供格式转换、水印添加等功能
     """
+
+    LOSSY_FORMATS = {"JPG", "JPEG", "WEBP"}
+    PIL_FORMAT_MAP = {
+        "JPG": "JPEG",
+        "JPEG": "JPEG",
+        "PNG": "PNG",
+        "GIF": "GIF",
+        "BMP": "BMP",
+        "WEBP": "WEBP",
+    }
 
     def __init__(self):
         self.available_fonts = self._detect_fonts()
@@ -21,6 +33,7 @@ class ImageProcessor:
     def convert_image_for_format(self, image, target_format):
         """根据目标格式转换图片模式"""
         img = image.copy()
+        target_format = target_format.upper()
 
         if target_format in ["JPG", "JPEG", "BMP"]:
             # JPG和BMP不支持透明通道，需要转换为RGB
@@ -44,6 +57,225 @@ class ImageProcessor:
                 img = img.convert('RGBA')
 
         return img
+
+    def get_pil_format(self, target_format):
+        """获取 Pillow 保存格式。"""
+        normalized_format = target_format.upper()
+        if normalized_format not in self.PIL_FORMAT_MAP:
+            raise ValueError(f"不支持的图片格式: {target_format}")
+        return self.PIL_FORMAT_MAP[normalized_format]
+
+    def save_image_to_bytes(self, image, target_format, quality=95):
+        """统一导出图片字节，避免页面层重复处理保存参数。"""
+        pil_format = self.get_pil_format(target_format)
+        converted_image = self.convert_image_for_format(image, target_format)
+        output_buffer = io.BytesIO()
+        save_kwargs = {}
+
+        if pil_format == "JPEG":
+            save_kwargs = {"quality": int(quality), "optimize": True}
+        elif pil_format == "WEBP":
+            save_kwargs = {"quality": int(quality), "optimize": True}
+        elif pil_format == "PNG":
+            save_kwargs = {"optimize": True}
+        elif pil_format == "GIF":
+            save_kwargs = {"optimize": True}
+
+        converted_image.save(output_buffer, format=pil_format, **save_kwargs)
+        return output_buffer.getvalue()
+
+    def pad_image_to_size(self, image_data, target_bytes):
+        """测试场景下用填充字节补齐体积，保持图片内容不变。"""
+        if target_bytes <= len(image_data):
+            return image_data
+        return image_data + (b"\0" * (target_bytes - len(image_data)))
+
+    def convert_to_target_filesize(
+            self,
+            image,
+            target_bytes,
+            output_format="JPG",
+            exact_padding=False,
+            min_quality=10,
+            max_quality=100,
+            allow_resize=True,
+            resize_step=0.92,
+            max_resize_steps=12,
+    ):
+        """
+        将图片尽量压缩到目标体积。
+
+        - 对 JPG / WEBP 优先搜索质量参数
+        - 如果最低质量仍过大，则逐步缩小尺寸
+        - 若启用 exact_padding，在结果小于目标时补齐到精确字节数
+        """
+        if target_bytes <= 0:
+            raise ValueError("目标文件大小必须大于 0")
+
+        target_format = output_format.upper()
+        best_candidate = None
+        current_scale = 1.0
+        resize_steps = 0
+
+        while True:
+            working_image = self._resize_by_scale(image, current_scale)
+            candidate = self._find_best_candidate(
+                working_image=working_image,
+                target_bytes=target_bytes,
+                output_format=target_format,
+                min_quality=min_quality,
+                max_quality=max_quality,
+                scale_ratio=current_scale,
+            )
+
+            best_candidate = self._pick_better_candidate(best_candidate, candidate, target_bytes)
+
+            if candidate["size_bytes"] <= target_bytes:
+                break
+
+            if not allow_resize or resize_steps >= max_resize_steps:
+                break
+
+            next_scale = current_scale * resize_step
+            next_image = self._resize_by_scale(image, next_scale)
+            if next_image.size == working_image.size:
+                break
+
+            current_scale = next_scale
+            resize_steps += 1
+
+        result_bytes = best_candidate["data"]
+        padding_applied = False
+
+        if exact_padding and len(result_bytes) < target_bytes:
+            result_bytes = self.pad_image_to_size(result_bytes, target_bytes)
+            padding_applied = True
+
+        return {
+            "data": result_bytes,
+            "image": best_candidate["image"],
+            "format": target_format,
+            "quality": best_candidate["quality"],
+            "size_bytes": len(result_bytes),
+            "raw_size_bytes": best_candidate["size_bytes"],
+            "scale_ratio": best_candidate["scale_ratio"],
+            "padding_applied": padding_applied,
+        }
+
+    def convert_to_multiple_filesizes(self, image, targets, output_format="JPG", **kwargs):
+        """
+        批量生成多个目标体积的图片。
+
+        targets 支持:
+        - [102400, 204800]
+        - [("100 KB", 102400), ("200 KB", 204800)]
+        """
+        results = []
+
+        for item in targets:
+            if isinstance(item, tuple):
+                target_label, target_bytes = item
+            else:
+                target_label, target_bytes = None, item
+
+            result = self.convert_to_target_filesize(
+                image,
+                target_bytes=int(target_bytes),
+                output_format=output_format,
+                **kwargs,
+            )
+            result["target_bytes"] = int(target_bytes)
+            result["target_label"] = target_label
+            results.append(result)
+
+        return results
+
+    def _resize_by_scale(self, image, scale_ratio):
+        """按比例缩放图片，scale=1 时返回副本。"""
+        if abs(scale_ratio - 1.0) < 1e-6:
+            return image.copy()
+
+        new_width = max(1, int(round(image.width * scale_ratio)))
+        new_height = max(1, int(round(image.height * scale_ratio)))
+        return image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    def _find_best_candidate(self, working_image, target_bytes, output_format, min_quality, max_quality,
+                             scale_ratio):
+        """查找当前尺寸下最接近目标体积的导出结果。"""
+        if output_format not in self.LOSSY_FORMATS:
+            data = self.save_image_to_bytes(working_image, output_format)
+            return {
+                "data": data,
+                "image": working_image,
+                "quality": None,
+                "size_bytes": len(data),
+                "scale_ratio": scale_ratio,
+            }
+
+        low = min_quality
+        high = max_quality
+        best_under = None
+        best_over = None
+        cache = {}
+
+        def get_candidate(quality_value):
+            if quality_value not in cache:
+                image_data = self.save_image_to_bytes(working_image, output_format, quality=quality_value)
+                cache[quality_value] = {
+                    "data": image_data,
+                    "image": working_image,
+                    "quality": quality_value,
+                    "size_bytes": len(image_data),
+                    "scale_ratio": scale_ratio,
+                }
+            return cache[quality_value]
+
+        while low <= high:
+            mid = (low + high) // 2
+            candidate = get_candidate(mid)
+
+            if candidate["size_bytes"] <= target_bytes:
+                if best_under is None or candidate["size_bytes"] > best_under["size_bytes"]:
+                    best_under = candidate
+                low = mid + 1
+            else:
+                if best_over is None or candidate["size_bytes"] < best_over["size_bytes"]:
+                    best_over = candidate
+                high = mid - 1
+
+        quality_window = []
+        for quality_value in (low, high):
+            for offset in range(-2, 3):
+                candidate_quality = quality_value + offset
+                if min_quality <= candidate_quality <= max_quality:
+                    quality_window.append(candidate_quality)
+
+        for quality_value in sorted(set(quality_window)):
+            candidate = get_candidate(quality_value)
+            if candidate["size_bytes"] <= target_bytes:
+                if best_under is None or candidate["size_bytes"] > best_under["size_bytes"]:
+                    best_under = candidate
+            else:
+                if best_over is None or candidate["size_bytes"] < best_over["size_bytes"]:
+                    best_over = candidate
+
+        return best_under or best_over or get_candidate(min_quality)
+
+    def _pick_better_candidate(self, current_best, new_candidate, target_bytes):
+        """优先选不超过目标且最接近目标体积的候选结果。"""
+        if current_best is None:
+            return new_candidate
+
+        def score(candidate):
+            return (
+                0 if candidate["size_bytes"] <= target_bytes else 1,
+                abs(candidate["size_bytes"] - target_bytes),
+                -candidate["size_bytes"],
+            )
+
+        if score(new_candidate) < score(current_best):
+            return new_candidate
+        return current_best
 
     def add_watermark(self, image, text, position, font_size, color, opacity, rotation, font_file=None):
         """添加水印 - 增强版，支持中文字体"""
