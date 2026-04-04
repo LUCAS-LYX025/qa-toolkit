@@ -9,6 +9,7 @@ import streamlit as st
 
 from qa_toolkit.core.api_performance_tool import PerformanceTestTool
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
+from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
 
 INTERFACE_FILE_TYPES = ["xlsx", "xls", "json", "har", "bru", "txt", "md", "yaml", "yml"]
@@ -2401,35 +2402,41 @@ def _render_listener_panel():
     )
     result_csv = pd.DataFrame(perf_result.get("samples", [])).to_csv(index=False, encoding="utf-8-sig")
     html_report = perf_result.get("html_report", "")
-    st.markdown('<div class="jmeter-field-card"><strong>Downloads</strong> 保留 HTML、JSON 和样本 CSV 三种导出。</div>', unsafe_allow_html=True)
-    download_col1, download_col2, download_col3 = st.columns(3)
-    with download_col1:
-        st.download_button(
-            label="📥 HTML Report",
-            data=html_report,
-            file_name="performance_report.html",
-            mime="text/html",
-            use_container_width=True,
-            key="download_performance_html",
-        )
-    with download_col2:
-        st.download_button(
-            label="📥 JSON Report",
-            data=result_json,
-            file_name="performance_report.json",
-            mime="application/json",
-            use_container_width=True,
-            key="download_performance_json",
-        )
-    with download_col3:
-        st.download_button(
-            label="📥 CSV Samples",
-            data=result_csv.encode("utf-8-sig"),
-            file_name="performance_samples.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key="download_performance_csv",
-        )
+    summary = perf_result.get("summary", {})
+    render_download_panel(
+        title="统一导出区",
+        description="性能结果统一导出为 HTML、JSON 和样本 CSV，便于和自动化、安全模块对齐归档方式。",
+        items=[
+            {
+                "label": "📥 下载 HTML 报告",
+                "data": html_report or None,
+                "file_name": "api_performance_report.html",
+                "mime": "text/html",
+                "caption": "适合浏览器查看和归档。",
+            },
+            {
+                "label": "🧾 下载 JSON 结果",
+                "data": result_json,
+                "file_name": "api_performance_report.json",
+                "mime": "application/json",
+                "caption": "包含 summary、sampler、timeline 和 error samples。",
+            },
+            {
+                "label": "📊 下载 CSV 样本",
+                "data": result_csv.encode("utf-8-sig"),
+                "file_name": "api_performance_samples.csv",
+                "mime": "text/csv",
+                "caption": "适合做样本明细筛选和二次分析。",
+            },
+        ],
+        key_prefix="api_performance_exports",
+        metrics=[
+            {"label": "总请求", "value": str(summary.get("total_requests", 0))},
+            {"label": "成功率", "value": f"{summary.get('success_rate', 0):.1f}%"},
+            {"label": "吞吐量", "value": f"{summary.get('throughput_rps', 0):.2f} rps"},
+        ],
+        empty_message="执行压测后才能导出结果。",
+    )
 
 
 def _render_active_panel(selected_node, parser: InterfaceAutoTestCore, perf_interfaces):
@@ -2488,6 +2495,17 @@ def render_api_performance_test_page():
     st.markdown(
         '<div class="jmeter-caption">按 JMeter 的思路组织页面: 左侧测试计划树，右侧节点配置，底部 Listener 结果区。</div>',
         unsafe_allow_html=True,
+    )
+    render_workflow_guide(
+        title="压测页推荐使用顺序",
+        description="先导入接口和配置线程组，再补断言、CSV 参数化和事务控制器，最后试跑并在 Listener Dock 导出统一结果。",
+        steps=[
+            "在 Test Plan 中导入接口文档，确认基础 URL 和参与压测的 Sampler。",
+            "在线程组、断言、CSV 和事务节点完成并发、数据和校验配置。",
+            "先小规模试跑，再放大并发，最后在 Listener Dock 查看并导出报表。",
+        ],
+        tips=["先跑 1-5 用户冒烟", "事务视图更适合看链路耗时", "CSV 建议先预览字段映射"],
+        eyebrow="页面向导",
     )
 
     _render_execution_toolbar(perf_interfaces, performance_tool)

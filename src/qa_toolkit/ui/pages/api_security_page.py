@@ -9,6 +9,7 @@ import streamlit as st
 from qa_toolkit.core.api_security_tool import SecurityTestTool
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
+from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
 
 INTERFACE_FILE_TYPES = ["xlsx", "xls", "json", "har", "bru", "txt", "md", "yaml", "yml"]
@@ -1148,118 +1149,130 @@ def _render_results(tool: SecurityTestTool):
                 regression_suite=generated_regression_suite,
             )
 
-        download_col1, download_col2, download_col3 = st.columns(3)
-        with download_col1:
-            if plan:
-                st.download_button(
-                    label="下载安全方案 JSON",
-                    data=json.dumps(plan, ensure_ascii=False, indent=2),
-                    file_name="api_security_plan.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="download_api_sec_plan",
+        export_items: List[Dict[str, Any]] = []
+        if plan:
+            export_items.append(
+                {
+                    "label": "下载安全方案 JSON",
+                    "data": json.dumps(plan, ensure_ascii=False, indent=2),
+                    "file_name": "api_security_plan.json",
+                    "mime": "application/json",
+                    "caption": "保留扫描方案、范围和策略基线。",
+                }
+            )
+        if passive_report:
+            export_items.append(
+                {
+                    "label": "下载被动审计 CSV",
+                    "data": pd.DataFrame(passive_report.get("findings", [])).to_csv(index=False),
+                    "file_name": "api_security_passive_findings.csv",
+                    "mime": "text/csv",
+                    "caption": "适合做问题分派和复测跟踪。",
+                }
+            )
+        if probe_report:
+            export_items.append(
+                {
+                    "label": "下载基线探测 CSV",
+                    "data": pd.DataFrame(probe_report.get("findings", [])).to_csv(index=False),
+                    "file_name": "api_security_probe_findings.csv",
+                    "mime": "text/csv",
+                }
+            )
+        if generated_checklist:
+            export_items.append(
+                {
+                    "label": "下载 OWASP 清单 CSV",
+                    "data": pd.DataFrame(generated_checklist).to_csv(index=False),
+                    "file_name": "api_security_owasp_checklist.csv",
+                    "mime": "text/csv",
+                }
+            )
+        if generated_role_regression:
+            export_items.append(
+                {
+                    "label": "下载多角色回归 CSV",
+                    "data": pd.DataFrame(generated_role_regression.get("comparisons", [])).to_csv(index=False),
+                    "file_name": "api_security_role_regression.csv",
+                    "mime": "text/csv",
+                }
+            )
+            export_items.append(
+                {
+                    "label": "下载多角色回归 JSON",
+                    "data": json.dumps(generated_role_regression, ensure_ascii=False, indent=2),
+                    "file_name": "api_security_role_regression.json",
+                    "mime": "application/json",
+                }
+            )
+        if generated_auth_matrix:
+            export_items.append(
+                {
+                    "label": "下载权限矩阵 CSV",
+                    "data": pd.DataFrame(generated_auth_matrix.get("matrix", [])).to_csv(index=False),
+                    "file_name": "api_security_authorization_matrix.csv",
+                    "mime": "text/csv",
+                }
+            )
+        if generated_regression_suite:
+            export_items.append(
+                {
+                    "label": "下载回归套件 CSV",
+                    "data": pd.DataFrame(generated_regression_suite.get("scenarios", [])).to_csv(index=False),
+                    "file_name": "api_security_regression_suite.csv",
+                    "mime": "text/csv",
+                }
+            )
+        if report_bundle:
+            export_items.append(
+                {
+                    "label": "下载完整报告 JSON",
+                    "data": json.dumps(report_bundle, ensure_ascii=False, indent=2),
+                    "file_name": "api_security_report_bundle.json",
+                    "mime": "application/json",
+                    "caption": "推荐优先归档完整 bundle。",
+                }
+            )
+            export_items.append(
+                {
+                    "label": "下载完整报告 Markdown",
+                    "data": report_bundle.get("report_markdown", ""),
+                    "file_name": "api_security_report.md",
+                    "mime": "text/markdown",
+                }
+            )
+        if generated_nuclei_pack:
+            for template in generated_nuclei_pack.get("templates", []):
+                export_items.append(
+                    {
+                        "label": f"下载 {template.get('name', 'Nuclei 模板')}",
+                        "data": template.get("content", ""),
+                        "file_name": template.get("file_name", "template.yaml"),
+                        "mime": "text/yaml",
+                    }
                 )
-            if passive_report:
-                st.download_button(
-                    label="下载被动审计 CSV",
-                    data=pd.DataFrame(passive_report.get("findings", [])).to_csv(index=False),
-                    file_name="api_security_passive_findings.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_passive_csv",
-                )
-        with download_col2:
-            if probe_report:
-                st.download_button(
-                    label="下载基线探测 CSV",
-                    data=pd.DataFrame(probe_report.get("findings", [])).to_csv(index=False),
-                    file_name="api_security_probe_findings.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_probe_csv",
-                )
-            if generated_checklist:
-                st.download_button(
-                    label="下载 OWASP 清单 CSV",
-                    data=pd.DataFrame(generated_checklist).to_csv(index=False),
-                    file_name="api_security_owasp_checklist.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_owasp_csv",
-                )
-            if generated_role_regression:
-                st.download_button(
-                    label="下载多角色回归 CSV",
-                    data=pd.DataFrame(generated_role_regression.get("comparisons", [])).to_csv(index=False),
-                    file_name="api_security_role_regression.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_role_regression_csv",
-                )
-            if generated_auth_matrix:
-                st.download_button(
-                    label="下载权限矩阵 CSV",
-                    data=pd.DataFrame(generated_auth_matrix.get("matrix", [])).to_csv(index=False),
-                    file_name="api_security_authorization_matrix.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_auth_matrix_csv",
-                )
-            if generated_regression_suite:
-                st.download_button(
-                    label="下载回归套件 CSV",
-                    data=pd.DataFrame(generated_regression_suite.get("scenarios", [])).to_csv(index=False),
-                    file_name="api_security_regression_suite.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    key="download_api_sec_regression_suite_csv",
-                )
-        with download_col3:
-            if report_bundle:
-                st.download_button(
-                    label="下载完整报告 JSON",
-                    data=json.dumps(report_bundle, ensure_ascii=False, indent=2),
-                    file_name="api_security_report_bundle.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="download_api_sec_bundle_json",
-                )
-                st.download_button(
-                    label="下载完整报告 Markdown",
-                    data=report_bundle.get("report_markdown", ""),
-                    file_name="api_security_report.md",
-                    mime="text/markdown",
-                    use_container_width=True,
-                    key="download_api_sec_bundle_md",
-                )
-            if generated_nuclei_pack:
-                for template in generated_nuclei_pack.get("templates", []):
-                    st.download_button(
-                        label=f"下载 {template.get('name', 'Nuclei 模板')}",
-                        data=template.get("content", ""),
-                        file_name=template.get("file_name", "template.yaml"),
-                        mime="text/yaml",
-                        use_container_width=True,
-                        key=f"download_api_sec_pack_{template.get('file_name', 'template')}",
-                    )
-            if generated_risk_dashboard:
-                st.download_button(
-                    label="下载风险看板 JSON",
-                    data=json.dumps(generated_risk_dashboard, ensure_ascii=False, indent=2),
-                    file_name="api_security_risk_dashboard.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="download_api_sec_risk_dashboard_json",
-                )
-            if generated_role_regression:
-                st.download_button(
-                    label="下载多角色回归 JSON",
-                    data=json.dumps(generated_role_regression, ensure_ascii=False, indent=2),
-                    file_name="api_security_role_regression.json",
-                    mime="application/json",
-                    use_container_width=True,
-                    key="download_api_sec_role_regression_json",
-                )
+        if generated_risk_dashboard:
+            export_items.append(
+                {
+                    "label": "下载风险看板 JSON",
+                    "data": json.dumps(generated_risk_dashboard, ensure_ascii=False, indent=2),
+                    "file_name": "api_security_risk_dashboard.json",
+                    "mime": "application/json",
+                }
+            )
+
+        render_download_panel(
+            title="统一导出区",
+            description="安全结果统一收口到这里，JSON、Markdown、CSV 和模板文件保持一致的导出入口。",
+            items=export_items,
+            key_prefix="api_security_exports",
+            metrics=[
+                {"label": "接口范围", "value": str(len(st.session_state.get("api_sec_selected_indexes", [])))},
+                {"label": "被动审计", "value": str(len((passive_report or {}).get("findings", [])))},
+                {"label": "基线探测", "value": str(len((probe_report or {}).get("findings", [])))},
+            ],
+            empty_message="先生成方案、报告或套件后才能导出。",
+        )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1393,25 +1406,25 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
             st.dataframe(pd.DataFrame(report.get("sdk_inventory", [])), use_container_width=True, hide_index=True)
 
     with tab_export:
-        download_col1, download_col2 = st.columns(2)
-        with download_col1:
-            st.download_button(
-                label="下载移动包报告 JSON",
-                data=json.dumps(report, ensure_ascii=False, indent=2),
-                file_name=f"mobile_security_{report.get('platform', 'package')}.json",
-                mime="application/json",
-                use_container_width=True,
-                key="download_mobile_security_json",
-            )
-        with download_col2:
-            st.download_button(
-                label="下载移动包报告 Markdown",
-                data=report.get("report_markdown", ""),
-                file_name=f"mobile_security_{report.get('platform', 'package')}.md",
-                mime="text/markdown",
-                use_container_width=True,
-                key="download_mobile_security_md",
-            )
+        render_download_panel(
+            title="移动包导出区",
+            description="移动包扫描结果统一提供 JSON 和 Markdown 两种格式。",
+            items=[
+                {
+                    "label": "下载移动包报告 JSON",
+                    "data": json.dumps(report, ensure_ascii=False, indent=2),
+                    "file_name": f"mobile_security_{report.get('platform', 'package')}.json",
+                    "mime": "application/json",
+                },
+                {
+                    "label": "下载移动包报告 Markdown",
+                    "data": report.get("report_markdown", ""),
+                    "file_name": f"mobile_security_{report.get('platform', 'package')}.md",
+                    "mime": "text/markdown",
+                },
+            ],
+            key_prefix="mobile_security_exports",
+        )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1536,25 +1549,25 @@ def _render_web_security_tab(app_tool: ApplicationSecurityTool):
             st.info("当前没有常见路径探测结果。")
 
     with tab_export:
-        download_col1, download_col2 = st.columns(2)
-        with download_col1:
-            st.download_button(
-                label="下载站点报告 JSON",
-                data=json.dumps(report, ensure_ascii=False, indent=2),
-                file_name="web_security_report.json",
-                mime="application/json",
-                use_container_width=True,
-                key="download_web_security_json",
-            )
-        with download_col2:
-            st.download_button(
-                label="下载站点报告 Markdown",
-                data=report.get("report_markdown", ""),
-                file_name="web_security_report.md",
-                mime="text/markdown",
-                use_container_width=True,
-                key="download_web_security_md",
-            )
+        render_download_panel(
+            title="站点导出区",
+            description="站点扫描结果统一提供 JSON 和 Markdown 两种格式。",
+            items=[
+                {
+                    "label": "下载站点报告 JSON",
+                    "data": json.dumps(report, ensure_ascii=False, indent=2),
+                    "file_name": "web_security_report.json",
+                    "mime": "application/json",
+                },
+                {
+                    "label": "下载站点报告 Markdown",
+                    "data": report.get("report_markdown", ""),
+                    "file_name": "web_security_report.md",
+                    "mime": "text/markdown",
+                },
+            ],
+            key_prefix="web_security_exports",
+        )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1577,6 +1590,17 @@ def render_api_security_test_page():
     )
 
     _render_design_cards()
+    render_workflow_guide(
+        title="安全页推荐使用顺序",
+        description="先导入接口文档并确认范围，再生成基线方案和被动审计结果，最后按 API、移动包或 Web 入口分别导出报告。",
+        steps=[
+            "先明确授权范围、目标接口和角色，再导入接口文档或目标资产。",
+            "优先跑安全方案、被动审计和低风险基线探测，再看权限矩阵和回归套件。",
+            "统一从导出区下载 JSON、Markdown、CSV 结果，便于复测和归档。",
+        ],
+        tips=["默认坚持低风险探测", "适合授权环境", "自动发现后仍建议人工复核"],
+        eyebrow="页面向导",
+    )
     tab_api, tab_mobile, tab_web = st.tabs(["API 文档安全", "移动包(.apk/.ipa)", "Web 站点 URL"])
 
     with tab_api:

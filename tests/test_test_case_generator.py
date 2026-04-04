@@ -99,6 +99,52 @@ def test_generate_markdown_report_handles_english_case_keys():
     assert "Functional" in markdown
 
 
+def test_normalize_case_record_maps_english_fields_and_priority():
+    generator = TestCaseGenerator()
+
+    normalized = generator.normalize_case_record(
+        {
+            "Case ID": "TC100",
+            "Case Name": "Upload avatar",
+            "Precondition": "User logged in",
+            "Test Steps": "1. Open profile",
+            "Expected Result": "Avatar updated",
+            "Priority": "High",
+            "Test Type": "Functional",
+            "Notes": "covers happy path",
+        }
+    )
+
+    assert normalized["用例ID"] == "TC100"
+    assert normalized["用例名称"] == "Upload avatar"
+    assert normalized["优先级"] == "高"
+    assert normalized["备注"] == "covers happy path"
+
+
+def test_analyze_requirement_returns_default_hint_for_empty_text():
+    generator = TestCaseGenerator()
+
+    analysis = generator.analyze_requirement(" \n\t ")
+
+    assert analysis["complexity"] == "低"
+    assert analysis["line_count"] == 0
+    assert "当前没有可分析的需求文本" in analysis["unclear_points"]
+
+
+def test_get_ocr_status_reports_backend_when_available(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+    generator.ocr_available = True
+    generator.ocr_backend = "tesseract-cli"
+    generator.tesseract_cmd = "/usr/local/bin/tesseract"
+
+    status = generator.get_ocr_status()
+
+    assert status["status"] == "available"
+    assert "tesseract-cli" in status["message"]
+    assert "tesseract" in status["message"]
+
+
 def test_resolve_tesseract_command_skips_embedded_binary_on_linux(monkeypatch):
     monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
     generator = TestCaseGenerator()
