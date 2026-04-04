@@ -3705,290 +3705,665 @@ elif tool_category == "时间处理工具":
 # IP/域名查询工具
 elif tool_category == "IP/域名查询工具":
     show_doc("ip_domain_query")
-
-    # 创建实例
     ip_tool = IPQueryTool()
 
-    tab1, tab2, tab3 = st.tabs(
-        ["IP/域名查询", "批量查询", "IPv4转换工具"])
+    ip_session_defaults = {
+        "ip_query_input_value": "",
+        "ip_query_result": None,
+        "ip_query_meta": None,
+        "ip_batch_input_value": "",
+        "ip_batch_rows": None,
+        "ip_batch_invalid_rows": None,
+        "ip_batch_summary": None,
+        "ip_conversion_input_value": "",
+        "ip_conversion_result": None,
+        "ip_recent_queries": [],
+        "ip_tool_pending_action": None,
+        "ip_public_ip_error": None,
+        "ip_asset_subdomain_result": None,
+        "ip_asset_reverse_result": None,
+        "ip_asset_icp_result": None,
+    }
+    for session_key, default_value in ip_session_defaults.items():
+        if session_key not in st.session_state:
+            st.session_state[session_key] = default_value
+
+    def safe_filename(value, fallback):
+        cleaned = re.sub(r"[^0-9A-Za-z._-]+", "_", str(value or "")).strip("._")
+        return cleaned or fallback
+
+    def queue_ip_tool_action(action_name, payload=None):
+        st.session_state.ip_tool_pending_action = {
+            "action": action_name,
+            "payload": payload,
+        }
+
+    def reset_single_query_state(input_value=""):
+        st.session_state.ip_query_input_value = input_value
+        st.session_state.ip_query_result = None
+        st.session_state.ip_query_meta = None
+
+    def remember_recent_query(meta):
+        recent_queries = list(st.session_state.ip_recent_queries or [])
+        normalized_target = meta.get("normalized_target", "")
+        original_input = meta.get("original_input", normalized_target)
+        entry = {
+            "label": f"{meta.get('target_type', '查询')} · {normalized_target}",
+            "original_input": original_input,
+            "normalized_target": normalized_target,
+        }
+
+        recent_queries = [
+            item for item in recent_queries
+            if item.get("normalized_target") != normalized_target
+        ]
+        recent_queries.insert(0, entry)
+        st.session_state.ip_recent_queries = recent_queries[:6]
+
+    def format_card_value(value):
+        if value is None:
+            return "-"
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(item) for item in value) or "-"
+        if isinstance(value, dict):
+            return json.dumps(value, ensure_ascii=False)
+        text = str(value).strip()
+        return text or "-"
+
+    def render_info_cards(info_dict, monospace_keys=None):
+        monospace_keys = set(monospace_keys or [])
+        items = [(key, format_card_value(value)) for key, value in info_dict.items() if value not in (None, "")]
+        for index in range(0, len(items), 2):
+            cols = st.columns(2)
+            for offset in range(2):
+                item_index = index + offset
+                if item_index >= len(items):
+                    continue
+                key, value = items[item_index]
+                font_family = "ui-monospace, SFMono-Regular, Menlo, monospace" if key in monospace_keys else "inherit"
+                with cols[offset]:
+                    st.markdown(
+                        f"""
+                        <div style="background:#f8fafc;padding:1rem;border-radius:10px;margin:0.5rem 0;border-left:4px solid #0ea5e9;">
+                            <div style="font-weight:600;color:#1f2937;margin-bottom:0.4rem;">{html.escape(str(key))}</div>
+                            <div style="color:#475569;font-family:{font_family};word-break:break-word;">{html.escape(value)}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+    def render_query_result(result, meta):
+        if not result:
+            return
+        if not result["success"]:
+            st.error(f"查询失败: {result['error']}")
+            return
+
+        data = result["data"]
+        st.success("查询完成")
+
+        if meta.get("is_ip"):
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("查询类型", data.get("输入类型", "IP地址"))
+            metric_cols[1].metric("IP版本", data.get("IP版本", "-"))
+            metric_cols[2].metric("IP类型", data.get("IP类型", "-"))
+            metric_cols[3].metric("网络段", data.get("网络段", "-"))
+        else:
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("查询类型", data.get("输入类型", "域名"))
+            metric_cols[1].metric("解析状态", data.get("解析状态", "-"))
+            metric_cols[2].metric("地址数量", str(data.get("地址数量", 0)))
+            metric_cols[3].metric("首选IP类型", data.get("首选IP类型", "-"))
+
+        st.markdown("**详细信息**")
+        render_info_cards(
+            data,
+            monospace_keys={
+                "IP地址", "域名", "解析IP", "首选IP", "A记录", "AAAA记录",
+                "所有IP", "网络段", "反向解析指针", "端口", "rDNS", "主机名",
+            },
+        )
+
+        json_text = json.dumps(data, ensure_ascii=False, indent=2)
+        download_name = safe_filename(meta.get("normalized_target"), "ip-domain-query")
+        action_cols = st.columns(2)
+        with action_cols[0]:
+            create_copy_button(json_text, button_text="📋 复制 JSON", key=f"copy_ip_query_{download_name}")
+        with action_cols[1]:
+            st.download_button(
+                label="下载 JSON",
+                data=json_text.encode("utf-8"),
+                file_name=f"{download_name}.json",
+                mime="application/json",
+                use_container_width=True,
+                key=f"download_ip_query_{download_name}",
+            )
+
+    def render_asset_table_result(title, result, filename_prefix):
+        if not result:
+            return
+        if not result["success"]:
+            st.error(result["error"])
+            return
+
+        data = result["data"]
+        records = data.get("结果", [])
+        metric_cols = st.columns(3)
+        metric_cols[0].metric("查询目标", data.get("查询目标") or data.get("输入目标") or "-")
+        metric_cols[1].metric("结果数量", len(records))
+        metric_cols[2].metric("数据来源", data.get("数据来源", "-"))
+
+        if data.get("查询IP"):
+            st.caption(f"查询 IP: `{data['查询IP']}`")
+        if data.get("可注册主域"):
+            st.caption(f"可注册主域: `{data['可注册主域']}`")
+        if data.get("备注"):
+            st.info(data["备注"])
+        if data.get("错误信息"):
+            st.warning(data["错误信息"])
+
+        if records:
+            records_df = pd.DataFrame(records)
+            st.dataframe(records_df, use_container_width=True, hide_index=True)
+            records_json = json.dumps(records, ensure_ascii=False, indent=2)
+            action_cols = st.columns(2)
+            with action_cols[0]:
+                st.download_button(
+                    label="下载 CSV",
+                    data=records_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name=f"{filename_prefix}.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key=f"download_{filename_prefix}_csv",
+                )
+            with action_cols[1]:
+                st.download_button(
+                    label="下载 JSON",
+                    data=records_json.encode("utf-8"),
+                    file_name=f"{filename_prefix}.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key=f"download_{filename_prefix}_json",
+                )
+        else:
+            st.info("当前没有查询到可展示的结果。")
+
+    pending_action = st.session_state.get("ip_tool_pending_action")
+    if pending_action:
+        st.session_state.ip_tool_pending_action = None
+        action_name = pending_action.get("action")
+        payload = pending_action.get("payload")
+
+        if action_name == "use_public_ip":
+            with st.spinner("正在获取公网 IP..."):
+                public_ip = ip_tool.get_public_ip()
+            if public_ip != "获取公网IP失败":
+                st.session_state.current_public_ip = public_ip
+                st.session_state.ip_public_ip_error = None
+                reset_single_query_state(public_ip)
+            else:
+                st.session_state.ip_public_ip_error = "无法获取当前公网 IP"
+        elif action_name == "fill_query_sample":
+            st.session_state.ip_public_ip_error = None
+            reset_single_query_state("https://example.com:8443/login")
+        elif action_name == "clear_query":
+            st.session_state.ip_public_ip_error = None
+            reset_single_query_state("")
+        elif action_name == "fill_from_history":
+            st.session_state.ip_public_ip_error = None
+            reset_single_query_state(str(payload or ""))
+        elif action_name == "fill_batch_sample":
+            st.session_state.ip_batch_input_value = "\n".join([
+                "8.8.8.8",
+                "https://cloudflare.com/cdn-cgi/trace",
+                "baidu.com",
+                "1.1.1.1",
+                "https://[2606:4700:4700::1111]/dns-query",
+            ])
+            st.session_state.ip_batch_rows = None
+            st.session_state.ip_batch_invalid_rows = None
+            st.session_state.ip_batch_summary = None
+        elif action_name == "clear_batch":
+            st.session_state.ip_batch_input_value = ""
+            st.session_state.ip_batch_rows = None
+            st.session_state.ip_batch_invalid_rows = None
+            st.session_state.ip_batch_summary = None
+        elif action_name == "fill_convert_sample":
+            st.session_state.ip_conversion_input_value = "0x08080808"
+            st.session_state.ip_conversion_result = None
+        elif action_name == "clear_convert":
+            st.session_state.ip_conversion_input_value = ""
+            st.session_state.ip_conversion_result = None
+
+    tab1, tab2, tab3, tab4 = st.tabs(["IP/域名查询", "批量查询", "IPv4转换工具", "资产扩展查询"])
 
     with tab1:
         st.markdown("**IP/域名基本信息查询**")
+        st.caption("支持 IPv4、IPv6、域名和 URL。URL 会自动提取 host、端口和路径，例如 `https://example.com:8443/login`。")
 
-        # # 获取当前公网IP
-        # if st.button("获取当前公网IP", key="get_public_ip", use_container_width=True):
-        #     with st.spinner("正在获取当前公网IP..."):
-        #         public_ip = ip_tool.get_public_ip()
-        #         if public_ip != "获取公网IP失败":
-        #             st.session_state.current_public_ip = public_ip
-        #             st.success(f"当前公网IP: {public_ip}")
-        #         else:
-        #             st.error("无法获取当前公网IP")
-
-        # 输入框
-        if 'current_public_ip' in st.session_state:
-            target_input = st.text_input("输入IP地址或域名",
-                                         value=st.session_state.current_public_ip,
-                                         placeholder="例如: 117.30.73.100 或 baidu.com",
-                                         key="target_input_with_public_ip")
-        else:
-            target_input = st.text_input("输入IP地址或域名",
-                                         placeholder="例如: 117.30.73.100 或 baidu.com",
-                                         key="target_input")
-
-        st.caption("支持IPv4、IPv6地址和域名查询")
-
-        col1, col2 = st.columns([2, 1])
-        with col2:
+        input_col, action_col = st.columns([4, 1])
+        with input_col:
+            target_input = st.text_input(
+                "输入 IP、域名或 URL",
+                placeholder="例如: 8.8.8.8、2606:4700:4700::1111、baidu.com、https://example.com:8443/login",
+                key="ip_query_input_value",
+            )
+        with action_col:
             st.write("")
-            st.write("")
-            query_button = st.button("开始查询", use_container_width=True, key="main_query")
+            st.button(
+                "使用公网IP",
+                key="get_public_ip",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("use_public_ip",),
+            )
 
-        if query_button and target_input:
-            is_ip = False
-            is_domain = False
-            ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-            ipv6_pattern = r'^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+            st.button(
+                "填入示例",
+                key="ip_fill_sample",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("fill_query_sample",),
+            )
 
-            # 处理URL格式
-            if target_input.startswith(('http://', 'https://')):
-                try:
-                    target_input = target_input.split('://')[1].split('/')[0]
-                except:
-                    pass
+            st.button(
+                "清空",
+                key="ip_clear_single",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("clear_query",),
+            )
 
-            if re.match(ipv4_pattern, target_input.strip()) or re.match(ipv6_pattern, target_input.strip()):
-                is_ip = True
+        if st.session_state.ip_public_ip_error:
+            st.error(st.session_state.ip_public_ip_error)
+
+        recent_queries = st.session_state.ip_recent_queries or []
+        if recent_queries:
+            st.markdown("**最近查询**")
+            history_cols = st.columns(min(3, len(recent_queries)))
+            for index, item in enumerate(recent_queries[:6]):
+                with history_cols[index % len(history_cols)]:
+                    st.button(
+                        item["label"],
+                        key=f"ip_recent_query_{index}",
+                        use_container_width=True,
+                        on_click=queue_ip_tool_action,
+                        args=("fill_from_history", item["original_input"]),
+                    )
+
+        parsed_preview = None
+        if target_input.strip():
+            parsed_preview = ip_tool.parse_target_input(target_input)
+            if parsed_preview["success"]:
+                preview_meta = parsed_preview["data"]
+                preview_cols = st.columns(4)
+                preview_cols[0].metric("识别类型", preview_meta.get("target_type", "-"))
+                preview_cols[1].metric("规范目标", preview_meta.get("normalized_target", "-"))
+                preview_cols[2].metric("端口", str(preview_meta.get("port") or "-"))
+                preview_cols[3].metric("路径", preview_meta.get("path") or "/")
+
+                preview_notes = []
+                if preview_meta.get("original_input") != preview_meta.get("normalized_target"):
+                    preview_notes.append(f"已标准化为 `{preview_meta['normalized_target']}`")
+                if preview_meta.get("scheme"):
+                    preview_notes.append(f"协议 `{preview_meta['scheme']}`")
+                if preview_meta.get("notes"):
+                    preview_notes.extend(preview_meta["notes"])
+                if preview_notes:
+                    st.info(" | ".join(preview_notes))
             else:
-                domain_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$'
-                if re.match(domain_pattern, target_input.strip()):
-                    is_domain = True
+                st.warning(parsed_preview["error"])
 
-            if not is_ip and not is_domain:
-                st.error("请输入有效的IP地址或域名格式")
-                st.stop()
-
-            with st.spinner("查询中..."):
-                result = ip_tool.get_ip_domain_info(target_input, is_ip)
-
-                if result['success']:
-                    st.success("查询成功！")
-
-                    # rDNS查询
-                    if is_ip:
-                        rdns_result = ip_tool.get_rdns_info(target_input)
-                        if rdns_result['success']:
-                            st.metric("rDNS", rdns_result['data'].get('rDNS', '未知'))
-
-                    # 详细信息展示
-                    st.markdown("**详细信息**")
-                    detailed_info = result['data'].copy()
-                    for key in ['IP地址', '域名', 'location', 'isp']:
-                        detailed_info.pop(key, None)
-
-                    info_keys = list(detailed_info.keys())
-                    for i in range(0, len(info_keys), 2):
-                        cols = st.columns(2)
-                        for j in range(2):
-                            if i + j < len(info_keys):
-                                key = info_keys[i + j]
-                                value = detailed_info[key]
-                                with cols[j]:
-                                    st.markdown(f"""
-                                    <div style="background: #f8fafc; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; border-left: 4px solid #667eea;">
-                                        <div style="font-weight: 600; color: #2d3748; margin-bottom: 0.5rem;">{key}</div>
-                                        <div style="color: #4a5568;">{value}</div>
-                                    </div>
-                                    """, unsafe_allow_html=True)
+        query_button = st.button("开始查询", use_container_width=True, key="main_query")
+        if query_button:
+            st.session_state.ip_public_ip_error = None
+            if not target_input.strip():
+                st.session_state.ip_query_result = None
+                st.session_state.ip_query_meta = None
+                st.error("请输入 IP、域名或 URL")
+            else:
+                parsed_result = parsed_preview or ip_tool.parse_target_input(target_input)
+                if not parsed_result["success"]:
+                    st.session_state.ip_query_result = None
+                    st.session_state.ip_query_meta = None
+                    st.error(parsed_result["error"])
                 else:
-                    st.error(f"查询失败: {result['error']}")
+                    with st.spinner("查询中..."):
+                        meta = parsed_result["data"]
+                        result = ip_tool.get_ip_domain_info(
+                            meta["normalized_target"],
+                            meta["is_ip"],
+                            parsed_target=meta,
+                        )
+                    st.session_state.ip_query_result = result
+                    st.session_state.ip_query_meta = meta
+                    if result["success"]:
+                        remember_recent_query(meta)
+
+        if st.session_state.ip_query_result and st.session_state.ip_query_meta:
+            render_query_result(st.session_state.ip_query_result, st.session_state.ip_query_meta)
 
     with tab2:
         st.markdown("**批量查询工具**")
-        st.info("支持批量查询IP/域名信息")
+        st.info("支持 IP、域名和 URL 混合输入。每行一个目标，自动识别并可按规范化目标去重。")
 
-        query_type = st.radio("查询类型", ["IP地址查询", "域名查询"], horizontal=True)
+        batch_input = st.text_area(
+            "输入查询列表",
+            height=180,
+            placeholder="例如:\n8.8.8.8\n1.1.1.1\nbaidu.com\nhttps://example.com:8443/login\n[2606:4700:4700::1111]",
+            key="ip_batch_input_value",
+        )
 
-        if query_type == "IP地址查询":
-            ips_input = st.text_area("输入IP地址列表（每行一个）", height=150,
-                                     placeholder="例如:\n8.8.8.8\n1.1.1.1\n117.30.73.100")
-            if st.button("批量查询IP", use_container_width=True):
-                if not ips_input.strip():
-                    st.error("请输入至少一个IP地址")
-                    st.stop()
+        option_cols = st.columns(3)
+        with option_cols[0]:
+            deduplicate_targets = st.checkbox("按规范化目标去重", value=True, key="ip_batch_deduplicate")
+        with option_cols[1]:
+            batch_delay = st.slider("查询间隔(秒)", min_value=0.0, max_value=1.0, value=0.0, step=0.1)
+        with option_cols[2]:
+            st.write("")
+            st.button(
+                "填入示例数据",
+                key="ip_batch_fill_sample",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("fill_batch_sample",),
+            )
+            st.button(
+                "清空批量输入",
+                key="ip_batch_clear",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("clear_batch",),
+            )
 
-                ips = [ip.strip() for ip in ips_input.split('\n') if ip.strip()]
-                valid_ips = []
-                invalid_ips = []
+        if st.button("开始批量查询", use_container_width=True, key="batch_ip_domain_query"):
+            raw_lines = [line.strip() for line in batch_input.splitlines() if line.strip()]
+            if not raw_lines:
+                st.session_state.ip_batch_rows = None
+                st.session_state.ip_batch_invalid_rows = None
+                st.session_state.ip_batch_summary = None
+                st.error("请输入至少一条查询目标")
+            else:
+                st.session_state.ip_batch_rows = None
+                st.session_state.ip_batch_invalid_rows = None
+                st.session_state.ip_batch_summary = None
+                valid_items = []
+                invalid_rows = []
+                duplicate_count = 0
+                seen_targets = set()
 
-                ipv4_pattern = r'^(\d{1,3}\.){3}\d{1,3}$'
-                ipv6_pattern = r'^([0.9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+                for line in raw_lines:
+                    parsed_result = ip_tool.parse_target_input(line)
+                    if not parsed_result["success"]:
+                        invalid_rows.append({"原始输入": line, "错误": parsed_result["error"]})
+                        continue
 
-                for ip in ips:
-                    if re.match(ipv4_pattern, ip) or re.match(ipv6_pattern, ip):
-                        valid_ips.append(ip)
-                    else:
-                        invalid_ips.append(ip)
+                    meta = parsed_result["data"]
+                    dedup_key = meta["normalized_target"]
+                    if deduplicate_targets and dedup_key in seen_targets:
+                        duplicate_count += 1
+                        continue
 
-                if invalid_ips:
-                    st.warning(f"发现 {len(invalid_ips)} 个无效IP地址: {', '.join(invalid_ips)}")
+                    seen_targets.add(dedup_key)
+                    valid_items.append(meta)
 
-                if not valid_ips:
-                    st.error("没有有效的IP地址可查询")
-                    st.stop()
-
-                results = []
                 progress_bar = st.progress(0)
                 status_text = st.empty()
+                batch_rows = []
 
-                for i, ip in enumerate(valid_ips):
-                    progress = (i + 1) / len(valid_ips)
-                    progress_bar.progress(progress)
-                    status_text.text(f"正在查询 {i + 1}/{len(valid_ips)}: {ip}")
+                for index, meta in enumerate(valid_items, start=1):
+                    progress_bar.progress(index / max(len(valid_items), 1))
+                    status_text.text(f"正在查询 {index}/{len(valid_items)}: {meta['normalized_target']}")
 
-                    result = ip_tool.get_ip_domain_info(ip, True)
-                    if result['success']:
-                        results.append(result['data'])
+                    result = ip_tool.get_ip_domain_info(
+                        meta["normalized_target"],
+                        meta["is_ip"],
+                        parsed_target=meta,
+                    )
+                    if result["success"]:
+                        data = result["data"]
+                        batch_rows.append({
+                            "原始输入": meta["original_input"],
+                            "规范目标": meta["normalized_target"],
+                            "类型": meta["target_type"],
+                            "端口": meta.get("port") or "",
+                            "解析结果": data.get("IP地址") or data.get("解析IP") or data.get("首选IP", ""),
+                            "国家": data.get("国家", "未知"),
+                            "省份": data.get("省份", "未知"),
+                            "城市": data.get("城市", "未知"),
+                            "运营商": data.get("运营商", "未知"),
+                            "ASN信息": data.get("ASN信息", "未知"),
+                            "网络段": data.get("网络段", "未知"),
+                            "状态": data.get("解析状态", "成功") if not meta["is_ip"] else "成功",
+                        })
                     else:
-                        results.append({'IP地址': ip, '状态': '查询失败', '错误': result['error']})
+                        batch_rows.append({
+                            "原始输入": meta["original_input"],
+                            "规范目标": meta["normalized_target"],
+                            "类型": meta["target_type"],
+                            "端口": meta.get("port") or "",
+                            "状态": "查询失败",
+                            "错误": result["error"],
+                        })
 
-                    time.sleep(0.5)  # 模拟查询延迟
+                    if batch_delay > 0:
+                        time.sleep(batch_delay)
 
                 progress_bar.empty()
                 status_text.empty()
 
-                st.success(f"已完成 {len(valid_ips)} 个IP地址的查询")
+                st.session_state.ip_batch_rows = batch_rows
+                st.session_state.ip_batch_invalid_rows = invalid_rows
+                st.session_state.ip_batch_summary = {
+                    "总输入": len(raw_lines),
+                    "有效目标": len(valid_items),
+                    "无效输入": len(invalid_rows),
+                    "去重跳过": duplicate_count,
+                }
 
-                # 显示结果表格
-                df = pd.DataFrame(results)
-                st.dataframe(df)
+        if st.session_state.ip_batch_summary:
+            summary = st.session_state.ip_batch_summary
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("总输入", summary["总输入"])
+            summary_cols[1].metric("有效目标", summary["有效目标"])
+            summary_cols[2].metric("无效输入", summary["无效输入"])
+            summary_cols[3].metric("去重跳过", summary["去重跳过"])
 
-                # 提供下载按钮
-                csv = df.to_csv(index=False).encode('utf-8')
+        if st.session_state.ip_batch_invalid_rows:
+            st.warning(f"有 {len(st.session_state.ip_batch_invalid_rows)} 条输入未通过校验")
+            st.dataframe(pd.DataFrame(st.session_state.ip_batch_invalid_rows), use_container_width=True, hide_index=True)
+
+        if st.session_state.ip_batch_rows:
+            batch_df = pd.DataFrame(st.session_state.ip_batch_rows)
+            st.success(f"已完成 {len(batch_df)} 条目标的批量查询")
+            st.dataframe(batch_df, use_container_width=True, hide_index=True)
+
+            batch_json = json.dumps(st.session_state.ip_batch_rows, ensure_ascii=False, indent=2)
+            download_cols = st.columns(2)
+            with download_cols[0]:
                 st.download_button(
-                    label="下载查询结果",
-                    data=csv,
-                    file_name='ip_query_results.csv',
-                    mime='text/csv'
+                    label="下载 CSV",
+                    data=batch_df.to_csv(index=False).encode("utf-8-sig"),
+                    file_name="ip_domain_batch_results.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    key="download_ip_batch_csv",
                 )
-
-        else:  # 域名查询
-            domains_input = st.text_area("输入域名列表（每行一个）", height=150,
-                                         placeholder="例如:\nbaidu.com\ngoogle.com\nqq.com")
-            if st.button("批量查询域名", use_container_width=True):
-                if not domains_input.strip():
-                    st.error("请输入至少一个域名")
-                    st.stop()
-
-                domains = [domain.strip() for domain in domains_input.split('\n') if domain.strip()]
-                valid_domains = []
-                invalid_domains = []
-
-                domain_pattern = r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)+$'
-
-                for domain in domains:
-                    if re.match(domain_pattern, domain):
-                        valid_domains.append(domain)
-                    else:
-                        invalid_domains.append(domain)
-
-                if invalid_domains:
-                    st.warning(f"发现 {len(invalid_domains)} 个无效域名: {', '.join(invalid_domains)}")
-
-                if not valid_domains:
-                    st.error("没有有效的域名可查询")
-                    st.stop()
-
-                results = []
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-
-                for i, domain in enumerate(valid_domains):
-                    progress = (i + 1) / len(valid_domains)
-                    progress_bar.progress(progress)
-                    status_text.text(f"正在查询 {i + 1}/{len(valid_domains)}: {domain}")
-
-                    result = ip_tool.get_ip_domain_info(domain, False)
-                    if result['success']:
-                        results.append(result['data'])
-                    else:
-                        results.append({'域名': domain, '状态': '查询失败', '错误': result['error']})
-
-                    time.sleep(0.5)  # 模拟查询延迟
-
-                progress_bar.empty()
-                status_text.empty()
-
-                st.success(f"已完成 {len(valid_domains)} 个域名的查询")
-
-                # 显示结果表格
-                df = pd.DataFrame(results)
-                st.dataframe(df)
-
-                # 提供下载按钮
-                csv = df.to_csv(index=False).encode('utf-8')
+            with download_cols[1]:
                 st.download_button(
-                    label="下载查询结果",
-                    data=csv,
-                    file_name='domain_query_results.csv',
-                    mime='text/csv'
+                    label="下载 JSON",
+                    data=batch_json.encode("utf-8"),
+                    file_name="ip_domain_batch_results.json",
+                    mime="application/json",
+                    use_container_width=True,
+                    key="download_ip_batch_json",
                 )
 
     with tab3:
         st.markdown("**IPv4转换工具**")
-        st.info("IPv4地址的各种格式转换")
-        conversion_type = st.radio("转换类型",
-                                   ["十进制 ↔ 点分十进制",
-                                    "点分十进制 ↔ 十六进制",
-                                    "点分十进制 ↔ 二进制"],
-                                   horizontal=True)
+        st.info("支持自动识别点分十进制、十进制、十六进制和二进制输入，并输出对应格式。")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if conversion_type == "十进制 ↔ 点分十进制":
-                input_value = st.text_input("输入IP地址或十进制数", placeholder="例如: 8.8.8.8 或 134744072")
-            elif conversion_type == "点分十进制 ↔ 十六进制":
-                input_value = st.text_input("输入IP地址或十六进制", placeholder="例如: 8.8.8.8 或 0x8080808")
-            else:
-                input_value = st.text_input("输入IP地址或二进制", placeholder="例如: 8.8.8.8 或 1000000010000000100000001000")
-        with col2:
+        conversion_type = st.radio(
+            "转换类型",
+            [
+                "自动识别并展示全部格式",
+                "十进制 ↔ 点分十进制",
+                "点分十进制 ↔ 十六进制",
+                "点分十进制 ↔ 二进制",
+            ],
+            horizontal=True,
+        )
+
+        convert_cols = st.columns([4, 1])
+        with convert_cols[0]:
+            input_value = st.text_input(
+                "输入 IPv4 地址或其他表示",
+                placeholder="例如: 8.8.8.8 / 134744072 / 0x08080808 / 00001000000010000000100000001000",
+                key="ip_conversion_input_value",
+            )
+        with convert_cols[1]:
             st.write("")
-            st.write("")
-            convert_button = st.button("转换", use_container_width=True, key="convert_ip")
+            st.button(
+                "填入示例",
+                key="ip_fill_convert_sample",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("fill_convert_sample",),
+            )
+            st.button(
+                "清空",
+                key="ip_clear_convert",
+                use_container_width=True,
+                on_click=queue_ip_tool_action,
+                args=("clear_convert",),
+            )
 
-        if convert_button and input_value:
-            result = ip_tool.convert_ip_address(input_value, conversion_type)
-            if result['success']:
-                st.success("转换成功！")
-                for key, value in result['data'].items():
-                    with st.container():
-                        st.markdown(f"""
-                         <div style="background: #f8fafc; padding: 1rem; border-radius: 8px; margin: 0.5rem 0; border-left: 4px solid #667eea;">
-                             <div style="font-weight: 600; color: #2d3748; margin-bottom: 0.5rem;">{key}</div>
-                             <div style="font-family: monospace; font-size: 14px; color: #4a5568;">{value}</div>
-                         </div>
-                         """, unsafe_allow_html=True)
+        if st.button("转换", use_container_width=True, key="convert_ip"):
+            if not input_value.strip():
+                st.session_state.ip_conversion_result = None
+                st.error("请输入待转换的 IPv4 值")
             else:
-                st.error(f"转换失败: {result['error']}")
+                st.session_state.ip_conversion_result = ip_tool.convert_ip_address(input_value, conversion_type)
 
-        with st.expander("转换示例"):
+        conversion_result = st.session_state.ip_conversion_result
+        if conversion_result:
+            if conversion_result["success"]:
+                st.success("转换成功")
+                render_info_cards(
+                    conversion_result["data"],
+                    monospace_keys={"点分十进制", "十进制", "十六进制", "二进制", "二进制(连续)"},
+                )
+                conversion_json = json.dumps(conversion_result["data"], ensure_ascii=False, indent=2)
+                conversion_actions = st.columns(2)
+                with conversion_actions[0]:
+                    create_copy_button(conversion_json, button_text="📋 复制转换结果", key="copy_ip_conversion")
+                with conversion_actions[1]:
+                    st.download_button(
+                        label="下载 JSON",
+                        data=conversion_json.encode("utf-8"),
+                        file_name="ipv4_conversion_result.json",
+                        mime="application/json",
+                        use_container_width=True,
+                        key="download_ip_conversion",
+                    )
+            else:
+                st.error(f"转换失败: {conversion_result['error']}")
+
+        with st.expander("转换示例", expanded=False):
             st.markdown("""
-             十进制 ↔ 点分十进制
-             ▪ 8.8.8.8 → 134744072
+            - `8.8.8.8` -> `134744072` -> `0x08080808`
+            - `134744072` -> `8.8.8.8`
+            - `0x08080808` -> `8.8.8.8`
+            - `00001000.00001000.00001000.00001000` -> `8.8.8.8`
+            - `00001000000010000000100000001000` -> `8.8.8.8`
+            """)
 
-             ▪ 134744072 → 8.8.8.8
+    with tab4:
+        st.markdown("**资产扩展查询**")
+        st.info("适合做站点资产摸排。子域名和旁站依赖公开网络接口，可能存在遗漏、历史记录或速率限制。")
 
+        asset_tab1, asset_tab2, asset_tab3 = st.tabs(["子域名查询", "旁站查询", "ICP备案查询"])
 
-             点分十进制 ↔ 十六进制
-             ▪ 8.8.8.8 → 0x8080808
+        with asset_tab1:
+            subdomain_input = st.text_input(
+                "输入主域名或 URL",
+                placeholder="例如: baidu.com 或 https://www.baidu.com",
+                key="ip_asset_subdomain_input",
+            )
+            if st.session_state.ip_query_meta:
+                st.caption(f"当前单查目标可直接复用: `{st.session_state.ip_query_meta.get('normalized_target', '-')}`")
+            if st.button("查询子域名", use_container_width=True, key="query_subdomains_btn"):
+                if not subdomain_input.strip():
+                    st.session_state.ip_asset_subdomain_result = None
+                    st.error("请输入域名或 URL")
+                else:
+                    with st.spinner("正在查询子域名..."):
+                        st.session_state.ip_asset_subdomain_result = ip_tool.query_subdomains(subdomain_input)
 
-             ▪ 0x8080808 → 8.8.8.8
+            render_asset_table_result(
+                "子域名查询结果",
+                st.session_state.ip_asset_subdomain_result,
+                "subdomain_results",
+            )
 
+        with asset_tab2:
+            reverse_input = st.text_input(
+                "输入 IP、域名或 URL",
+                placeholder="例如: 8.8.8.8、baidu.com、https://example.com",
+                key="ip_asset_reverse_input",
+            )
+            if st.button("查询旁站", use_container_width=True, key="query_reverse_sites_btn"):
+                if not reverse_input.strip():
+                    st.session_state.ip_asset_reverse_result = None
+                    st.error("请输入 IP、域名或 URL")
+                else:
+                    with st.spinner("正在查询旁站..."):
+                        st.session_state.ip_asset_reverse_result = ip_tool.query_reverse_sites(reverse_input)
 
-             点分十进制 ↔ 二进制
-             ▪ 8.8.8.8 → 00001000.00001000.00001000.00001000
+            render_asset_table_result(
+                "旁站查询结果",
+                st.session_state.ip_asset_reverse_result,
+                "reverse_sites_results",
+            )
 
-             """)
+        with asset_tab3:
+            icp_input = st.text_input(
+                "输入域名或 URL",
+                placeholder="例如: baidu.com 或 https://www.baidu.com",
+                key="ip_asset_icp_input",
+            )
+            if st.button("查询 ICP 备案", use_container_width=True, key="query_icp_btn"):
+                if not icp_input.strip():
+                    st.session_state.ip_asset_icp_result = None
+                    st.error("请输入域名或 URL")
+                else:
+                    with st.spinner("正在查询 ICP 备案..."):
+                        st.session_state.ip_asset_icp_result = ip_tool.query_icp_info(icp_input)
+
+            icp_result = st.session_state.ip_asset_icp_result
+            if icp_result:
+                if icp_result["success"]:
+                    st.success("ICP备案查询完成")
+                    render_info_cards(
+                        icp_result["data"],
+                        monospace_keys={"查询域名", "备案主域", "备案号", "网站首页", "官方核验"},
+                    )
+                    st.markdown(f"[工信部官方核验入口]({ip_tool.MIIT_ICP_VERIFY_URL})")
+                    icp_json = json.dumps(icp_result["data"], ensure_ascii=False, indent=2)
+                    icp_cols = st.columns(2)
+                    with icp_cols[0]:
+                        create_copy_button(icp_json, button_text="📋 复制备案 JSON", key="copy_icp_json")
+                    with icp_cols[1]:
+                        st.download_button(
+                            label="下载 JSON",
+                            data=icp_json.encode("utf-8"),
+                            file_name="icp_lookup_result.json",
+                            mime="application/json",
+                            use_container_width=True,
+                            key="download_icp_json",
+                        )
+                else:
+                    st.error(icp_result["error"])
 
 # 在图片处理工具部分，添加翻转、旋转、裁剪、水印功能
 elif tool_category == "图片处理工具":
@@ -4145,6 +4520,32 @@ elif tool_category == "图片处理工具":
         crop_height = bottom - top
         usage_ratio = (crop_width * crop_height) / max(1, image_width * image_height) * 100
         return crop_width, crop_height, usage_ratio
+
+    def render_int_slider_or_fixed(label, min_value, max_value, value, help_text=None, key=None):
+        """渲染整数滑块；当范围不可滑动时降级为只读数值显示。"""
+        min_value = int(min_value)
+        max_value = int(max_value)
+        safe_value = int(min(max(int(value), min_value), max_value))
+
+        if min_value >= max_value:
+            st.number_input(
+                label,
+                value=safe_value,
+                step=1,
+                disabled=True,
+                help=help_text,
+                key=key,
+            )
+            return safe_value
+
+        return st.slider(
+            label,
+            min_value,
+            max_value,
+            safe_value,
+            help=help_text,
+            key=key,
+        )
 
     def format_target_size_label(byte_size):
         """格式化目标体积标签。"""
@@ -4635,10 +5036,40 @@ elif tool_category == "图片处理工具":
 
                     with col_setting:
                         st.markdown("**设置裁剪区域：**")
-                        left = st.slider("左边距", 0, original_width - 1, default_left, help="从图片左边开始裁剪的像素数")
-                        top = st.slider("上边距", 0, original_height - 1, default_top, help="从图片顶部开始裁剪的像素数")
-                        right = st.slider("右边距", left + 1, original_width, default_right, help="裁剪到图片右边的像素位置")
-                        bottom = st.slider("下边距", top + 1, original_height, default_bottom, help="裁剪到图片底部的像素位置")
+                        left = render_int_slider_or_fixed(
+                            "左边距",
+                            0,
+                            original_width - 1,
+                            default_left,
+                            help_text="从图片左边开始裁剪的像素数",
+                            key="crop_free_left_slider",
+                        )
+                        top = render_int_slider_or_fixed(
+                            "上边距",
+                            0,
+                            original_height - 1,
+                            default_top,
+                            help_text="从图片顶部开始裁剪的像素数",
+                            key="crop_free_top_slider",
+                        )
+                        right_default = min(max(default_right, left + 1), original_width)
+                        bottom_default = min(max(default_bottom, top + 1), original_height)
+                        right = render_int_slider_or_fixed(
+                            "右边距",
+                            left + 1,
+                            original_width,
+                            right_default,
+                            help_text="裁剪到图片右边的像素位置",
+                            key="crop_free_right_slider",
+                        )
+                        bottom = render_int_slider_or_fixed(
+                            "下边距",
+                            top + 1,
+                            original_height,
+                            bottom_default,
+                            help_text="裁剪到图片底部的像素位置",
+                            key="crop_free_bottom_slider",
+                        )
                         st.session_state.crop_coordinates = (left, top, right, bottom)
 
                     with col_preview:
@@ -4720,19 +5151,21 @@ elif tool_category == "图片处理工具":
                         default_left = min(max(0, current_left), max_left)
                         default_top = min(max(0, current_top), max_top)
 
-                        left = st.slider(
+                        left = render_int_slider_or_fixed(
                             "水平位置",
                             0,
-                            max_left if max_left > 0 else 0,
+                            max_left,
                             default_left,
-                            help="拖动可在保持比例的前提下左右移动裁剪框。"
+                            help_text="拖动可在保持比例的前提下左右移动裁剪框。",
+                            key="crop_ratio_left_slider",
                         )
-                        top = st.slider(
+                        top = render_int_slider_or_fixed(
                             "垂直位置",
                             0,
-                            max_top if max_top > 0 else 0,
+                            max_top,
                             default_top,
-                            help="拖动可在保持比例的前提下上下移动裁剪框。"
+                            help_text="拖动可在保持比例的前提下上下移动裁剪框。",
+                            key="crop_ratio_top_slider",
                         )
 
                         if st.button("🎯 裁剪框居中", use_container_width=True, key="center_ratio_crop_btn"):
