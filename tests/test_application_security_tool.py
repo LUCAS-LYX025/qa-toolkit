@@ -18,9 +18,9 @@ except Exception:
 
 import sys
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "test"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from application_security_tool import ApplicationSecurityTool
+from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
 
 
 APK_MANIFEST_B64 = (

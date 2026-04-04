@@ -6,3 +6,9 @@ venv/
 log/
 report/
 *.pyc
+workspace/api_cases/*
+!workspace/api_cases/.gitkeep
+workspace/reports/*
+!workspace/reports/.gitkeep
+workspace/uploads/*
+!workspace/uploads/.gitkeep
