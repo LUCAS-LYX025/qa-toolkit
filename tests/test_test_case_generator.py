@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
@@ -95,3 +97,25 @@ def test_generate_markdown_report_handles_english_case_keys():
     assert "TC001" in markdown
     assert "Login with valid account" in markdown
     assert "Functional" in markdown
+
+
+def test_resolve_tesseract_command_skips_embedded_binary_on_linux(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.shutil.which", lambda _: None)
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.platform.system", lambda: "Linux")
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.Path.exists", lambda self: self.name == "tesseract")
+    monkeypatch.setattr(generator, "_is_usable_tesseract_command", lambda candidate: False)
+
+    assert generator._resolve_tesseract_command() == ""
+
+
+def test_resolve_tesseract_command_prefers_usable_system_binary(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.shutil.which", lambda _: "/usr/bin/tesseract")
+    monkeypatch.setattr(generator, "_is_usable_tesseract_command", lambda candidate: candidate == "/usr/bin/tesseract")
+
+    assert generator._resolve_tesseract_command() == "/usr/bin/tesseract"

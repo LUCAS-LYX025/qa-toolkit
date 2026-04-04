@@ -59,25 +59,53 @@ class TestCaseGenerator:
         self.ocr_backend = ""
         self._configure_ocr()
 
+    def _is_usable_tesseract_command(self, candidate: str) -> bool:
+        """检查 tesseract 命令是否可在当前平台实际执行。"""
+        if not candidate:
+            return False
+
+        candidate_path = Path(candidate)
+        if not candidate_path.exists():
+            return False
+
+        try:
+            result = subprocess.run(
+                [str(candidate_path), "--version"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=False,
+            )
+            return result.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+
     def _resolve_tesseract_command(self) -> str:
         """优先选择系统 tesseract，其次才尝试项目内置二进制。"""
         system_tesseract = shutil.which("tesseract")
-        if system_tesseract:
+        if self._is_usable_tesseract_command(system_tesseract or ""):
             return system_tesseract
 
-        for common_path in ["/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]:
-            if Path(common_path).exists():
+        for common_path in ["/usr/bin/tesseract", "/opt/homebrew/bin/tesseract", "/usr/local/bin/tesseract"]:
+            if self._is_usable_tesseract_command(common_path):
                 return common_path
 
         embedded_tesseract = BIN_DIR / "tesseract"
         if not embedded_tesseract.exists():
             return ""
 
-        # 当前仓库内置的是 macOS x86_64 版本，在 Apple Silicon 上不可直接使用。
-        if platform.system() == "Darwin" and platform.machine() == "arm64":
+        # 当前仓库内置的是 macOS 版本，Linux/其他平台不应误用。
+        if platform.system() != "Darwin":
             return ""
 
-        return str(embedded_tesseract)
+        # 当前仓库内置的是 macOS x86_64 版本，在 Apple Silicon 上不可直接使用。
+        if platform.machine() == "arm64":
+            return ""
+
+        if self._is_usable_tesseract_command(str(embedded_tesseract)):
+            return str(embedded_tesseract)
+
+        return ""
 
     def _configure_ocr(self):
         """初始化 OCR 环境。"""
