@@ -159,13 +159,13 @@ class AuthorProfile:
             "name": "LUCAS 🎯",
             "title": "进击的雷神",
             "description": "CSDN博客专家 | 测试技术布道者",
-            "bio": "专注测试开发、自动化测试、性能测试等领域，分享实用的测试工具和开发经验。CSDN博客「进击的雷神」，微信公众号「进击的测试圈」，持续输出高质量技术内容。",
+            "bio": "专注AI赋能开发测试、自动化测试、性能测试等领域，分享实用的测试工具和开发经验。CSDN博客「进击的雷神」，微信公众号「进击的测试圈」，持续输出高质量技术内容。",
             "csdn_url": "https://thundergod-lyx.blog.csdn.net",
             "wechat_public": "进击的测试圈",
             "wechat_url": "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=Mzg5Mzk3MTcwOQ==&action=getalbum&album_id=3163113351812644865#wechat_redirect",
             "gitcode_url": "https://gitcode.net/LYX_WIN",
             "github_url": "https://github.com/LUCAS-LYX025",
-            "skills": ["Python", "接口测试", "自动化测试", "性能测试", "测试工具开发"]
+            "skills": ["AI应用师", "接口测试", "自动化测试", "性能测试","安全测试",  "测试工具开发"]
         }
 
     def load_image(self, image_path):
@@ -273,7 +273,7 @@ class AuthorProfile:
                 font-size: 12px;
                 line-height: 1.4;
                 opacity: 0.8;
-            ">技术分享 | 测试开发 | 实战经验</div>
+            ">技术分享 | AI测试开发 | 实战经验</div>
         </div>
         """, unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)

@@ -198,54 +198,6 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
     components.html(button_html + copy_script, height=60)
 
 
-def render_page_navigation(scroll_requested=False, scroll_counter=0):
-    """渲染页面导航增强能力：模块自动定位"""
-    html_content = """
-        <script>
-        (() => {
-            let rootWindow = window;
-            while (rootWindow.parent && rootWindow.parent !== rootWindow) {
-                try {
-                    void rootWindow.parent.document;
-                    rootWindow = rootWindow.parent;
-                } catch (error) {
-                    break;
-                }
-            }
-            const rootDocument = rootWindow.document;
-            const shouldScroll = __SCROLL_REQUESTED__;
-            const findAnchor = () => rootDocument.getElementById("tool-content-anchor");
-
-            const scrollToToolContent = (attempt = 0) => {
-                const anchor = findAnchor();
-                if (!anchor) {
-                    if (attempt < 12) {
-                        rootWindow.setTimeout(() => scrollToToolContent(attempt + 1), 120);
-                    }
-                    return;
-                }
-                anchor.scrollIntoView({ behavior: "smooth", block: "start" });
-            };
-
-            if (shouldScroll) {
-                const marker = "__SCROLL_COUNTER__";
-                rootWindow.__qaToolkitLastScrollMarker = marker;
-                rootWindow.requestAnimationFrame(() => {
-                    setTimeout(scrollToToolContent, 80);
-                });
-            }
-        })();
-        </script>
-        <div data-scroll-counter="__SCROLL_COUNTER__"></div>
-    """
-    html_content = html_content.replace("__SCROLL_REQUESTED__", "true" if scroll_requested else "false")
-    html_content = html_content.replace("__SCROLL_COUNTER__", str(scroll_counter))
-    components.html(
-        html_content,
-        height=0,
-    )
-
-
 def render_back_to_top_button():
     """渲染固定在右下角的返回顶部按钮"""
     st.markdown(
@@ -281,6 +233,107 @@ def render_back_to_top_button():
     )
 
 
+def render_tool_picker():
+    """渲染工具切换器。收起时优先展示功能区，展开时展示完整工具列表。"""
+    current_tool = st.session_state.selected_tool
+    current_info = TOOL_CATEGORIES[current_tool]
+    accent_color = current_info.get("color", "#667eea")
+    banner_background = f"linear-gradient(135deg, {accent_color} 0%, #0f172a 100%)"
+    st.markdown(
+        f"""
+        <div style="
+            background: {banner_background};
+            border-radius: 18px;
+            padding: 18px 20px;
+            color: #ffffff;
+            box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
+            margin-bottom: 12px;
+        ">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+                <div style="font-size:26px;line-height:1;">{current_info['icon']}</div>
+                <div style="font-size:20px;font-weight:800;">{current_tool}</div>
+                <div style="
+                    margin-left:auto;
+                    background: rgba(255,255,255,0.18);
+                    border: 1px solid rgba(255,255,255,0.22);
+                    border-radius: 999px;
+                    padding: 4px 10px;
+                    font-size: 12px;
+                    font-weight: 700;
+                ">
+                    {'功能区模式' if st.session_state.tool_picker_compact else '工具切换模式'}
+                </div>
+            </div>
+            <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.92);">
+                {current_info['description']}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    action_col1, action_col2 = st.columns([1, 1])
+    with action_col1:
+        primary_label = "展开工具列表" if st.session_state.tool_picker_compact else "收起工具列表"
+        if st.button(primary_label, key="toggle_tool_picker", use_container_width=True):
+            st.session_state.tool_picker_compact = not st.session_state.tool_picker_compact
+            st.rerun()
+    with action_col2:
+        if st.button("仅看当前功能区", key="focus_current_tool", use_container_width=True):
+            st.session_state.tool_picker_compact = True
+            st.rerun()
+
+    if st.session_state.tool_picker_compact:
+        st.caption("当前已优先展示功能区。如需切换模块，点击“展开工具列表”。")
+        st.markdown("---")
+        return
+
+    st.markdown('<div class="sub-header">🚀 可用工具</div>', unsafe_allow_html=True)
+    cols = st.columns(3)
+    col_index = 0
+
+    for category, info in TOOL_CATEGORIES.items():
+        with cols[col_index]:
+            is_selected = current_tool == category
+            card_class = "tool-picker-card selected" if is_selected else "tool-picker-card"
+            accent_color = info.get("color", "#667eea")
+            card_style = f' style="border-color: {accent_color};"' if is_selected else ""
+            active_button_style = (
+                f' style="border-color: {accent_color}; box-shadow: inset 1px 1px 0 rgba(255,255,255,0.88), '
+                f'inset -1px -1px 0 {accent_color};"'
+            )
+            st.markdown(
+                f"""
+                <div class="{card_class}"{card_style}>
+                    <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
+                    <div class="tool-picker-title">{category}</div>
+                    <div class="tool-picker-desc">{info['description']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            if is_selected:
+                st.markdown(
+                    f'<div class="tool-picker-active-button"{active_button_style}>{info["icon"]} {category}</div>'
+                    '<div class="tool-picker-status">当前已选中，可直接进入功能区</div>',
+                    unsafe_allow_html=True,
+                )
+
+            button_label = "进入当前工具" if is_selected else f"{info['icon']} {category}"
+            if st.button(button_label, key=f"select_{category}", use_container_width=True):
+                st.session_state.selected_tool = category
+                st.session_state.tool_picker_compact = True
+                st.rerun()
+
+            if not is_selected:
+                st.markdown('<div class="tool-picker-status">单击进入工具</div>', unsafe_allow_html=True)
+
+        col_index = (col_index + 1) % 3
+
+    st.markdown("---")
+
+
 def display_generated_results(title, content, filename_prefix):
     """统一展示生成结果 + 复制 + 下载"""
     st.markdown(f'<div class="category-card">📋 生成结果 - {title}</div>', unsafe_allow_html=True)
@@ -301,80 +354,21 @@ def display_generated_results(title, content, filename_prefix):
 # 初始化session state
 if 'selected_tool' not in st.session_state:
     st.session_state.selected_tool = "数据生成工具"
-if 'pending_tool_scroll' not in st.session_state:
-    st.session_state.pending_tool_scroll = False
-if 'tool_scroll_counter' not in st.session_state:
-    st.session_state.tool_scroll_counter = 0
+if 'tool_picker_compact' not in st.session_state:
+    st.session_state.tool_picker_compact = False
 if st.session_state.selected_tool not in TOOL_CATEGORIES:
     st.session_state.selected_tool = "数据生成工具"
+    st.session_state.tool_picker_compact = False
 
 # 顶部标题区域
 st.markdown(HEADLINE_STYLES, unsafe_allow_html=True)
 st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 render_back_to_top_button()
 
-# 工具卡片网格布局
-st.markdown('<div class="sub-header">🚀 可用工具</div>', unsafe_allow_html=True)
-
-# 创建3列布局
-cols = st.columns(3)
-col_index = 0
-
-for category, info in TOOL_CATEGORIES.items():
-    with cols[col_index]:
-        is_selected = st.session_state.selected_tool == category
-        card_class = "tool-picker-card selected" if is_selected else "tool-picker-card"
-        accent_color = info.get("color", "#667eea")
-        card_style = f' style="border-color: {accent_color};"' if is_selected else ""
-        active_button_style = (
-            f' style="border-color: {accent_color}; box-shadow: inset 1px 1px 0 rgba(255,255,255,0.88), '
-            f'inset -1px -1px 0 {accent_color};"'
-        )
-        st.markdown(
-            f"""
-            <div class="{card_class}"{card_style}>
-                <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
-                <div class="tool-picker-title">{category}</div>
-                <div class="tool-picker-desc">{info['description']}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        if is_selected:
-            st.markdown(
-                f'<div class="tool-picker-active-button"{active_button_style}>{info["icon"]} {category}</div>'
-                '<div class="tool-picker-status">当前已选中，点击其他工具切换</div>',
-                unsafe_allow_html=True,
-            )
-        else:
-            if st.button(
-                    f"{info['icon']} {category}",
-                    key=f"select_{category}",
-                    use_container_width=True,
-            ):
-                st.session_state.selected_tool = category
-                st.session_state.pending_tool_scroll = True
-                st.session_state.tool_scroll_counter += 1
-                st.rerun()
-            st.markdown('<div class="tool-picker-status">点击进入工具</div>', unsafe_allow_html=True)
-
-    col_index = (col_index + 1) % 3
-
-# 添加分隔线
-st.markdown("---")
-# 直接使用session state中的选择
 tool_category = st.session_state.selected_tool
 
-# 显示当前选择的工具
 st.markdown('<div id="tool-content-anchor"></div>', unsafe_allow_html=True)
-st.markdown(f'<div class="sub-header">{TOOL_CATEGORIES[tool_category]["icon"]} {tool_category}</div>',
-            unsafe_allow_html=True)
-render_page_navigation(
-    scroll_requested=st.session_state.pending_tool_scroll,
-    scroll_counter=st.session_state.tool_scroll_counter,
-)
-st.session_state.pending_tool_scroll = False
+render_tool_picker()
 
 # === 工具功能实现 ===
 if tool_category == "数据生成工具":
