@@ -38,16 +38,16 @@ def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板",
             id="{button_key}"
             onclick="copyToClipboard_{button_key}()"
             style="
-                background: linear-gradient(90deg, #2563eb 0%, #1d4ed8 100%);
+                background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
                 color: white;
-                border: none;
+                border: 1px solid rgba(250, 204, 21, 0.22);
                 padding: 10px 20px;
-                border-radius: 8px;
+                border-radius: 12px;
                 cursor: pointer;
                 font-size: 14px;
-                font-weight: 500;
-                box-shadow: 0 2px 4px rgba(37, 99, 235, 0.3);
-                transition: all 0.2s ease;
+                font-weight: 700;
+                box-shadow: 0 12px 22px rgba(7, 20, 39, 0.26);
+                transition: all 0.3s ease;
             "
             onmouseover="this.style.transform='translateY(-1px)'"
             onmouseout="this.style.transform='translateY(0)'"
@@ -62,17 +62,29 @@ def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板",
                 navigator.clipboard.writeText(text).then(function() {{
                     const originalText = button.innerHTML;
                     button.innerHTML = '✅ 复制成功！';
-                    button.style.background = 'linear-gradient(90deg, #10b981 0%, #059669 100%)';
+                    button.style.background = 'linear-gradient(135deg, #fb923c 0%, #ea580c 52%, #7c2d12 100%)';
+                    button.style.color = '#ffffff';
+                    button.style.fontWeight = '800';
+                    button.style.textShadow = '0 1px 1px rgba(124,45,18,0.54)';
                     setTimeout(function() {{
                         button.innerHTML = originalText;
-                        button.style.background = 'linear-gradient(90deg, #2563eb 0%, #1d4ed8 100%)';
+                        button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
+                        button.style.color = '#ffffff';
+                        button.style.fontWeight = '700';
+                        button.style.textShadow = '0 1px 1px rgba(7,20,39,0.34)';
                     }}, 2000);
                 }}).catch(function(err) {{
                     button.innerHTML = '❌ 复制失败';
                     button.style.background = 'linear-gradient(90deg, #ef4444 0%, #dc2626 100%)';
+                    button.style.color = '#ffffff';
+                    button.style.fontWeight = '800';
+                    button.style.textShadow = '0 1px 1px rgba(127,29,29,0.54)';
                     setTimeout(function() {{
                         button.innerHTML = '{button_text}';
-                        button.style.background = 'linear-gradient(90deg, #2563eb 0%, #1d4ed8 100%)';
+                        button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
+                        button.style.color = '#ffffff';
+                        button.style.fontWeight = '700';
+                        button.style.textShadow = '0 1px 1px rgba(7,20,39,0.34)';
                     }}, 2000);
                 }});
             }}

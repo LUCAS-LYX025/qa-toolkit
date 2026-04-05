@@ -16,29 +16,42 @@ def ensure_workflow_panel_styles() -> None:
         """
         <style>
         .qa-guide-card {
-            background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
-            border: 1px solid #dbe4ff;
-            border-radius: 18px;
+            position: relative;
+            overflow: hidden;
+            background:
+                radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
+                linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
+            border: 1px solid #d5dce8;
+            border-radius: 20px;
             padding: 1rem 1.1rem;
             margin: 0.6rem 0 1rem 0;
-            box-shadow: 0 12px 28px rgba(37, 99, 235, 0.08);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.88),
+                0 14px 28px rgba(15, 23, 42, 0.08);
+        }
+        .qa-guide-card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            border-top: 3px solid rgba(250, 204, 21, 0.24);
         }
         .qa-guide-eyebrow {
             font-size: 0.78rem;
             font-weight: 700;
             letter-spacing: 0.04em;
-            color: #4f46e5;
+            color: #b45309;
             text-transform: uppercase;
             margin-bottom: 0.35rem;
         }
         .qa-guide-title {
             font-size: 1.08rem;
             font-weight: 700;
-            color: #172554;
+            color: #17324a;
             margin-bottom: 0.35rem;
         }
         .qa-guide-desc {
-            color: #334155;
+            color: #476179;
             line-height: 1.65;
             margin-bottom: 0.8rem;
         }
@@ -48,10 +61,11 @@ def ensure_workflow_panel_styles() -> None:
             gap: 0.75rem;
         }
         .qa-guide-step {
-            background: rgba(255, 255, 255, 0.88);
-            border: 1px solid #d6defb;
+            background: linear-gradient(145deg, rgba(255,255,255,0.92) 0%, rgba(247,239,223,0.76) 100%);
+            border: 1px solid rgba(213, 220, 232, 0.92);
             border-radius: 14px;
             padding: 0.75rem 0.85rem;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.82);
         }
         .qa-guide-step-index {
             display: inline-flex;
@@ -60,14 +74,16 @@ def ensure_workflow_panel_styles() -> None:
             width: 28px;
             height: 28px;
             border-radius: 999px;
-            background: #1d4ed8;
-            color: #ffffff;
+            background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
+            color: #f8fafc;
             font-weight: 700;
             font-size: 0.86rem;
             margin-bottom: 0.45rem;
+            border: 1px solid rgba(250, 204, 21, 0.20);
+            box-shadow: 0 8px 14px rgba(7, 20, 39, 0.14);
         }
         .qa-guide-step-text {
-            color: #1e293b;
+            color: #17324a;
             line-height: 1.55;
             font-size: 0.92rem;
         }
@@ -76,30 +92,44 @@ def ensure_workflow_panel_styles() -> None:
         }
         .qa-guide-tip {
             display: inline-block;
-            background: #ffffff;
-            border: 1px solid #dbe4ff;
-            color: #334155;
+            background: rgba(255,255,255,0.84);
+            border: 1px solid rgba(250, 204, 21, 0.18);
+            color: #36506a;
             border-radius: 999px;
             padding: 0.22rem 0.62rem;
             margin: 0 0.42rem 0.42rem 0;
             font-size: 0.8rem;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.84);
         }
         .qa-export-card {
-            background: linear-gradient(135deg, #f8fafc 0%, #f8fffb 100%);
-            border: 1px solid #d9efe2;
-            border-radius: 18px;
+            position: relative;
+            overflow: hidden;
+            background:
+                radial-gradient(circle at top right, rgba(250, 204, 21, 0.14), rgba(250, 204, 21, 0) 34%),
+                linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
+            border: 1px solid rgba(199, 164, 79, 0.42);
+            border-radius: 20px;
             padding: 1rem 1.1rem;
             margin: 0.8rem 0;
-            box-shadow: 0 12px 28px rgba(15, 118, 110, 0.08);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.88),
+                0 14px 28px rgba(15, 23, 42, 0.08);
+        }
+        .qa-export-card::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            border-left: 4px solid rgba(234, 88, 12, 0.64);
         }
         .qa-export-title {
             font-size: 1.02rem;
             font-weight: 700;
-            color: #134e4a;
+            color: #17324a;
             margin-bottom: 0.22rem;
         }
         .qa-export-desc {
-            color: #475569;
+            color: #476179;
             line-height: 1.6;
             font-size: 0.92rem;
         }

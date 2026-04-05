@@ -6,10 +6,34 @@ import streamlit as st
 
 
 STATUS_META = {
-    "success": {"icon": "✓", "title": "处理成功", "bg": "#ecfdf5", "border": "#10b981", "text": "#065f46"},
-    "info": {"icon": "i", "title": "结果提示", "bg": "#eff6ff", "border": "#3b82f6", "text": "#1d4ed8"},
-    "warning": {"icon": "!", "title": "请先确认", "bg": "#fffbeb", "border": "#f59e0b", "text": "#92400e"},
-    "error": {"icon": "×", "title": "处理失败", "bg": "#fef2f2", "border": "#ef4444", "text": "#b91c1c"},
+    "success": {
+        "icon": "✓",
+        "title": "处理成功",
+        "bg": "linear-gradient(145deg, #fff7e6 0%, #faeecf 54%, #f7efe2 100%)",
+        "border": "#f59e0b",
+        "text": "#9a3412",
+    },
+    "info": {
+        "icon": "i",
+        "title": "结果提示",
+        "bg": "linear-gradient(145deg, #eef4ff 0%, #e6edf7 58%, #f3f6fb 100%)",
+        "border": "#224d79",
+        "text": "#17324a",
+    },
+    "warning": {
+        "icon": "!",
+        "title": "请先确认",
+        "bg": "linear-gradient(145deg, #fff8e5 0%, #fbefc8 56%, #f8f2df 100%)",
+        "border": "#d97706",
+        "text": "#92400e",
+    },
+    "error": {
+        "icon": "×",
+        "title": "处理失败",
+        "bg": "linear-gradient(145deg, #fff1ee 0%, #fde6df 56%, #f8ece8 100%)",
+        "border": "#dc2626",
+        "text": "#991b1b",
+    },
 }
 
 
@@ -55,9 +79,10 @@ def _inject_styles() -> None:
         }
         .qa-status-feedback__desc {
             margin: 0;
-            color: #334155;
+            color: var(--feedback-text);
             line-height: 1.65;
             font-size: 0.92rem;
+            font-weight: 600;
             white-space: pre-wrap;
         }
         </style>

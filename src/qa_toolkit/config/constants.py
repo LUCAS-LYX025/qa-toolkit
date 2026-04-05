@@ -659,9 +659,43 @@ TOOL_CATEGORIES = {
 # # CSS样式
 CSS_STYLES = """
 <style>
+    :root {
+        --qa-btn-primary-start: #071427;
+        --qa-btn-primary-mid: #13294b;
+        --qa-btn-primary-end: #224d79;
+        --qa-btn-primary-shadow: rgba(7, 20, 39, 0.26);
+        --qa-btn-primary-border: rgba(250, 204, 21, 0.22);
+        --qa-btn-primary-light: linear-gradient(135deg, #fff6d5 0%, #f5edd0 50%, #e7eef8 100%);
+        --qa-btn-primary-light-border: rgba(250, 204, 21, 0.24);
+        --qa-btn-secondary-text: #13294b;
+        --qa-btn-secondary-border: rgba(250, 204, 21, 0.18);
+        --qa-btn-secondary-shadow: rgba(7, 20, 39, 0.10);
+        --qa-btn-secondary-surface: linear-gradient(135deg, #10233f 0%, #17345c 62%, #2a5788 100%);
+        --qa-btn-download-surface: linear-gradient(135deg, #fb923c 0%, #ea580c 52%, #7c2d12 100%);
+        --qa-btn-download-light: linear-gradient(135deg, #fff1c7 0%, #ffd9a1 52%, #f7ecda 100%);
+        --qa-btn-download-border: rgba(251, 146, 60, 0.28);
+        --qa-btn-download-light-border: rgba(234, 88, 12, 0.24);
+        --qa-btn-download-shadow: rgba(124, 45, 18, 0.24);
+        --qa-surface-border: #d5dce8;
+        --qa-surface-border-strong: #c7a44f;
+        --qa-surface-panel: linear-gradient(145deg, #f7f9fd 0%, #eef3fa 56%, #f7efdf 100%);
+        --qa-surface-panel-soft: linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
+        --qa-surface-panel-alt: linear-gradient(145deg, #fbfcff 0%, #f8f0e2 100%);
+        --qa-surface-radial: radial-gradient(circle at top right, rgba(250, 204, 21, 0.10) 0%, rgba(250, 204, 21, 0) 42%);
+        --qa-flow-space-xs: 0.38rem;
+        --qa-flow-space-sm: 0.68rem;
+        --qa-flow-space-md: 0.95rem;
+        --qa-flow-space-lg: 1.32rem;
+    }
+
     /* 全局样式 */
     .main {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: linear-gradient(180deg, #f7f9fd 0%, #eef3fa 58%, #f8f0e2 100%);
+    }
+
+    .main .block-container {
+        padding-top: 1.15rem;
+        padding-bottom: 2.35rem;
     }
 
     .main-header {
@@ -674,13 +708,481 @@ CSS_STYLES = """
         padding: 1rem;
     }
 
+    @keyframes qaHeroCurtainLeft {
+        0% { transform: translateX(0) skewY(0deg); }
+        100% { transform: translateX(-112%) skewY(-7deg); }
+    }
+
+    @keyframes qaHeroCurtainRight {
+        0% { transform: translateX(0) skewY(0deg); }
+        100% { transform: translateX(112%) skewY(7deg); }
+    }
+
+    @keyframes qaHeroGlowDrift {
+        0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+        50% { transform: translate3d(10px, -14px, 0) scale(1.08); }
+    }
+
+    @keyframes qaHeroCorePulse {
+        0%, 100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(250, 204, 21, 0.18); }
+        50% { transform: scale(1.04); box-shadow: 0 0 0 16px rgba(250, 204, 21, 0); }
+    }
+
+    @keyframes qaHeroOrbitFloat {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-7px); }
+    }
+
+    @keyframes qaHeroScanSweep {
+        0% { transform: rotate(0deg); opacity: 0.2; }
+        50% { opacity: 0.8; }
+        100% { transform: rotate(360deg); opacity: 0.2; }
+    }
+
+    @keyframes qaHeroTitleShimmer {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+
+    .qa-app-hero {
+        position: relative;
+        overflow: hidden;
+        padding: 2.6rem 2rem;
+        margin: -1rem -1rem 1.75rem -1rem;
+        border-radius: 0 0 28px 28px;
+        background:
+            radial-gradient(circle at 14% 16%, rgba(250, 204, 21, 0.22), transparent 24%),
+            radial-gradient(circle at 88% 18%, rgba(45, 212, 191, 0.16), transparent 22%),
+            linear-gradient(160deg, #071427 0%, #13294b 48%, #09111f 100%);
+        border-bottom: 1px solid rgba(250, 204, 21, 0.18);
+        box-shadow: 0 22px 38px rgba(7, 20, 39, 0.20);
+    }
+
+    .qa-app-hero::before {
+        content: "";
+        position: absolute;
+        inset: 14px;
+        border-radius: 24px;
+        border: 1px solid rgba(255,255,255,0.10);
+        pointer-events: none;
+    }
+
+    .qa-app-hero__curtain {
+        position: absolute;
+        top: -8%;
+        bottom: -8%;
+        width: 28%;
+        z-index: 2;
+        background: linear-gradient(180deg, #fb923c 0%, #ea580c 44%, #7c2d12 100%);
+    }
+
+    .qa-app-hero__curtain::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: repeating-linear-gradient(
+            90deg,
+            rgba(255,255,255,0.14) 0,
+            rgba(255,255,255,0.14) 6px,
+            transparent 6px,
+            transparent 18px
+        );
+        opacity: 0.34;
+    }
+
+    .qa-app-hero__curtain--left {
+        left: -4%;
+        border-radius: 0 24px 24px 0;
+        box-shadow: inset -12px 0 20px rgba(124, 45, 18, 0.28);
+        animation: qaHeroCurtainLeft 1.18s cubic-bezier(.66,0,.2,1) forwards;
+    }
+
+    .qa-app-hero__curtain--right {
+        right: -4%;
+        border-radius: 24px 0 0 24px;
+        box-shadow: inset 12px 0 20px rgba(124, 45, 18, 0.28);
+        animation: qaHeroCurtainRight 1.18s cubic-bezier(.66,0,.2,1) forwards;
+    }
+
+    .qa-app-hero__glow {
+        position: absolute;
+        border-radius: 999px;
+        filter: blur(10px);
+        animation: qaHeroGlowDrift 4.6s ease-in-out infinite;
+        pointer-events: none;
+    }
+
+    .qa-app-hero__glow--amber {
+        left: 5%;
+        bottom: 8%;
+        width: 180px;
+        height: 180px;
+        background: radial-gradient(circle, rgba(250, 204, 21, 0.26), rgba(250, 204, 21, 0));
+    }
+
+    .qa-app-hero__glow--teal {
+        right: 8%;
+        top: 14%;
+        width: 160px;
+        height: 160px;
+        background: radial-gradient(circle, rgba(45, 212, 191, 0.22), rgba(45, 212, 191, 0));
+        animation-delay: 0.8s;
+    }
+
+    .qa-app-hero__grid {
+        position: relative;
+        z-index: 3;
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(260px, 0.9fr);
+        gap: 2rem;
+        align-items: center;
+    }
+
+    .qa-app-hero__kicker {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.5rem;
+        margin-bottom: 0.9rem;
+        padding: 0.38rem 0.82rem;
+        border-radius: 999px;
+        border: 1px solid rgba(250, 204, 21, 0.20);
+        background: rgba(9, 17, 31, 0.52);
+        color: #fef3c7;
+        font-size: 0.74rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+        backdrop-filter: blur(10px);
+    }
+
+    .qa-app-hero__title {
+        display: inline-flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.28em;
+        position: relative;
+        margin: 0 0 0.8rem 0;
+        padding: 0.18em 0.34em 0.24em;
+        border-radius: 24px;
+        font-size: clamp(2rem, 4vw, 3.35rem);
+        line-height: 1.05;
+        font-weight: 900;
+        color: #f8fafc;
+        background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+        border: 1px solid rgba(250, 204, 21, 0.16);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.14),
+            0 16px 30px rgba(7, 20, 39, 0.18);
+        text-shadow:
+            0 2px 0 rgba(7, 20, 39, 0.28),
+            0 14px 28px rgba(7, 20, 39, 0.22);
+        backdrop-filter: blur(10px);
+    }
+
+    .qa-app-hero__title-main {
+        color: #f8fafc;
+        text-shadow:
+            0 0 16px rgba(191, 219, 254, 0.16),
+            0 2px 0 rgba(7, 20, 39, 0.24),
+            0 14px 28px rgba(7, 20, 39, 0.22);
+    }
+
+    .qa-app-hero__title-focus {
+        color: #fef3c7;
+        background: linear-gradient(90deg, #fff7b2 0%, #facc15 24%, #fb923c 52%, #fef3c7 76%, #fde68a 100%);
+        background-size: 200% 200%;
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        animation: qaHeroTitleShimmer 6s ease-in-out infinite;
+        filter: drop-shadow(0 0 14px rgba(250, 204, 21, 0.22));
+        text-shadow:
+            0 0 20px rgba(250, 204, 21, 0.22),
+            0 2px 0 rgba(124, 45, 18, 0.20),
+            0 14px 28px rgba(7, 20, 39, 0.22);
+    }
+
+    .qa-app-hero__title::after {
+        content: "";
+        position: absolute;
+        left: 0.42em;
+        right: 0.42em;
+        bottom: 0.18em;
+        height: 0.22em;
+        border-radius: 999px;
+        background: linear-gradient(90deg, rgba(250, 204, 21, 0), rgba(250, 204, 21, 0.68), rgba(45, 212, 191, 0.34), rgba(45, 212, 191, 0));
+        filter: blur(4px);
+        opacity: 0.84;
+    }
+
+    .qa-app-hero__desc {
+        margin: 0 0 1rem 0;
+        max-width: 44rem;
+        color: rgba(226, 232, 240, 0.88);
+        font-size: 1.02rem;
+        line-height: 1.8;
+    }
+
+    .qa-app-hero__chip-row,
+    .qa-app-hero__meta-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.65rem;
+    }
+
+    .qa-app-hero__chip-row {
+        margin-bottom: 0.9rem;
+    }
+
+    .qa-app-hero__chip,
+    .qa-app-hero__meta {
+        display: inline-flex;
+        align-items: center;
+        border-radius: 999px;
+        font-weight: 700;
+        backdrop-filter: blur(12px);
+    }
+
+    .qa-app-hero__chip {
+        padding: 0.48rem 0.82rem;
+        background: rgba(255,255,255,0.08);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: #e2e8f0;
+        font-size: 0.88rem;
+    }
+
+    .qa-app-hero__meta {
+        padding: 0.42rem 0.74rem;
+        background: rgba(15, 23, 42, 0.58);
+        border: 1px solid rgba(148, 163, 184, 0.18);
+        color: rgba(226, 232, 240, 0.88);
+        font-size: 0.82rem;
+    }
+
+    .qa-app-hero__stage {
+        position: relative;
+        min-height: 260px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .qa-app-hero__stage-shell {
+        position: relative;
+        width: min(320px, 100%);
+        aspect-ratio: 1 / 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .qa-app-hero__ring,
+    .qa-app-hero__ring::before,
+    .qa-app-hero__ring::after {
+        position: absolute;
+        inset: 0;
+        border-radius: 50%;
+        content: "";
+    }
+
+    .qa-app-hero__ring {
+        border: 1px solid rgba(250, 204, 21, 0.16);
+        background: radial-gradient(circle, rgba(255,255,255,0.04), rgba(255,255,255,0));
+    }
+
+    .qa-app-hero__ring::before {
+        inset: 22px;
+        border: 1px solid rgba(56, 189, 248, 0.16);
+    }
+
+    .qa-app-hero__ring::after {
+        inset: 46px;
+        border: 1px solid rgba(45, 212, 191, 0.14);
+    }
+
+    .qa-app-hero__scan {
+        position: absolute;
+        inset: 16px;
+        border-radius: 50%;
+        background: conic-gradient(
+            from 0deg,
+            rgba(250, 204, 21, 0) 0deg,
+            rgba(250, 204, 21, 0.06) 46deg,
+            rgba(45, 212, 191, 0.2) 62deg,
+            rgba(45, 212, 191, 0) 82deg,
+            rgba(250, 204, 21, 0) 360deg
+        );
+        filter: blur(2px);
+        animation: qaHeroScanSweep 8.5s linear infinite;
+    }
+
+    .qa-app-hero__core {
+        position: relative;
+        z-index: 2;
+        width: 134px;
+        height: 134px;
+        border-radius: 50%;
+        padding: 3px;
+        background: linear-gradient(135deg, #facc15 0%, #fb7185 100%);
+        animation: qaHeroCorePulse 3.8s ease-in-out infinite;
+        box-shadow: 0 18px 28px rgba(15, 23, 42, 0.24);
+    }
+
+    .qa-app-hero__core-inner {
+        width: 100%;
+        height: 100%;
+        border-radius: 50%;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0.35rem;
+        background:
+            radial-gradient(circle at 50% 30%, rgba(255,255,255,0.16), rgba(255,255,255,0)),
+            linear-gradient(180deg, #13294b 0%, #09111f 100%);
+        color: #f8fafc;
+        text-align: center;
+        border: 1px solid rgba(255,255,255,0.12);
+    }
+
+    .qa-app-hero__core-label {
+        font-size: 0.72rem;
+        font-weight: 800;
+        letter-spacing: 0.16em;
+        color: rgba(250, 204, 21, 0.94);
+    }
+
+    .qa-app-hero__core-title {
+        font-size: 1.45rem;
+        font-weight: 900;
+    }
+
+    .qa-app-hero__node {
+        position: absolute;
+        z-index: 3;
+        padding: 0.48rem 0.8rem;
+        border-radius: 999px;
+        background: rgba(9, 17, 31, 0.74);
+        border: 1px solid rgba(255,255,255,0.12);
+        color: #e2e8f0;
+        font-size: 0.8rem;
+        font-weight: 700;
+        box-shadow: 0 10px 20px rgba(7, 20, 39, 0.18);
+        animation: qaHeroOrbitFloat 4.8s ease-in-out infinite;
+        white-space: nowrap;
+        text-decoration: none;
+        transition: transform 0.24s ease, border-color 0.24s ease, background 0.24s ease, box-shadow 0.24s ease;
+    }
+
+    .qa-app-hero__node:hover {
+        transform: translateY(-3px) scale(1.03);
+        border-color: rgba(250, 204, 21, 0.28);
+        background: rgba(15, 23, 42, 0.88);
+        box-shadow: 0 14px 28px rgba(7, 20, 39, 0.24);
+    }
+
+    .qa-app-hero__node--1 { top: 16px; left: 18px; animation-delay: 0.2s; }
+    .qa-app-hero__node--2 { top: 34px; right: 6px; animation-delay: 0.8s; }
+    .qa-app-hero__node--3 { bottom: 28px; left: -2px; animation-delay: 1.2s; }
+    .qa-app-hero__node--4 { bottom: 10px; right: 20px; animation-delay: 1.8s; }
+
+    .qa-app-hero__footnote {
+        margin-top: 1rem;
+        color: rgba(191, 219, 254, 0.82);
+        font-size: 0.84rem;
+        line-height: 1.7;
+    }
+
     .sub-header {
-        font-size: 1.5rem;
-        color: #2d3748;
-        font-weight: 600;
-        margin: 1.5rem 0 1rem 0;
-        padding-bottom: 0.5rem;
-        border-bottom: 3px solid #667eea;
+        position: relative;
+        overflow: hidden;
+        margin: 1.15rem 0 1rem;
+        padding: 0.95rem 1.15rem 0.95rem 1.35rem;
+        border-radius: 18px;
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.14), rgba(250, 204, 21, 0) 36%),
+            linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 58%, rgba(247,239,223,0.98) 100%);
+        border: 1px solid rgba(199, 164, 79, 0.20);
+        color: #17324a;
+        font-size: 1.18rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(15, 23, 42, 0.08);
+    }
+
+    .sub-header::before {
+        content: "";
+        position: absolute;
+        left: 0.88rem;
+        top: 0.72rem;
+        bottom: 0.72rem;
+        width: 4px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #facc15 0%, #f59e0b 100%);
+        box-shadow: 0 0 14px rgba(250, 204, 21, 0.28);
+    }
+
+    .section-header {
+        position: relative;
+        overflow: hidden;
+        margin: 0.75rem 0 1rem;
+        padding: 1rem 1.15rem;
+        border-radius: 18px;
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.16), rgba(250, 204, 21, 0) 36%),
+            linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
+        border: 1px solid rgba(250, 204, 21, 0.20);
+        color: #f8fafc;
+        font-size: 1.06rem;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 16px 28px rgba(7, 20, 39, 0.16);
+    }
+
+    section[data-testid="stSidebar"] > div:first-child {
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
+            linear-gradient(180deg, #f7f9fd 0%, #eef3fa 60%, #f8f0e2 100%) !important;
+    }
+
+    section[data-testid="stSidebar"] .stMarkdown,
+    section[data-testid="stSidebar"] label,
+    section[data-testid="stSidebar"] p,
+    section[data-testid="stSidebar"] span {
+        color: #17324a;
+    }
+
+    details[data-testid="stExpander"] {
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 18px !important;
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 10px 20px rgba(15, 23, 42, 0.06) !important;
+        overflow: hidden;
+    }
+
+    details[data-testid="stExpander"] summary {
+        background: transparent !important;
+        padding: 0.2rem 0.3rem !important;
+    }
+
+    details[data-testid="stExpander"] > div[role="button"],
+    details[data-testid="stExpander"] summary p {
+        color: #17324a !important;
+        font-weight: 700 !important;
+    }
+
+    details[data-testid="stExpander"] > div[data-testid="stExpanderDetails"] {
+        border-top: 1px solid rgba(213, 220, 232, 0.86) !important;
+        background: rgba(255, 255, 255, 0.36) !important;
     }
 
     /* 工具卡片网格布局 */
@@ -692,11 +1194,13 @@ CSS_STYLES = """
     }
 
     .tool-card {
-        background: white;
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%);
         border-radius: 16px;
         padding: 1.5rem;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-        border: 1px solid #e2e8f0;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 12px 24px var(--qa-btn-primary-shadow);
+        border: 1px solid var(--qa-btn-primary-border);
         transition: all 0.3s ease;
         cursor: pointer;
         height: 100%;
@@ -706,105 +1210,366 @@ CSS_STYLES = """
     }
 
     .tool-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 20px 40px rgba(0,0,0,0.15);
-        border-color: #667eea;
+        transform: translateY(-4px);
+        box-shadow: 0 18px 32px rgba(7, 20, 39, 0.28);
+        border-color: rgba(250, 204, 21, 0.30);
     }
     /* 选中的卡片样式 */
     .tool-card.selected {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        border-color: #4c51bf;
+        background: var(--qa-btn-primary-light);
+        border-color: var(--qa-btn-primary-light-border);
         transform: scale(1.02);
-        box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 15px 35px rgba(250, 204, 21, 0.18);
     }
 
     .tool-card.selected .tool-icon {
-        color: white;
+        color: #7c2d12;
     }
 
     .tool-card.selected .tool-title {
-        color: white;
+        color: #17324a;
     }
 
     .tool-card.selected .tool-desc {
-        color: rgba(255, 255, 255, 0.9);
+        color: #436176;
     }
 
     .tool-icon {
         font-size: 2.5rem;
         margin-bottom: 1rem;
-        color: #667eea;
+        color: #ffffff;
     }
 
     .tool-title {
         font-size: 1.3rem;
         font-weight: 600;
-        color: #2d3748;
+        color: #ffffff;
         margin-bottom: 0.5rem;
     }
 
     .tool-desc {
-        color: #718096;
+        color: rgba(255, 255, 255, 0.88);
         font-size: 0.95rem;
         line-height: 1.5;
     }
 
     /* 功能区域样式 */
     .section-card {
-        background: white;
+        background:
+            var(--qa-surface-panel-soft);
         border-radius: 16px;
         padding: 2rem;
         margin: 1.5rem 0;
-        box-shadow: 0 8px 20px rgba(0,0,0,0.08);
-        border: 1px solid #e2e8f0;
+        box-shadow: 0 8px 20px rgba(15, 23, 42, 0.08);
+        border: 1px solid var(--qa-surface-border);
     }
 
     .category-card {
-        background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%);
-        border: 1px solid #e2e8f0;
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel);
+        border: 1px solid var(--qa-surface-border);
         border-radius: 12px;
         padding: 1.5rem;
         margin: 1rem 0;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.84),
+            0 8px 18px rgba(15, 23, 42, 0.06);
     }
 
     /* 按钮样式 */
-    .stButton button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        border: none;
-        padding: 0.75rem 2rem;
+    .stButton button,
+    .stDownloadButton button {
         border-radius: 12px;
-        font-weight: 600;
-        transition: all 0.3s ease;
+        font-weight: 700;
+        padding: 0.75rem 1.2rem;
+        transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease, background 0.24s ease;
         width: 100%;
+        min-height: 44px;
     }
 
-    .stButton button:hover {
+    .stButton button,
+    .stDownloadButton button,
+    .copy-btn,
+    .card-button {
+        text-shadow:
+            0 1px 0 rgba(7, 20, 39, 0.38),
+            0 0 10px rgba(255, 255, 255, 0.04);
+    }
+
+    .stButton button,
+    .stDownloadButton button,
+    .stButton button *,
+    .stDownloadButton button *,
+    .copy-btn,
+    .copy-btn *,
+    .card-button,
+    .card-button * {
+        color: #ffffff !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        opacity: 1 !important;
+        font-weight: inherit !important;
+    }
+
+    .stButton button div[data-testid="stMarkdownContainer"],
+    .stButton button div[data-testid="stMarkdownContainer"] p,
+    .stButton button div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button div[data-testid="stMarkdownContainer"] span {
+        color: #ffffff !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.01em !important;
+        text-shadow: 0 1px 0 rgba(7, 20, 39, 0.44) !important;
+        opacity: 1 !important;
+    }
+
+    .stDownloadButton button div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button div[data-testid="stMarkdownContainer"] span {
+        text-shadow: 0 1px 1px rgba(124, 45, 18, 0.54) !important;
+    }
+
+    .stButton button,
+    .stButton button[kind="primary"] {
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%);
+        color: white;
+        border: 1px solid var(--qa-btn-primary-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 12px 22px var(--qa-btn-primary-shadow);
+    }
+
+    .stButton button:hover,
+    .stButton button[kind="primary"]:hover {
         transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(102, 126, 234, 0.3);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.14),
+            0 16px 28px rgba(7, 20, 39, 0.28);
+    }
+
+    .stButton button:active,
+    .stButton button[kind="primary"]:active,
+    .stButton button:focus-visible,
+    .stButton button[kind="primary"]:focus-visible {
+        background: var(--qa-btn-primary-light);
+        color: #17324a;
+        border-color: var(--qa-btn-primary-light-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 10px 22px rgba(250, 204, 21, 0.16);
+    }
+
+    .stButton button:active *,
+    .stButton button[kind="primary"]:active *,
+    .stButton button:focus-visible *,
+    .stButton button[kind="primary"]:focus-visible * {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+    }
+
+    .stButton button:active div[data-testid="stMarkdownContainer"],
+    .stButton button:active div[data-testid="stMarkdownContainer"] p,
+    .stButton button:active div[data-testid="stMarkdownContainer"] span,
+    .stButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"],
+    .stButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"] p,
+    .stButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"] span,
+    .stButton button:focus-visible div[data-testid="stMarkdownContainer"],
+    .stButton button:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stButton button:focus-visible div[data-testid="stMarkdownContainer"] span,
+    .stButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"],
+    .stButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"] span {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
+    }
+
+    .stButton button[kind="secondary"] {
+        background: var(--qa-btn-secondary-surface);
+        color: #ffffff;
+        border: 1px solid var(--qa-btn-secondary-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 10px 20px rgba(7, 20, 39, 0.22);
+    }
+
+    .stButton button[kind="secondary"]:hover {
+        transform: translateY(-2px);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.14),
+            0 14px 24px rgba(7, 20, 39, 0.24);
+        border-color: rgba(250, 204, 21, 0.30);
+    }
+
+    .stButton button[kind="secondary"]:active,
+    .stButton button[kind="secondary"]:focus-visible {
+        background: var(--qa-btn-primary-light);
+        color: #17324a;
+        border-color: var(--qa-btn-primary-light-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 10px 22px rgba(250, 204, 21, 0.16);
+    }
+
+    .stButton button[kind="secondary"]:active *,
+    .stButton button[kind="secondary"]:focus-visible * {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+    }
+
+    .stButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"],
+    .stButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"] p,
+    .stButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"] span,
+    .stButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"],
+    .stButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"] span {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
+    }
+
+    .stDownloadButton button,
+    .stDownloadButton button[kind="primary"],
+    .stDownloadButton button[kind="secondary"] {
+        background: var(--qa-btn-download-surface);
+        color: #ffffff;
+        border: 1px solid var(--qa-btn-download-border);
+        text-shadow:
+            0 1px 1px rgba(124, 45, 18, 0.54),
+            0 0 12px rgba(124, 45, 18, 0.16);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 12px 22px var(--qa-btn-download-shadow);
+    }
+
+    .stDownloadButton button:hover,
+    .stDownloadButton button[kind="primary"]:hover,
+    .stDownloadButton button[kind="secondary"]:hover {
+        transform: translateY(-2px);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.14),
+            0 16px 28px rgba(124, 45, 18, 0.28);
+        border-color: rgba(251, 146, 60, 0.34);
+    }
+
+    .stDownloadButton button:active,
+    .stDownloadButton button[kind="primary"]:active,
+    .stDownloadButton button[kind="secondary"]:active,
+    .stDownloadButton button:focus-visible,
+    .stDownloadButton button[kind="primary"]:focus-visible,
+    .stDownloadButton button[kind="secondary"]:focus-visible {
+        background: var(--qa-btn-download-light);
+        color: #7c2d12;
+        border-color: var(--qa-btn-download-light-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.84),
+            0 10px 22px rgba(251, 146, 60, 0.18);
+    }
+
+    .stDownloadButton button:active *,
+    .stDownloadButton button[kind="primary"]:active *,
+    .stDownloadButton button[kind="secondary"]:active *,
+    .stDownloadButton button:focus-visible *,
+    .stDownloadButton button[kind="primary"]:focus-visible *,
+    .stDownloadButton button[kind="secondary"]:focus-visible * {
+        color: #7c2d12 !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+    }
+
+    .stDownloadButton button:active div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button:active div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button:active div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button[kind="primary"]:active div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button[kind="secondary"]:active div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button:focus-visible div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button:focus-visible div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button[kind="primary"]:focus-visible div[data-testid="stMarkdownContainer"] span,
+    .stDownloadButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"],
+    .stDownloadButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"] p,
+    .stDownloadButton button[kind="secondary"]:focus-visible div[data-testid="stMarkdownContainer"] span {
+        color: #7c2d12 !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
+    }
+
+    .stButton button:disabled,
+    .stDownloadButton button:disabled {
+        opacity: 0.56;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
     }
 
     .copy-btn {
-        background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%);
         color: white;
-        border: none;
+        border: 1px solid var(--qa-btn-primary-border);
         padding: 0.6rem 1.5rem;
-        border-radius: 10px;
-        font-weight: 500;
+        border-radius: 12px;
+        font-weight: 700;
         transition: all 0.3s ease;
         margin: 5px;
+        box-shadow: 0 12px 22px var(--qa-btn-primary-shadow);
     }
 
     .copy-btn:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 6px 15px rgba(72, 187, 120, 0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 16px 28px rgba(7, 20, 39, 0.28);
+    }
+
+    .copy-btn:active,
+    .copy-btn:focus-visible {
+        background: var(--qa-btn-primary-light);
+        color: #17324a;
+        border-color: var(--qa-btn-primary-light-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 10px 22px rgba(250, 204, 21, 0.16);
+    }
+
+    .copy-btn:active,
+    .copy-btn:focus-visible,
+    .copy-btn:active *,
+    .copy-btn:focus-visible * {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
     }
 
     /* 结果框样式 */
     .result-box {
-        background: #f8fafc;
-        border: 2px dashed #cbd5e0;
+        background:
+            var(--qa-surface-panel-soft);
+        border: 2px dashed var(--qa-surface-border-strong);
         border-radius: 12px;
         padding: 1.5rem;
         margin: 1rem 0;
@@ -818,24 +1583,756 @@ CSS_STYLES = """
     /* 标签页样式 */
     .stTabs [data-baseweb="tab-list"] {
         gap: 2rem;
-        background-color: #f7fafc;
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel);
         padding: 0.5rem;
-        border-radius: 12px;
+        margin-bottom: 0.95rem;
+        border-radius: 14px;
+        border: 1px solid var(--qa-surface-border);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.84),
+            0 10px 18px rgba(15, 23, 42, 0.06);
     }
 
     .stTabs [data-baseweb="tab"] {
         height: 50px;
         white-space: pre-wrap;
-        background-color: #f7fafc;
-        border-radius: 8px 8px 0px 0px;
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%);
+        color: #ffffff;
+        border: 1px solid var(--qa-btn-primary-border);
+        border-radius: 10px;
         gap: 1rem;
         padding: 0 1.5rem;
-        font-weight: 500;
+        font-weight: 700;
+        font-size: 0.96rem;
+        letter-spacing: 0.01em;
+        text-shadow:
+            0 1px 1px rgba(7, 20, 39, 0.42),
+            0 0 10px rgba(255, 255, 255, 0.04);
+        transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
+    }
+
+    .stTabs [data-baseweb="tab"],
+    .stTabs [data-baseweb="tab"] *,
+    .stTabs [data-baseweb="tab"] div,
+    .stTabs [data-baseweb="tab"] p,
+    .stTabs [data-baseweb="tab"] span {
+        color: #ffffff !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        opacity: 1 !important;
+        font-weight: 800 !important;
+    }
+
+    .stTabs [data-baseweb="tab"]:hover {
+        transform: translateY(-1px);
+        border-color: rgba(250, 204, 21, 0.30);
+        box-shadow: 0 8px 16px rgba(7, 20, 39, 0.16);
     }
 
     .stTabs [aria-selected="true"] {
-        background-color: #667eea !important;
-        color: white !important;
+        background: var(--qa-btn-primary-light) !important;
+        border-color: var(--qa-btn-primary-light-border) !important;
+        color: #17324a !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 12px 22px rgba(250, 204, 21, 0.14);
+    }
+
+    .stTabs [aria-selected="true"],
+    .stTabs [aria-selected="true"] *,
+    .stTabs [aria-selected="true"] div,
+    .stTabs [aria-selected="true"] p,
+    .stTabs [aria-selected="true"] span {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
+        opacity: 1 !important;
+    }
+
+    .stTabs [data-baseweb="tab-highlight"] {
+        background: transparent !important;
+    }
+
+    .stTabs [data-baseweb="tab-panel"] {
+        padding-top: 0.1rem;
+    }
+
+    div[data-baseweb="select"] > div,
+    div[data-baseweb="base-input"] > div,
+    div[data-testid="stTextInputRootElement"] > div,
+    div[data-testid="stNumberInputContainer"] > div,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stDateInputField"] > div {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 14px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 8px 18px rgba(15, 23, 42, 0.06) !important;
+        transition: border-color 0.24s ease, box-shadow 0.24s ease, transform 0.24s ease;
+    }
+
+    div[data-baseweb="select"] > div:hover,
+    div[data-baseweb="base-input"] > div:hover,
+    div[data-testid="stTextInputRootElement"] > div:hover,
+    div[data-testid="stNumberInputContainer"] > div:hover,
+    div[data-testid="stTextArea"] textarea:hover,
+    div[data-testid="stDateInputField"] > div:hover {
+        border-color: var(--qa-surface-border-strong) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 12px 20px rgba(15, 23, 42, 0.10) !important;
+    }
+
+    div[data-baseweb="select"] > div:focus-within,
+    div[data-baseweb="base-input"] > div:focus-within,
+    div[data-testid="stTextInputRootElement"] > div:focus-within,
+    div[data-testid="stNumberInputContainer"] > div:focus-within,
+    div[data-testid="stTextArea"] textarea:focus,
+    div[data-testid="stDateInputField"] > div:focus-within {
+        border-color: rgba(29, 78, 216, 0.42) !important;
+        box-shadow:
+            0 0 0 1px rgba(29, 78, 216, 0.18),
+            0 14px 22px rgba(15, 23, 42, 0.10) !important;
+        outline: none !important;
+    }
+
+    div[data-baseweb="select"] span,
+    div[data-baseweb="select"] input,
+    div[data-baseweb="base-input"] input,
+    div[data-testid="stTextArea"] textarea,
+    div[data-testid="stNumberInputContainer"] input,
+    div[data-testid="stDateInputField"] input {
+        color: #17324a !important;
+    }
+
+    div[data-baseweb="select"] [data-baseweb="tag"] {
+        background: linear-gradient(135deg, rgba(23, 50, 74, 0.10) 0%, rgba(29, 78, 216, 0.12) 100%) !important;
+        border: 1px solid rgba(29, 78, 216, 0.18) !important;
+        color: #17324a !important;
+        border-radius: 999px !important;
+        font-weight: 700;
+    }
+
+    div[data-baseweb="select"] svg,
+    div[data-baseweb="base-input"] svg {
+        fill: #476179 !important;
+    }
+
+    label[data-testid="stWidgetLabel"] p {
+        color: #36506a !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.01em;
+    }
+
+    label[data-testid="stWidgetLabel"] {
+        display: block;
+        margin-bottom: 0.42rem !important;
+    }
+
+    div[data-testid="stTextInput"],
+    div[data-testid="stNumberInput"],
+    div[data-testid="stTextArea"],
+    div[data-testid="stSelectbox"],
+    div[data-testid="stMultiSelect"],
+    div[data-testid="stDateInput"],
+    div[data-testid="stTimeInput"],
+    div[data-testid="stRadio"],
+    div[data-testid="stCheckbox"],
+    div[data-testid="stSlider"],
+    div[data-testid="stToggle"],
+    div[data-testid="stFileUploader"],
+    div[data-testid="stColorPicker"] {
+        margin-bottom: var(--qa-flow-space-md) !important;
+    }
+
+    div[data-testid="stHorizontalBlock"] {
+        row-gap: var(--qa-flow-space-sm) !important;
+        column-gap: var(--qa-flow-space-md) !important;
+        align-items: flex-start !important;
+    }
+
+    div[data-testid="stForm"] {
+        margin: var(--qa-flow-space-sm) 0 var(--qa-flow-space-lg) !important;
+        padding: 1rem 1rem 0.42rem !important;
+        border-radius: 20px !important;
+        border: 1px solid rgba(213, 220, 232, 0.82) !important;
+        background:
+            var(--qa-surface-radial),
+            rgba(255,255,255,0.38) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.72),
+            0 12px 24px rgba(15, 23, 42, 0.06) !important;
+    }
+
+    div[data-testid="stForm"] [data-testid="stFormSubmitButton"] {
+        margin-top: 0.18rem !important;
+        padding-top: 0.12rem !important;
+    }
+
+    div[data-testid="stRadio"] div[role="radiogroup"] {
+        gap: 0.7rem;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"],
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 14px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 8px 18px rgba(15, 23, 42, 0.06) !important;
+        transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
+        padding: 0.45rem 0.75rem !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:hover,
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"]:hover {
+        transform: translateY(-1px);
+        border-color: var(--qa-surface-border-strong) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 12px 20px rgba(15, 23, 42, 0.10) !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"] p,
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"] p {
+        color: #36506a !important;
+        font-weight: 700 !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked),
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"]:has(input:checked) {
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%) !important;
+        border-color: var(--qa-btn-primary-border) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 12px 22px rgba(23, 50, 74, 0.20) !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) p,
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"]:has(input:checked) p {
+        color: #ffffff !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"] svg,
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"] svg {
+        fill: #476179 !important;
+        color: #476179 !important;
+    }
+
+    div[data-testid="stRadio"] label[data-baseweb="radio"]:has(input:checked) svg,
+    div[data-testid="stCheckbox"] label[data-baseweb="checkbox"]:has(input:checked) svg {
+        fill: #ffffff !important;
+        color: #ffffff !important;
+    }
+
+    div[data-testid="stFileUploader"] section,
+    div[data-testid="stFileUploaderDropzone"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px dashed var(--qa-surface-border-strong) !important;
+        border-radius: 18px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 10px 20px rgba(15, 23, 42, 0.08) !important;
+        transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease;
+    }
+
+    div[data-testid="stFileUploader"] section:hover,
+    div[data-testid="stFileUploaderDropzone"]:hover {
+        transform: translateY(-1px);
+        border-color: rgba(29, 78, 216, 0.42) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 14px 24px rgba(15, 23, 42, 0.12) !important;
+    }
+
+    div[data-testid="stFileUploader"] small,
+    div[data-testid="stFileUploader"] p,
+    div[data-testid="stFileUploaderDropzoneInstructions"] small,
+    div[data-testid="stFileUploaderDropzoneInstructions"] p {
+        color: #476179 !important;
+    }
+
+    div[data-testid="stFileUploader"] [data-testid="stFileUploaderDropzone"] button,
+    div[data-testid="stFileUploader"] section button {
+        border-radius: 12px !important;
+    }
+
+    div[data-testid="stTable"],
+    div[data-testid="stDataFrame"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 18px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(15, 23, 42, 0.08) !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stTable"]:hover,
+    div[data-testid="stDataFrame"]:hover {
+        border-color: var(--qa-surface-border-strong) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 16px 28px rgba(15, 23, 42, 0.10) !important;
+        transition: border-color 0.24s ease, box-shadow 0.24s ease, transform 0.24s ease;
+    }
+
+    div[data-testid="stDataFrameResizable"] {
+        border: 0 !important;
+        border-radius: 18px !important;
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), rgba(250, 204, 21, 0) 34%),
+            linear-gradient(180deg, rgba(255,255,255,0.82) 0%, rgba(245, 239, 226, 0.48) 100%) !important;
+        padding: 0.15rem !important;
+    }
+
+    div[data-testid="stDataFrameGlideDataEditor"] {
+        border-radius: 16px !important;
+        overflow: hidden !important;
+        background: rgba(255,255,255,0.74) !important;
+    }
+
+    div[data-testid="stDataFrameGlideDataEditor"] * {
+        color: #17324a !important;
+    }
+
+    table[data-testid="stTableStyledTable"] {
+        width: 100%;
+        border-collapse: separate !important;
+        border-spacing: 0;
+        background: rgba(255,255,255,0.72) !important;
+        border-radius: 16px !important;
+        overflow: hidden !important;
+    }
+
+    table[data-testid="stTableStyledTable"] thead tr {
+        background: linear-gradient(135deg, rgba(7, 20, 39, 0.96) 0%, rgba(19, 41, 75, 0.94) 62%, rgba(34, 77, 121, 0.92) 100%) !important;
+    }
+
+    table[data-testid="stTableStyledTable"] thead th {
+        color: #f8fafc !important;
+        font-weight: 800 !important;
+        border-bottom: 1px solid rgba(250, 204, 21, 0.18) !important;
+        padding-top: 0.8rem !important;
+        padding-bottom: 0.8rem !important;
+    }
+
+    table[data-testid="stTableStyledTable"] tbody tr:nth-child(odd) {
+        background: rgba(255,255,255,0.76) !important;
+    }
+
+    table[data-testid="stTableStyledTable"] tbody tr:nth-child(even) {
+        background: rgba(244, 239, 228, 0.88) !important;
+    }
+
+    table[data-testid="stTableStyledTable"] tbody tr:hover {
+        background: rgba(255, 246, 213, 0.94) !important;
+    }
+
+    table[data-testid="stTableStyledTable"] tbody td {
+        color: #17324a !important;
+        border-top: 1px solid rgba(213, 220, 232, 0.78) !important;
+    }
+
+    div[data-testid="stDataFrameColumnMenu"],
+    div[data-testid="stDataFrameColumnFormattingMenu"],
+    div[data-testid="stDataFrameColumnVisibilityMenu"],
+    div[data-testid="stDataFrameTooltipContent"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        color: #17324a !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 16px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 14px 26px rgba(15, 23, 42, 0.12) !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stDataFrameColumnMenu"] *,
+    div[data-testid="stDataFrameColumnFormattingMenu"] *,
+    div[data-testid="stDataFrameColumnVisibilityMenu"] *,
+    div[data-testid="stDataFrameTooltipContent"] * {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stDataFrameColumnMenu"] [role="menuitem"],
+    div[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"] {
+        transition: background 0.24s ease, color 0.24s ease;
+    }
+
+    div[data-testid="stDataFrameColumnMenu"] [role="menuitem"]:hover,
+    div[data-testid="stDataFrameColumnFormattingMenu"] [role="menuitem"]:hover {
+        background: rgba(255, 246, 213, 0.86) !important;
+    }
+
+    .stDataFrameGlideDataEditor .gdg-search-bar {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 22px rgba(15, 23, 42, 0.08) !important;
+    }
+
+    .stDataFrameGlideDataEditor .gdg-search-bar input,
+    .stDataFrameGlideDataEditor .gdg-search-bar button,
+    .stDataFrameGlideDataEditor .gdg-search-bar .gdg-search-status {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stPlotlyChart"],
+    div[data-testid="stVegaLiteChart"],
+    div[data-testid="stArrowVegaLiteChart"],
+    div[data-testid="stDeckGlJsonChart"],
+    div.element-container:has(.js-plotly-plot),
+    div.element-container:has(.vega-embed) {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 20px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 14px 28px rgba(15, 23, 42, 0.08) !important;
+        padding: 0.7rem 0.8rem 0.55rem !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stPlotlyChart"]:hover,
+    div[data-testid="stVegaLiteChart"]:hover,
+    div[data-testid="stArrowVegaLiteChart"]:hover,
+    div[data-testid="stDeckGlJsonChart"]:hover,
+    div.element-container:has(.js-plotly-plot):hover,
+    div.element-container:has(.vega-embed):hover {
+        border-color: var(--qa-surface-border-strong) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 18px 30px rgba(15, 23, 42, 0.10) !important;
+        transition: border-color 0.24s ease, box-shadow 0.24s ease;
+    }
+
+    div[data-testid="stPlotlyChart"] .js-plotly-plot,
+    div.element-container:has(.js-plotly-plot) .js-plotly-plot,
+    div[data-testid="stVegaLiteChart"] .vega-embed,
+    div[data-testid="stArrowVegaLiteChart"] .vega-embed,
+    div.element-container:has(.vega-embed) .vega-embed {
+        background: transparent !important;
+    }
+
+    .js-plotly-plot .modebar {
+        background: rgba(247, 239, 223, 0.84) !important;
+        border: 1px solid rgba(199, 164, 79, 0.26) !important;
+        border-radius: 12px !important;
+        box-shadow: 0 8px 16px rgba(15, 23, 42, 0.08) !important;
+    }
+
+    .js-plotly-plot .modebar-btn svg,
+    .js-plotly-plot .modebar-btn path {
+        fill: #17324a !important;
+    }
+
+    .js-plotly-plot .modebar-btn:hover {
+        background: rgba(255, 246, 213, 0.82) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] h3 {
+        position: relative;
+        margin: 1.35rem 0 0.8rem !important;
+        padding: 0.1rem 0 0.55rem 1rem !important;
+        color: #17324a !important;
+        font-size: 1.18rem !important;
+        font-weight: 800 !important;
+        letter-spacing: 0.01em !important;
+        border-bottom: 1px solid rgba(199, 164, 79, 0.20) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] h3::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0.18rem;
+        bottom: 0.62rem;
+        width: 4px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #facc15 0%, #f59e0b 100%);
+        box-shadow: 0 0 12px rgba(250, 204, 21, 0.24);
+    }
+
+    div[data-testid="stMarkdownContainer"] h4 {
+        margin: 1.15rem 0 0.65rem !important;
+        color: #17324a !important;
+        font-size: 1.02rem !important;
+        font-weight: 760 !important;
+        letter-spacing: 0.01em !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] h5,
+    div[data-testid="stMarkdownContainer"] h6 {
+        margin: 1rem 0 0.55rem !important;
+        color: #34506b !important;
+        font-size: 0.92rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.02em !important;
+        text-transform: uppercase;
+    }
+
+    div[data-testid="stMarkdownContainer"] {
+        line-height: 1.72;
+    }
+
+    div[data-testid="stMarkdownContainer"] > :first-child {
+        margin-top: 0 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] > :last-child {
+        margin-bottom: 0 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stMarkdownContainer"] ul,
+    div[data-testid="stMarkdownContainer"] ol {
+        margin-top: var(--qa-flow-space-xs) !important;
+        margin-bottom: var(--qa-flow-space-sm) !important;
+        color: #34506b !important;
+        line-height: 1.72 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] ul,
+    div[data-testid="stMarkdownContainer"] ol {
+        padding-left: 1.2rem !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] li {
+        margin: 0.24rem 0 !important;
+        color: #34506b !important;
+        line-height: 1.68 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] h3 + p,
+    div[data-testid="stMarkdownContainer"] h4 + p,
+    div[data-testid="stMarkdownContainer"] h5 + p,
+    div[data-testid="stMarkdownContainer"] h6 + p,
+    div[data-testid="stMarkdownContainer"] h3 + ul,
+    div[data-testid="stMarkdownContainer"] h4 + ul,
+    div[data-testid="stMarkdownContainer"] h3 + ol,
+    div[data-testid="stMarkdownContainer"] h4 + ol {
+        margin-top: 0.32rem !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] p + p,
+    div[data-testid="stMarkdownContainer"] ul + p,
+    div[data-testid="stMarkdownContainer"] ol + p,
+    div[data-testid="stMarkdownContainer"] p + ul,
+    div[data-testid="stMarkdownContainer"] p + ol,
+    div[data-testid="stMarkdownContainer"] blockquote + p,
+    div[data-testid="stMarkdownContainer"] pre + p,
+    div[data-testid="stMarkdownContainer"] table + p {
+        margin-top: var(--qa-flow-space-md) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] blockquote {
+        margin: 1rem 0 !important;
+        padding: 0.9rem 1rem 0.9rem 1.1rem !important;
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.10), rgba(250, 204, 21, 0) 34%),
+            linear-gradient(145deg, rgba(247,249,253,0.96) 0%, rgba(238,243,250,0.96) 56%, rgba(247,239,223,0.96) 100%) !important;
+        border: 1px solid rgba(213, 220, 232, 0.84) !important;
+        border-left: 4px solid #f59e0b !important;
+        border-radius: 16px !important;
+        color: #476179 !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 10px 20px rgba(15, 23, 42, 0.08) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] blockquote p,
+    div[data-testid="stMarkdownContainer"] blockquote li,
+    div[data-testid="stMarkdownContainer"] blockquote span {
+        color: #476179 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] :not(pre) > code {
+        background: linear-gradient(145deg, rgba(7, 20, 39, 0.08) 0%, rgba(34, 77, 121, 0.10) 100%) !important;
+        color: #17324a !important;
+        border: 1px solid rgba(199, 164, 79, 0.18) !important;
+        border-radius: 10px !important;
+        padding: 0.16rem 0.42rem !important;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,0.76);
+    }
+
+    div[data-testid="stMarkdownContainer"] pre,
+    div[data-testid="stCode"] pre,
+    div.stCode pre {
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), rgba(250, 204, 21, 0) 32%),
+            linear-gradient(160deg, rgba(7, 20, 39, 0.98) 0%, rgba(19, 41, 75, 0.98) 62%, rgba(9, 17, 31, 0.98) 100%) !important;
+        border: 1px solid rgba(250, 204, 21, 0.16) !important;
+        border-radius: 18px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.08),
+            0 16px 28px rgba(7, 20, 39, 0.18) !important;
+        color: #e8eef8 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] pre code,
+    div[data-testid="stCode"] pre code,
+    div.stCode pre code {
+        background: transparent !important;
+        border: 0 !important;
+        box-shadow: none !important;
+        color: inherit !important;
+        padding: 0 !important;
+    }
+
+    div[data-testid="stCode"],
+    div.stCode {
+        border-radius: 18px !important;
+        background: transparent !important;
+    }
+
+    div[data-testid="stCode"] button[data-testid="stCodeCopyButton"],
+    div.stCode button[data-testid="stCodeCopyButton"] {
+        background:
+            linear-gradient(135deg, rgba(247,249,253,0.90) 0%, rgba(247,239,223,0.92) 100%) !important;
+        border: 1px solid rgba(199, 164, 79, 0.26) !important;
+        border-radius: 12px !important;
+        color: #17324a !important;
+        box-shadow: 0 8px 16px rgba(7, 20, 39, 0.12) !important;
+    }
+
+    div[data-testid="stCode"] button[data-testid="stCodeCopyButton"]:hover,
+    div.stCode button[data-testid="stCodeCopyButton"]:hover {
+        background: rgba(255, 246, 213, 0.92) !important;
+    }
+
+    div[data-testid="stCode"] button[data-testid="stCodeCopyButton"] svg,
+    div[data-testid="stCode"] button[data-testid="stCodeCopyButton"] path,
+    div.stCode button[data-testid="stCodeCopyButton"] svg,
+    div.stCode button[data-testid="stCodeCopyButton"] path {
+        fill: #17324a !important;
+        color: #17324a !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] pre::-webkit-scrollbar,
+    div[data-testid="stCode"] pre::-webkit-scrollbar,
+    div.stCode pre::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+
+    div[data-testid="stMarkdownContainer"] pre::-webkit-scrollbar-thumb,
+    div[data-testid="stCode"] pre::-webkit-scrollbar-thumb,
+    div.stCode pre::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, rgba(250, 204, 21, 0.52) 0%, rgba(34, 77, 121, 0.56) 100%);
+        border-radius: 999px;
+        border: 2px solid rgba(7, 20, 39, 0.78);
+    }
+
+    div[data-testid="stMarkdownContainer"] pre::-webkit-scrollbar-track,
+    div[data-testid="stCode"] pre::-webkit-scrollbar-track,
+    div.stCode pre::-webkit-scrollbar-track {
+        background: rgba(255, 255, 255, 0.08);
+        border-radius: 999px;
+    }
+
+    div[data-testid="stMarkdownContainer"] table {
+        width: 100%;
+        border-collapse: separate !important;
+        border-spacing: 0;
+        margin: 1rem 0 1.1rem !important;
+        background:
+            var(--qa-surface-radial),
+            rgba(255,255,255,0.82) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 18px !important;
+        overflow: hidden !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(15, 23, 42, 0.08) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table thead tr {
+        background: linear-gradient(135deg, rgba(7, 20, 39, 0.96) 0%, rgba(19, 41, 75, 0.94) 62%, rgba(34, 77, 121, 0.92) 100%) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table thead th {
+        color: #f8fafc !important;
+        font-weight: 800 !important;
+        border-bottom: 1px solid rgba(250, 204, 21, 0.16) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table th,
+    div[data-testid="stMarkdownContainer"] table td {
+        padding: 0.78rem 0.9rem !important;
+        border: 0 !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table tbody tr:nth-child(odd) {
+        background: rgba(255,255,255,0.76) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table tbody tr:nth-child(even) {
+        background: rgba(244, 239, 228, 0.88) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table tbody tr:hover {
+        background: rgba(255, 246, 213, 0.94) !important;
+    }
+
+    div[data-testid="stMarkdownContainer"] table tbody td {
+        color: #17324a !important;
+        border-top: 1px solid rgba(213, 220, 232, 0.76) !important;
+    }
+
+    hr,
+    div[data-testid="stMarkdownContainer"] hr,
+    section[data-testid="stSidebar"] hr {
+        border: 0 !important;
+        height: 1px !important;
+        margin: 1.1rem 0 1.15rem !important;
+        background:
+            linear-gradient(
+                90deg,
+                rgba(34, 77, 121, 0.04) 0%,
+                rgba(199, 164, 79, 0.78) 18%,
+                rgba(34, 77, 121, 0.78) 50%,
+                rgba(199, 164, 79, 0.78) 82%,
+                rgba(34, 77, 121, 0.04) 100%
+            ) !important;
+        box-shadow: 0 0 12px rgba(199, 164, 79, 0.10);
+    }
+
+    div[data-testid="stCaptionContainer"],
+    div[data-testid="stCaptionContainer"] p,
+    div[data-testid="stCaptionContainer"] span,
+    div.stCaption,
+    div.stCaption p,
+    div.stCaption span,
+    div[data-testid="stImageCaption"],
+    div[data-testid="stImageCaption"] p,
+    div[data-testid="stImageCaption"] span {
+        color: #476179 !important;
+        font-size: 0.84rem !important;
+        line-height: 1.62 !important;
+        letter-spacing: 0.01em !important;
     }
 
     /* 侧边栏样式 */
@@ -845,12 +2342,300 @@ CSS_STYLES = """
 
     /* 指标卡片 */
     .metric-card {
-        background: white;
+        background: var(--qa-surface-panel-soft);
         border-radius: 12px;
         padding: 1.5rem;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
         text-align: center;
-        border-left: 4px solid #667eea;
+        border-left: 4px solid #f59e0b;
+    }
+
+    div[data-testid="stMetric"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft);
+        border: 1px solid var(--qa-surface-border);
+        border-left: 4px solid #f59e0b;
+        border-radius: 16px;
+        padding: 0.9rem 1rem;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.84),
+            0 10px 20px rgba(15, 23, 42, 0.08);
+    }
+
+    div[data-testid="stMetric"]:hover {
+        transform: translateY(-2px);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 14px 24px rgba(15, 23, 42, 0.12);
+        transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease;
+        border-color: var(--qa-surface-border-strong);
+    }
+
+    div[data-testid="stMetricLabel"] p {
+        color: #476179 !important;
+        font-size: 0.88rem !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.01em;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stMetricValue"] > div,
+    div[data-testid="stMetricValue"] p {
+        color: #17324a !important;
+        font-weight: 800 !important;
+    }
+
+    div[data-testid="stMetricDelta"] {
+        color: #b45309 !important;
+        font-weight: 700 !important;
+    }
+
+    div[data-testid="stMetricDelta"] svg {
+        fill: currentColor !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) div[data-testid="stAlertContainer"] {
+        background:
+            linear-gradient(145deg, rgba(255, 247, 230, 0.98) 0%, rgba(250, 238, 206, 0.98) 54%, rgba(247, 240, 226, 0.98) 100%) !important;
+        border: 1px solid rgba(251, 146, 60, 0.24) !important;
+        border-left: 4px solid #f59e0b !important;
+        border-radius: 16px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.86),
+            0 12px 24px rgba(124, 45, 18, 0.12) !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) div[data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) div[data-testid="stMarkdownContainer"] li,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) div[data-testid="stMarkdownContainer"] span {
+        color: #9a3412 !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) [data-testid="stAlertDynamicIcon"] svg,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentSuccess"]) [data-testid="stAlertDynamicIcon"] path {
+        fill: #b45309 !important;
+        color: #b45309 !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) div[data-testid="stAlertContainer"] {
+        background:
+            linear-gradient(145deg, rgba(238, 244, 255, 0.98) 0%, rgba(230, 237, 247, 0.98) 58%, rgba(243, 246, 251, 0.98) 100%) !important;
+        border: 1px solid rgba(34, 77, 121, 0.20) !important;
+        border-left: 4px solid #224d79 !important;
+        border-radius: 16px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(7, 20, 39, 0.10) !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) div[data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) div[data-testid="stMarkdownContainer"] li,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) div[data-testid="stMarkdownContainer"] span {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) [data-testid="stAlertDynamicIcon"] svg,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentInfo"]) [data-testid="stAlertDynamicIcon"] path {
+        fill: #224d79 !important;
+        color: #224d79 !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) div[data-testid="stAlertContainer"] {
+        background:
+            linear-gradient(145deg, rgba(255, 248, 229, 0.98) 0%, rgba(251, 239, 200, 0.98) 56%, rgba(248, 242, 223, 0.98) 100%) !important;
+        border: 1px solid rgba(217, 119, 6, 0.22) !important;
+        border-left: 4px solid #d97706 !important;
+        border-radius: 16px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(146, 64, 14, 0.10) !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) div[data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) div[data-testid="stMarkdownContainer"] li,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) div[data-testid="stMarkdownContainer"] span {
+        color: #92400e !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) [data-testid="stAlertDynamicIcon"] svg,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentWarning"]) [data-testid="stAlertDynamicIcon"] path {
+        fill: #b45309 !important;
+        color: #b45309 !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) div[data-testid="stAlertContainer"] {
+        background:
+            linear-gradient(145deg, rgba(255, 241, 238, 0.98) 0%, rgba(253, 230, 223, 0.98) 56%, rgba(248, 236, 232, 0.98) 100%) !important;
+        border: 1px solid rgba(220, 38, 38, 0.18) !important;
+        border-left: 4px solid #dc2626 !important;
+        border-radius: 16px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 12px 24px rgba(153, 27, 27, 0.10) !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) div[data-testid="stMarkdownContainer"],
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) div[data-testid="stMarkdownContainer"] p,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) div[data-testid="stMarkdownContainer"] li,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) div[data-testid="stMarkdownContainer"] span {
+        color: #991b1b !important;
+    }
+
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) [data-testid="stAlertDynamicIcon"] svg,
+    div[data-testid="stAlert"]:has(div[data-testid="stAlertContentError"]) [data-testid="stAlertDynamicIcon"] path {
+        fill: #b91c1c !important;
+        color: #b91c1c !important;
+    }
+
+    div[data-testid="stPopoverBody"],
+    div[data-baseweb="popover"] {
+        background:
+            var(--qa-surface-radial),
+            var(--qa-surface-panel-soft) !important;
+        border: 1px solid var(--qa-surface-border) !important;
+        border-radius: 24px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.88),
+            0 20px 40px rgba(15, 23, 42, 0.14) !important;
+        color: #17324a !important;
+    }
+
+    div[data-testid="stPopoverBody"] *,
+    div[data-baseweb="popover"] * {
+        color: inherit !important;
+    }
+
+    div[data-testid="stPopoverBody"] hr,
+    div[data-baseweb="popover"] hr {
+        border-color: rgba(213, 220, 232, 0.72) !important;
+    }
+
+    div[data-baseweb="popover"] ul[role="listbox"],
+    div[data-baseweb="popover"] div[role="listbox"],
+    div[data-baseweb="popover"] div[role="menu"] {
+        background: transparent !important;
+        padding: 0.3rem !important;
+    }
+
+    div[data-baseweb="popover"] li[role="option"],
+    div[data-baseweb="popover"] div[role="option"],
+    div[data-baseweb="popover"] div[role="menuitem"] {
+        color: #17324a !important;
+        border-radius: 14px !important;
+        border: 1px solid transparent !important;
+        transition: background 0.22s ease, border-color 0.22s ease, transform 0.22s ease;
+    }
+
+    div[data-baseweb="popover"] li[role="option"]:hover,
+    div[data-baseweb="popover"] div[role="option"]:hover,
+    div[data-baseweb="popover"] div[role="menuitem"]:hover {
+        background: rgba(255, 246, 213, 0.86) !important;
+        border-color: rgba(199, 164, 79, 0.22) !important;
+    }
+
+    div[data-baseweb="popover"] li[role="option"][aria-selected="true"],
+    div[data-baseweb="popover"] div[role="option"][aria-selected="true"],
+    div[data-baseweb="popover"] div[role="menuitem"][aria-selected="true"] {
+        background: linear-gradient(135deg, rgba(7, 20, 39, 0.96) 0%, rgba(19, 41, 75, 0.94) 62%, rgba(34, 77, 121, 0.92) 100%) !important;
+        color: #f8fafc !important;
+        border-color: rgba(250, 204, 21, 0.18) !important;
+        box-shadow: 0 10px 18px rgba(7, 20, 39, 0.12) !important;
+    }
+
+    div[data-baseweb="popover"] li[role="option"][aria-selected="true"] *,
+    div[data-baseweb="popover"] div[role="option"][aria-selected="true"] *,
+    div[data-baseweb="popover"] div[role="menuitem"][aria-selected="true"] * {
+        color: #f8fafc !important;
+    }
+
+    div[data-baseweb="popover"] div[role="tooltip"] {
+        max-width: 320px !important;
+        color: #17324a !important;
+        line-height: 1.65 !important;
+    }
+
+    div[data-baseweb="popover"] div[role="tooltip"] p,
+    div[data-baseweb="popover"] div[role="tooltip"] span,
+    div[data-baseweb="popover"] div[role="tooltip"] li {
+        color: #17324a !important;
+    }
+
+    div[data-baseweb="popover"]::-webkit-scrollbar,
+    div[data-baseweb="popover"] [role="listbox"]::-webkit-scrollbar,
+    div[data-baseweb="popover"] [role="menu"]::-webkit-scrollbar {
+        width: 10px;
+        height: 10px;
+    }
+
+    div[data-baseweb="popover"]::-webkit-scrollbar-thumb,
+    div[data-baseweb="popover"] [role="listbox"]::-webkit-scrollbar-thumb,
+    div[data-baseweb="popover"] [role="menu"]::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, rgba(34, 77, 121, 0.58) 0%, rgba(180, 83, 9, 0.56) 100%);
+        border-radius: 999px;
+        border: 2px solid rgba(247, 249, 253, 0.78);
+    }
+
+    div[data-baseweb="popover"]::-webkit-scrollbar-track,
+    div[data-baseweb="popover"] [role="listbox"]::-webkit-scrollbar-track,
+    div[data-baseweb="popover"] [role="menu"]::-webkit-scrollbar-track {
+        background: rgba(238, 243, 250, 0.72);
+        border-radius: 999px;
+    }
+
+    div[data-testid="stDialog"] {
+        background: rgba(7, 20, 39, 0.38) !important;
+        backdrop-filter: blur(10px);
+    }
+
+    div[data-testid="stDialog"] [role="dialog"] {
+        background:
+            radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
+            linear-gradient(145deg, rgba(247,249,253,0.99) 0%, rgba(238,243,250,0.99) 56%, rgba(247,239,223,0.99) 100%) !important;
+        border: 1px solid rgba(199, 164, 79, 0.38) !important;
+        border-radius: 28px !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.92),
+            0 28px 60px rgba(7, 20, 39, 0.22) !important;
+        color: #17324a !important;
+    }
+
+    div[data-testid="stDialog"] [role="dialog"] * {
+        color: inherit;
+    }
+
+    div[data-testid="stDialog"] [role="dialog"] h1,
+    div[data-testid="stDialog"] [role="dialog"] h2,
+    div[data-testid="stDialog"] [role="dialog"] h3,
+    div[data-testid="stDialog"] [role="dialog"] p,
+    div[data-testid="stDialog"] [role="dialog"] label,
+    div[data-testid="stDialog"] [role="dialog"] span,
+    div[data-testid="stDialog"] [role="dialog"] li {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stDialog"] button[aria-label="Close"],
+    div[data-testid="stDialog"] button[aria-label="关闭"] {
+        color: #17324a !important;
+    }
+
+    div[data-testid="stDialog"] button[aria-label="Close"]:hover,
+    div[data-testid="stDialog"] button[aria-label="关闭"]:hover {
+        background: rgba(255, 246, 213, 0.82) !important;
+    }
+
+    div[data-testid="stDialog"] button[aria-label="Close"] svg,
+    div[data-testid="stDialog"] button[aria-label="Close"] path,
+    div[data-testid="stDialog"] button[aria-label="关闭"] svg,
+    div[data-testid="stDialog"] button[aria-label="关闭"] path {
+        fill: #17324a !important;
+        color: #17324a !important;
     }
 
     /* 响应式调整 */
@@ -862,16 +2647,44 @@ CSS_STYLES = """
         .main-header {
             font-size: 2rem;
         }
+
+        .qa-app-hero {
+            padding: 2rem 1.2rem 2.1rem;
+            margin: -1rem -1rem 1.4rem -1rem;
+            border-radius: 0 0 22px 22px;
+        }
+
+        .qa-app-hero__grid {
+            grid-template-columns: 1fr;
+            gap: 1.4rem;
+        }
+
+        .qa-app-hero__stage {
+            min-height: 220px;
+        }
+
+        .qa-app-hero__stage-shell {
+            width: min(280px, 100%);
+        }
+
+        .qa-app-hero__node {
+            font-size: 0.74rem;
+            padding: 0.42rem 0.7rem;
+        }
+
+        .qa-app-hero__curtain {
+            width: 22%;
+        }
     }
 
     /* 卡片按钮样式 */
     .card-button {
-        background: white !important;
-        color: #2d3748 !important;
-        border: 1px solid #e2e8f0 !important;
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%) !important;
+        color: #ffffff !important;
+        border: 1px solid var(--qa-btn-primary-border) !important;
         padding: 1.5rem !important;
         border-radius: 16px !important;
-        font-weight: 600 !important;
+        font-weight: 700 !important;
         transition: all 0.3s ease !important;
         width: 100% !important;
         height: auto !important;
@@ -881,42 +2694,53 @@ CSS_STYLES = """
         align-items: center !important;
         justify-content: center !important;
         text-align: center !important;
-        box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.12),
+            0 12px 24px rgba(7, 20, 39, 0.24) !important;
     }
 
     .card-button:hover {
-        transform: translateY(-5px) !important;
-        box-shadow: 0 20px 40px rgba(0,0,0,0.15) !important;
-        border-color: #667eea !important;
-        background: white !important;
-        color: #2d3748 !important;
+        transform: translateY(-4px) !important;
+        box-shadow: 0 18px 30px rgba(7, 20, 39, 0.28) !important;
+        border-color: rgba(250, 204, 21, 0.30) !important;
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%) !important;
+        color: #ffffff !important;
     }
 
     /* 选中状态的卡片按钮 */
     .selected-card-button {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        color: white !important;
-        border: 2px solid #4c51bf !important;
+        background: var(--qa-btn-primary-light) !important;
+        color: #17324a !important;
+        border: 1px solid var(--qa-btn-primary-light-border) !important;
         transform: scale(1.02) !important;
-        box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4) !important;
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 16px 28px rgba(250, 204, 21, 0.18) !important;
+    }
+
+    .selected-card-button,
+    .selected-card-button * {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
     }
 
     .selected-card-button:hover {
-        background: linear-gradient(135deg, #5a67d8 0%, #6b46c1 100%) !important;
-        color: white !important;
-        transform: scale(1.02) !important;
-        box-shadow: 0 15px 35px rgba(102, 126, 234, 0.4) !important;
+        background: var(--qa-btn-primary-light) !important;
+        color: #17324a !important;
+        transform: translateY(-4px) scale(1.02) !important;
+        box-shadow: 0 20px 34px rgba(250, 204, 21, 0.20) !important;
     }
 
     .tool-picker-card {
-        background:
-            radial-gradient(circle at top right, rgba(148, 163, 184, 0.18) 0%, rgba(148, 163, 184, 0) 42%),
-            linear-gradient(145deg, #e7edf5 0%, #d8e2ec 56%, #ced9e6 100%);
+        background: linear-gradient(135deg, var(--qa-btn-primary-start) 0%, var(--qa-btn-primary-mid) 62%, var(--qa-btn-primary-end) 100%);
         border-radius: 16px;
-        border: 1px solid #b7c6d8;
+        border: 1px solid var(--qa-btn-primary-border);
         box-shadow:
-            0 14px 30px rgba(15, 23, 42, 0.12),
-            inset 0 1px 0 rgba(255,255,255,0.72);
+            0 14px 30px rgba(7, 20, 39, 0.24),
+            inset 0 1px 0 rgba(255,255,255,0.12);
         padding: 1.25rem;
         min-height: 188px;
         margin-bottom: 0.75rem;
@@ -924,13 +2748,11 @@ CSS_STYLES = """
     }
 
     .tool-picker-card.selected {
-        background:
-            radial-gradient(circle at top right, rgba(255,255,255,0.24) 0%, rgba(255,255,255,0) 38%),
-            linear-gradient(145deg, #d5dfeb 0%, #c0ccdd 56%, #b2c0d4 100%);
-        border-color: #8ea3bd;
+        background: var(--qa-btn-primary-light);
+        border-color: var(--qa-btn-primary-light-border);
         box-shadow:
-            inset 1px 1px 0 rgba(255,255,255,0.86),
-            0 16px 28px rgba(100, 116, 139, 0.2);
+            inset 1px 1px 0 rgba(255,255,255,0.82),
+            0 16px 28px rgba(250, 204, 21, 0.18);
         transform: translateY(-1px);
     }
 
@@ -943,29 +2765,36 @@ CSS_STYLES = """
     .tool-picker-title {
         font-size: 1.12rem;
         font-weight: 700;
-        color: #17324a;
+        color: #ffffff;
+        text-shadow:
+            0 1px 0 rgba(7, 20, 39, 0.42),
+            0 0 10px rgba(255, 255, 255, 0.04);
         margin-bottom: 0.5rem;
     }
 
     .tool-picker-desc {
-        color: #43586d;
+        color: rgba(255, 255, 255, 0.96);
         font-size: 0.93rem;
         line-height: 1.55;
         min-height: 3.2rem;
+        font-weight: 600;
+        text-shadow: 0 1px 0 rgba(7, 20, 39, 0.32);
     }
 
     .tool-picker-card.selected .tool-picker-title {
-        color: #122b42;
+        color: #17324a;
+        text-shadow: none;
     }
 
     .tool-picker-card.selected .tool-picker-desc {
-        color: #385168;
+        color: #436176;
+        text-shadow: none;
     }
 
     .tool-picker-active-button {
-        background: linear-gradient(180deg, #dce5ef 0%, #c2cfde 100%);
+        background: var(--qa-btn-primary-light);
         color: #17324a;
-        border: 1px solid #92a8c1;
+        border: 1px solid var(--qa-btn-primary-light-border);
         border-radius: 12px;
         font-weight: 700;
         padding: 0.8rem 1rem;
@@ -976,8 +2805,17 @@ CSS_STYLES = """
         align-items: center;
         justify-content: center;
         box-shadow:
-            inset 1px 1px 0 rgba(255,255,255,0.82),
-            inset -1px -1px 0 rgba(126, 145, 167, 0.36);
+            inset 0 1px 0 rgba(255,255,255,0.82),
+            0 12px 22px rgba(250, 204, 21, 0.16);
+    }
+
+    .tool-picker-active-button,
+    .tool-picker-active-button * {
+        color: #17324a !important;
+        fill: currentColor !important;
+        stroke: currentColor !important;
+        -webkit-text-fill-color: currentColor !important;
+        text-shadow: none !important;
     }
 
     .tool-picker-status {
@@ -991,11 +2829,53 @@ CSS_STYLES = """
 """
 # 顶部标题区域
 HEADLINE_STYLES = """
-<div style="text-align: center; padding: 3rem 1rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 0 0 20px 20px; margin: -1rem -1rem 2rem -1rem;">
-    <h1 class="main-header">🔧 测试工程师常用工具集</h1>
-    <p style="color: white; font-size: 1.2rem; opacity: 0.9; max-width: 600px; margin: 0 auto;">
-        一站式测试数据生成、分析和处理平台
-    </p>
+<div class="qa-app-hero">
+    <div class="qa-app-hero__curtain qa-app-hero__curtain--left"></div>
+    <div class="qa-app-hero__curtain qa-app-hero__curtain--right"></div>
+    <div class="qa-app-hero__glow qa-app-hero__glow--amber"></div>
+    <div class="qa-app-hero__glow qa-app-hero__glow--teal"></div>
+    <div class="qa-app-hero__grid">
+        <div class="qa-app-hero__copy">
+            <div class="qa-app-hero__kicker">QA TOOLKIT</div>
+            <h1 class="qa-app-hero__title">
+                <span class="qa-app-hero__title-main">测试工程师</span>
+                <span class="qa-app-hero__title-focus">常用工具集</span>
+            </h1>
+            <p class="qa-app-hero__desc">
+                围绕测试数据、日志、正则、文本、接口与质量分析的工程化工具台，
+                把高频测试动作收进一个统一入口。
+            </p>
+            <div class="qa-app-hero__chip-row">
+                <span class="qa-app-hero__chip">正则与文本</span>
+                <span class="qa-app-hero__chip">日志与 JSON</span>
+                <span class="qa-app-hero__chip">接口与分析</span>
+            </div>
+            <div class="qa-app-hero__meta-row">
+                <span class="qa-app-hero__meta">一站式入口</span>
+                <span class="qa-app-hero__meta">工程化提效</span>
+                <span class="qa-app-hero__meta">面向测试实战</span>
+            </div>
+            <div class="qa-app-hero__footnote">
+                从日常排查到专项分析，常用工具和辅助流程都集中在这里。
+            </div>
+        </div>
+        <div class="qa-app-hero__stage">
+            <div class="qa-app-hero__stage-shell">
+                <div class="qa-app-hero__ring"></div>
+                <div class="qa-app-hero__scan"></div>
+                <a class="qa-app-hero__node qa-app-hero__node--1" href="?hero_tool=regex#tool-content-anchor">Regex</a>
+                <a class="qa-app-hero__node qa-app-hero__node--2" href="?hero_tool=json#tool-content-anchor">JSON</a>
+                <a class="qa-app-hero__node qa-app-hero__node--3" href="?hero_tool=logs#tool-content-anchor">Logs</a>
+                <a class="qa-app-hero__node qa-app-hero__node--4" href="?hero_tool=api#tool-content-anchor">API</a>
+                <div class="qa-app-hero__core">
+                    <div class="qa-app-hero__core-inner">
+                        <div class="qa-app-hero__core-label">TOOL HUB</div>
+                        <div class="qa-app-hero__core-title">QA</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
 </div>
 """
 PRESET_SIZES = {

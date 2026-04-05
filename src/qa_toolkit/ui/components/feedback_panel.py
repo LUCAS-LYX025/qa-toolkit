@@ -30,20 +30,24 @@ class FeedbackSection:
         st.markdown(
             f"""
             <div style="
-                background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
-                border: 1px solid #dbe4ff;
-                border-radius: 18px;
+                background:
+                    radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
+                    linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
+                border: 1px solid #d5dce8;
+                border-radius: 20px;
                 padding: 18px 20px;
                 margin: 10px 0 14px 0;
-                box-shadow: 0 12px 28px rgba(79, 70, 229, 0.08);
+                box-shadow:
+                    inset 0 1px 0 rgba(255,255,255,0.88),
+                    0 14px 28px rgba(15, 23, 42, 0.08);
             ">
-                <div style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
+                <div style="font-size: 12px; font-weight: 700; color: #b45309; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
                     用户反馈
                 </div>
-                <div style="font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 6px;">
+                <div style="font-size: 18px; font-weight: 700; color: #17324a; margin-bottom: 6px;">
                     刚用完「{tool_name}」？给个快速反馈
                 </div>
-                <div style="font-size: 14px; color: #475569; line-height: 1.7;">
+                <div style="font-size: 14px; color: #476179; line-height: 1.7;">
                     详细表单改成弹出式，不再占一整段页面。当前工具已收到 {tool_feedback_count} 条反馈，全站累计 {total_feedback_count} 条。
                 </div>
             </div>
@@ -118,12 +122,21 @@ class FeedbackSection:
         """渲染反馈提交表单"""
         with st.expander("📝 点击这里分享您的建议或需求", expanded=False):
             st.markdown("""
-            <div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px; border-left: 4px solid #667eea;'>
-                <h4 style='color: #2d3748; margin-top: 0;'>💡 帮助我们做得更好！</h4>
-                <p style='color: #4a5568; margin-bottom: 15px;'>
+            <div style='
+                background:
+                    radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
+                    linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
+                padding: 20px;
+                border-radius: 16px;
+                border: 1px solid #d5dce8;
+                border-left: 4px solid #f59e0b;
+                box-shadow: inset 0 1px 0 rgba(255,255,255,0.88);
+            '>
+                <h4 style='color: #17324a; margin-top: 0;'>💡 帮助我们做得更好！</h4>
+                <p style='color: #476179; margin-bottom: 15px;'>
                     您的反馈对我们非常重要！请分享：
                 </p>
-                <ul style='color: #4a5568;'>
+                <ul style='color: #476179;'>
                     <li>使用过程中遇到的任何问题</li>
                     <li>希望新增的功能或工具</li>
                     <li>界面或交互的优化建议</li>
@@ -365,12 +378,17 @@ class FeedbackSection:
         with st.container():
             st.markdown(f"""
             <div style='
-                background: white; 
+                background:
+                    radial-gradient(circle at top right, rgba(250, 204, 21, 0.08), rgba(250, 204, 21, 0) 32%),
+                    linear-gradient(145deg, rgba(255,255,255,0.96) 0%, rgba(247,239,223,0.76) 100%);
                 padding: 15px; 
-                border-radius: 10px; 
+                border-radius: 16px; 
                 border-left: 4px solid {urgency_color};
                 margin: 10px 0;
-                box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                border: 1px solid rgba(213, 220, 232, 0.86);
+                box-shadow:
+                    inset 0 1px 0 rgba(255,255,255,0.86),
+                    0 10px 20px rgba(15, 23, 42, 0.08);
             '>
                 <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
                     <div>
@@ -379,11 +397,11 @@ class FeedbackSection:
                             {meta_text}
                         </span>
                     </div>
-                    <div style='color: #718096; font-size: 0.8em;'>
+                    <div style='color: #476179; font-size: 0.8em;'>
                         {safe_timestamp}
                     </div>
                 </div>
-                <div style='color: #4a5568; margin-bottom: 10px;'>
+                <div style='color: #17324a; margin-bottom: 10px;'>
                     {safe_content}
                 </div>
                 <div style='color: #d69e2e; font-size: 0.9em;'>
@@ -398,18 +416,18 @@ class FeedbackSection:
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown("**🛠️ 工具总数**")
-            st.markdown(f"<h3 style='text-align: center; color: #667eea;'>{len(TOOL_CATEGORIES)}</h3>",
+            st.markdown(f"<h3 style='text-align: center; color: #17324a;'>{len(TOOL_CATEGORIES)}</h3>",
                         unsafe_allow_html=True)
         with col2:
             st.markdown("**📈 用户反馈**")
-            st.markdown(f"<h3 style='text-align: center; color: #48bb78;'>{len(st.session_state.user_feedbacks)}</h3>",
+            st.markdown(f"<h3 style='text-align: center; color: #224d79;'>{len(st.session_state.user_feedbacks)}</h3>",
                         unsafe_allow_html=True)
         with col3:
             st.markdown("**💝 感谢使用**")
-            st.markdown("<h3 style='text-align: center; color: #ed8936;'>❤️</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='text-align: center; color: #ea580c;'>❤️</h3>", unsafe_allow_html=True)
 
         st.markdown("""
-        <div style='text-align: center; color: #718096; margin-top: 20px;'>
+        <div style='text-align: center; color: #476179; margin-top: 20px;'>
             <small>感谢您使用测试工程师常用工具集！我们会根据您的反馈持续优化和改进。</small>
         </div>
         """, unsafe_allow_html=True)

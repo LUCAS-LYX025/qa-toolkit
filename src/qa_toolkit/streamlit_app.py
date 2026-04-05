@@ -102,6 +102,13 @@ PAGE_RENDERERS = {
     for tool_name, config in PAGE_TOOL_CONFIG.items()
 }
 
+HERO_TOOL_QUERY_MAP = {
+    "regex": "正则测试工具",
+    "json": "JSON处理工具",
+    "logs": "日志分析工具",
+    "api": "接口自动化测试",
+}
+
 
 def render_tool_placeholder_page(tool_name):
     """未迁移完成的工具页兜底，避免点击菜单后出现空白页。"""
@@ -111,6 +118,43 @@ def render_tool_placeholder_page(tool_name):
 
     st.warning(f"{tool_name} 当前还在迁移到独立页面，已先恢复入口和说明展示。")
     st.info("这个工具不再是空白页了；如果你要，我可以继续把它的完整功能也迁过来。")
+
+
+def clear_hero_tool_query():
+    """清理首页主视觉节点留下的查询参数，避免和手动切换工具互相覆盖。"""
+    st.session_state.pop("_last_hero_tool_query", None)
+    try:
+        query_params = st.query_params
+        if "hero_tool" in query_params:
+            del query_params["hero_tool"]
+    except Exception:
+        pass
+
+
+def apply_hero_tool_query_selection():
+    """读取首页主视觉节点的查询参数，并切换到对应工具。"""
+    try:
+        hero_tool = st.query_params.get("hero_tool", "")
+    except Exception:
+        return
+
+    if isinstance(hero_tool, list):
+        hero_tool = hero_tool[0] if hero_tool else ""
+
+    hero_tool = str(hero_tool).strip().lower()
+    if not hero_tool:
+        return
+
+    if st.session_state.get("_last_hero_tool_query") == hero_tool:
+        return
+
+    mapped_tool = HERO_TOOL_QUERY_MAP.get(hero_tool)
+    st.session_state["_last_hero_tool_query"] = hero_tool
+    if not mapped_tool:
+        return
+
+    st.session_state.selected_tool = mapped_tool
+    st.session_state.tool_picker_compact = True
 
 
 def escape_js_string(text):
@@ -167,17 +211,29 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
                     if (success) {{
                         const originalText = button.innerHTML;
                         button.innerHTML = '✅ 复制成功！';
-                        button.style.background = '#48bb78';
+                        button.style.background = 'linear-gradient(135deg, #fb923c 0%, #ea580c 52%, #7c2d12 100%)';
+                        button.style.color = '#ffffff';
+                        button.style.fontWeight = '800';
+                        button.style.textShadow = '0 1px 1px rgba(124,45,18,0.54)';
                         setTimeout(function() {{
                             button.innerHTML = originalText;
-                            button.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                            button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
+                            button.style.color = '#ffffff';
+                            button.style.fontWeight = '700';
+                            button.style.textShadow = '0 1px 1px rgba(7,20,39,0.34)';
                         }}, 2000);
                     }} else {{
                         button.innerHTML = '❌ 复制失败';
-                        button.style.background = '#e53e3e';
+                        button.style.background = 'linear-gradient(135deg, #b91c1c 0%, #dc2626 100%)';
+                        button.style.color = '#ffffff';
+                        button.style.fontWeight = '800';
+                        button.style.textShadow = '0 1px 1px rgba(127,29,29,0.54)';
                         setTimeout(function() {{
                             button.innerHTML = '{button_text}';
-                            button.style.background = 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)';
+                            button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
+                            button.style.color = '#ffffff';
+                            button.style.fontWeight = '700';
+                            button.style.textShadow = '0 1px 1px rgba(7,20,39,0.34)';
                         }}, 2000);
                     }}
                 }});
@@ -190,7 +246,7 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
     button_html = f"""
     <div>
         <button data-copy-button="{key}"
-                style="background:linear-gradient(135deg, #667eea 0%, #764ba2 100%);color:white;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:14px;margin:5px;font-weight:500;transition:all 0.3s ease;width:100%;height:42px;font-family:inherit;box-shadow:0 2px 4px rgba(0,0,0,0.1);">
+                style="background:linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);color:white;border:1px solid rgba(250,204,21,0.22);padding:8px 16px;border-radius:12px;cursor:pointer;font-size:14px;margin:5px;font-weight:700;transition:all 0.3s ease;width:100%;height:42px;font-family:inherit;box-shadow:0 12px 22px rgba(7,20,39,0.26);">
             {button_text}
         </button>
     </div>
@@ -207,7 +263,7 @@ def render_back_to_top_button():
         .qa-toolkit-floating-shell {
             position: fixed;
             right: 24px;
-            bottom: 24px;
+            bottom: calc(24px + 56px);
             z-index: 999;
             opacity: 1;
             transform: translateY(0);
@@ -240,18 +296,25 @@ def render_back_to_top_button():
             cursor: pointer;
             user-select: none;
             list-style: none;
-            background: linear-gradient(135deg, #0f172a 0%, #2563eb 100%);
-            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.24);
-            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
+            border: 1px solid rgba(250, 204, 21, 0.22);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.12),
+                0 14px 30px rgba(7, 20, 39, 0.26);
+            transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
         }
         .qa-toolkit-floating-summary::-webkit-details-marker {
             display: none;
         }
         .qa-toolkit-floating-summary:hover {
             transform: translateY(-2px);
+            border-color: rgba(250, 204, 21, 0.30);
         }
         .qa-toolkit-floating-menu[open] .qa-toolkit-floating-summary {
-            box-shadow: 0 16px 34px rgba(37, 99, 235, 0.26);
+            background: linear-gradient(135deg, #fff6d5 0%, #f5edd0 50%, #e7eef8 100%);
+            color: #17324a !important;
+            border-color: rgba(250, 204, 21, 0.24);
+            box-shadow: 0 16px 34px rgba(250, 204, 21, 0.18);
         }
         .qa-toolkit-floating-items {
             position: absolute;
@@ -277,23 +340,37 @@ def render_back_to_top_button():
             white-space: nowrap;
         }
         .qa-toolkit-feedback-link {
-            background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
-            box-shadow: 0 12px 28px rgba(79, 70, 229, 0.24);
+            background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
+            border: 1px solid rgba(250, 204, 21, 0.22);
+            box-shadow: 0 12px 28px rgba(7, 20, 39, 0.26);
         }
         .qa-toolkit-back-to-top {
-            background: linear-gradient(135deg, #1f4b99 0%, #0f766e 100%);
-            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
+            background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
+            color: #ffffff !important;
+            border: 1px solid rgba(250, 204, 21, 0.22);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.12),
+                0 12px 24px rgba(7, 20, 39, 0.26);
         }
         .qa-toolkit-feedback-link:hover {
-            box-shadow: 0 16px 32px rgba(79, 70, 229, 0.30);
+            box-shadow: 0 16px 32px rgba(7, 20, 39, 0.30);
         }
         .qa-toolkit-back-to-top:hover {
-            box-shadow: 0 16px 32px rgba(15, 23, 42, 0.28);
+            box-shadow: 0 16px 32px rgba(7, 20, 39, 0.30);
+        }
+        .qa-toolkit-floating-link:active,
+        .qa-toolkit-floating-summary:active,
+        .qa-toolkit-back-to-top:active,
+        .qa-toolkit-feedback-link:active {
+            background: linear-gradient(135deg, #fff6d5 0%, #f5edd0 50%, #e7eef8 100%);
+            color: #17324a !important;
+            border-color: rgba(250, 204, 21, 0.24);
+            box-shadow: 0 12px 24px rgba(250, 204, 21, 0.16);
         }
         @media (max-width: 768px) {
             .qa-toolkit-floating-shell {
                 right: 14px;
-                bottom: 14px;
+                bottom: calc(14px + 52px);
             }
             .qa-toolkit-floating-items {
                 gap: 8px;
@@ -488,14 +565,9 @@ def render_tool_picker():
             is_selected = current_tool == category
             card_class = "tool-picker-card selected" if is_selected else "tool-picker-card"
             accent_color = info.get("color", "#667eea")
-            card_style = f' style="border-color: {accent_color};"' if is_selected else ""
-            active_button_style = (
-                f' style="border-color: {accent_color}; box-shadow: inset 1px 1px 0 rgba(255,255,255,0.88), '
-                f'inset -1px -1px 0 {accent_color};"'
-            )
             st.markdown(
                 f"""
-                <div class="{card_class}"{card_style}>
+                <div class="{card_class}">
                     <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
                     <div class="tool-picker-title">{category}</div>
                     <div class="tool-picker-desc">{info['description']}</div>
@@ -506,13 +578,14 @@ def render_tool_picker():
 
             if is_selected:
                 st.markdown(
-                    f'<div class="tool-picker-active-button"{active_button_style}>{info["icon"]} {category}</div>'
+                    f'<div class="tool-picker-active-button">{info["icon"]} {category}</div>'
                     '<div class="tool-picker-status">当前已选中，可直接进入功能区</div>',
                     unsafe_allow_html=True,
                 )
 
             button_label = "进入当前工具" if is_selected else f"{info['icon']} {category}"
             if st.button(button_label, key=f"select_{category}", use_container_width=True):
+                clear_hero_tool_query()
                 st.session_state.selected_tool = category
                 st.session_state.tool_picker_compact = True
                 st.rerun()
@@ -595,6 +668,7 @@ if 'tool_picker_compact' not in st.session_state:
 if st.session_state.selected_tool not in TOOL_CATEGORIES:
     st.session_state.selected_tool = "数据生成工具"
     st.session_state.tool_picker_compact = False
+apply_hero_tool_query_selection()
 
 # 顶部标题区域
 st.markdown(HEADLINE_STYLES, unsafe_allow_html=True)

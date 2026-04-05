@@ -1331,14 +1331,13 @@ class ToolDocumentationManager:
         """
         # 页脚
         st.markdown("---")
-        st.markdown("""
-        <div style="text-align: center; color: #718096; padding: 2rem 0;">
-            <p>🔧 测试工程师常用工具集 | 为高效测试而生</p>
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(
+            '<div class="category-card" style="text-align:center;">🔧 测试工程师常用工具集 | 为高效测试而生</div>',
+            unsafe_allow_html=True,
+        )
 
         st.markdown("---")
-        st.markdown("### 🎯 通用使用说明")
+        st.markdown('<div class="section-header">🎯 通用使用说明</div>', unsafe_allow_html=True)
 
         col1, col2 = st.columns(2)
 

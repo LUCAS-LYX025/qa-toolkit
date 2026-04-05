@@ -1,4 +1,8 @@
+import base64
+import io
+
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image
 
 from qa_toolkit.paths import IMAGES_DIR
@@ -156,15 +160,18 @@ class AuthorProfile:
         """
 
         self.author_info = {
-            "name": "LUCAS 🎯",
-            "title": "进击的雷神",
-            "description": "CSDN博客专家 | 测试技术布道者",
-            "bio": "专注AI赋能开发测试、自动化测试、性能测试等领域，分享实用的测试工具和开发经验。CSDN博客「进击的雷神」，微信公众号「进击的测试圈」，持续输出高质量技术内容。",
+            "name": "LUCAS",
+            "title": "测试开发与质量工程实践者",
+            "description": "专注测试开发、AI 提效与工具落地",
+            "bio": "长期聚焦 AI 赋能测试开发、自动化测试、性能测试与质量工程建设，持续沉淀可复用工具、工程化方法与一线实战经验。CSDN 博客「进击的雷神」、微信公众号「进击的测试圈」围绕测试开发提效、质量治理落地与团队协作持续更新。",
+            "sidebar_tagline": "测试开发 | AI 提效 | 工程实践",
+            "sidebar_story": "👇专注测试老本行，顺便卷一卷👇",
             "csdn_url": "https://thundergod-lyx.blog.csdn.net",
             "wechat_public": "进击的测试圈",
             "wechat_url": "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=Mzg5Mzk3MTcwOQ==&action=getalbum&album_id=3163113351812644865#wechat_redirect",
             "gitcode_url": "https://gitcode.net/LYX_WIN",
             "github_url": "https://github.com/LUCAS-LYX025",
+            "sidebar_hero_gif_url": "https://media1.tenor.com/m/Adp4Bl8kqaAAAAAC/luffy-jump.gif",
             "skills": ["AI应用师", "接口测试", "自动化测试", "性能测试","安全测试",  "测试工具开发"]
         }
 
@@ -177,6 +184,942 @@ class AuthorProfile:
             return None
         except Exception:
             return None
+
+    def _image_to_data_uri(self, image_path):
+        """将本地图片转成 data URI，方便在 HTML 卡片中直接使用。"""
+        image = self.load_image(image_path)
+        if image is None:
+            return ""
+
+        export_image = image
+        if image.mode not in {"RGB", "RGBA"}:
+            export_image = image.convert("RGBA" if "A" in image.mode else "RGB")
+
+        image_format = "PNG" if export_image.mode == "RGBA" else "JPEG"
+        if image_format == "JPEG":
+            export_image = export_image.convert("RGB")
+
+        buffer = io.BytesIO()
+        save_kwargs = {"format": image_format}
+        if image_format == "JPEG":
+            save_kwargs["quality"] = 92
+        export_image.save(buffer, **save_kwargs)
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        mime = "image/png" if image_format == "PNG" else "image/jpeg"
+        return f"data:{mime};base64,{encoded}"
+
+    def _render_sidebar_compact_styles(self):
+        st.markdown(
+            """
+            <style>
+            @keyframes qaCurtainLeft {
+                0% { transform: translateX(0) skewY(0deg); }
+                100% { transform: translateX(-115%) skewY(-6deg); }
+            }
+
+            @keyframes qaCurtainRight {
+                0% { transform: translateX(0) skewY(0deg); }
+                100% { transform: translateX(115%) skewY(6deg); }
+            }
+
+            @keyframes qaCaptainPop {
+                0% { opacity: 0; transform: translateY(18px) scale(0.78) rotate(-10deg); }
+                65% { opacity: 1; transform: translateY(-5px) scale(1.03) rotate(3deg); }
+                100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }
+            }
+
+            @keyframes qaGlowDrift {
+                0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+                50% { transform: translate3d(6px, -10px, 0) scale(1.06); }
+            }
+
+            @keyframes qaRibbonFloat {
+                0%, 100% { transform: translateX(-50%) translateY(0); }
+                50% { transform: translateX(-50%) translateY(-3px); }
+            }
+
+            .qa-sidebar-author-showcase {
+                position: relative;
+                overflow: hidden;
+                border-radius: 24px;
+                padding: 18px 16px 16px;
+                margin: 4px 0 14px;
+                background:
+                    radial-gradient(circle at 18% 18%, rgba(250, 204, 21, 0.26), transparent 30%),
+                    radial-gradient(circle at 82% 14%, rgba(45, 212, 191, 0.18), transparent 24%),
+                    linear-gradient(160deg, #071427 0%, #13294b 48%, #09111f 100%);
+                border: 1px solid rgba(250, 204, 21, 0.20);
+                box-shadow: 0 18px 34px rgba(7, 20, 39, 0.34);
+            }
+
+            .qa-sidebar-author-showcase::before {
+                content: "";
+                position: absolute;
+                inset: 10px;
+                border-radius: 20px;
+                border: 1px solid rgba(255, 255, 255, 0.10);
+                pointer-events: none;
+            }
+
+            .qa-sidebar-author-glow {
+                position: absolute;
+                inset: auto auto 18px 20px;
+                width: 92px;
+                height: 92px;
+                border-radius: 999px;
+                background: radial-gradient(circle, rgba(250, 204, 21, 0.34), rgba(250, 204, 21, 0));
+                filter: blur(6px);
+                animation: qaGlowDrift 4.2s ease-in-out infinite;
+            }
+
+            .qa-sidebar-author-curtain {
+                position: absolute;
+                top: -10%;
+                bottom: -10%;
+                width: 54%;
+                z-index: 2;
+                background: linear-gradient(180deg, #fb923c 0%, #ea580c 42%, #7c2d12 100%);
+                box-shadow: inset -10px 0 18px rgba(124, 45, 18, 0.34);
+            }
+
+            .qa-sidebar-author-curtain::after {
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: repeating-linear-gradient(
+                    90deg,
+                    rgba(255, 255, 255, 0.14) 0,
+                    rgba(255, 255, 255, 0.14) 6px,
+                    transparent 6px,
+                    transparent 18px
+                );
+                opacity: 0.36;
+            }
+
+            .qa-sidebar-author-curtain--left {
+                left: -5%;
+                border-radius: 20px 0 0 20px;
+                animation: qaCurtainLeft 1.2s cubic-bezier(0.66, 0, 0.2, 1) forwards;
+            }
+
+            .qa-sidebar-author-curtain--right {
+                right: -5%;
+                border-radius: 0 20px 20px 0;
+                box-shadow: inset 10px 0 18px rgba(124, 45, 18, 0.34);
+                animation: qaCurtainRight 1.2s cubic-bezier(0.66, 0, 0.2, 1) forwards;
+            }
+
+            .qa-sidebar-author-stage-copy {
+                position: relative;
+                z-index: 1;
+                text-align: center;
+                margin-bottom: 10px;
+            }
+
+            .qa-sidebar-author-kicker {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.16em;
+                color: rgba(250, 204, 21, 0.92);
+                font-weight: 800;
+                margin-bottom: 6px;
+            }
+
+            .qa-sidebar-author-stage-title {
+                color: #f8fafc;
+                font-size: 22px;
+                line-height: 1.1;
+                font-weight: 900;
+                margin-bottom: 6px;
+            }
+
+            .qa-sidebar-author-stage-subtitle {
+                color: rgba(226, 232, 240, 0.88);
+                font-size: 12px;
+                line-height: 1.6;
+            }
+
+            .qa-sidebar-author-avatar-shell {
+                position: relative;
+                z-index: 3;
+                width: 92px;
+                height: 92px;
+                margin: 0 auto 14px;
+                padding: 3px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, #facc15 0%, #fb7185 100%);
+                box-shadow: 0 18px 28px rgba(15, 23, 42, 0.26);
+                animation: qaCaptainPop 1.12s 0.4s both;
+            }
+
+            .qa-sidebar-author-avatar {
+                width: 100%;
+                height: 100%;
+                display: block;
+                object-fit: cover;
+                border-radius: 999px;
+                border: 2px solid rgba(255, 255, 255, 0.72);
+                background: #ffffff;
+            }
+
+            .qa-sidebar-author-avatar-fallback {
+                width: 100%;
+                height: 100%;
+                border-radius: 999px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+                color: #9a3412;
+                font-size: 28px;
+                font-weight: 900;
+                border: 2px solid rgba(255, 255, 255, 0.72);
+            }
+
+            .qa-sidebar-author-ribbon {
+                position: absolute;
+                left: 50%;
+                bottom: -10px;
+                transform: translateX(-50%);
+                white-space: nowrap;
+                background: rgba(8, 15, 29, 0.88);
+                border: 1px solid rgba(250, 204, 21, 0.28);
+                color: #fef3c7;
+                padding: 4px 10px;
+                border-radius: 999px;
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: 0.04em;
+                animation: qaRibbonFloat 3.4s ease-in-out infinite;
+            }
+
+            .qa-sidebar-author-copy {
+                position: relative;
+                z-index: 1;
+                text-align: center;
+            }
+
+            .qa-sidebar-author-name {
+                color: #f8fafc;
+                font-size: 19px;
+                font-weight: 900;
+                margin-bottom: 4px;
+            }
+
+            .qa-sidebar-author-title {
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 6px 12px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, rgba(250, 204, 21, 0.16), rgba(248, 113, 113, 0.18));
+                color: #fde68a;
+                font-size: 11px;
+                font-weight: 800;
+                margin-bottom: 10px;
+                border: 1px solid rgba(250, 204, 21, 0.20);
+            }
+
+            .qa-sidebar-author-description {
+                color: rgba(226, 232, 240, 0.90);
+                font-size: 12px;
+                line-height: 1.75;
+                margin-bottom: 12px;
+            }
+
+            .qa-sidebar-author-chip-row {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 7px;
+                justify-content: center;
+            }
+
+            .qa-sidebar-author-chip {
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.14);
+                color: #e2e8f0;
+                border-radius: 999px;
+                padding: 5px 10px;
+                font-size: 10px;
+                font-weight: 700;
+                backdrop-filter: blur(8px);
+            }
+
+            .qa-sidebar-author-card-stack {
+                display: grid;
+                gap: 10px;
+                margin-bottom: 12px;
+            }
+
+            .qa-sidebar-author-link-card {
+                position: relative;
+                display: flex;
+                align-items: flex-start;
+                gap: 12px;
+                padding: 13px 14px;
+                border-radius: 18px;
+                text-decoration: none;
+                color: #e2e8f0 !important;
+                background: linear-gradient(135deg, rgba(15, 23, 42, 0.90), rgba(30, 41, 59, 0.94));
+                border: 1px solid rgba(148, 163, 184, 0.18);
+                box-shadow: 0 12px 22px rgba(15, 23, 42, 0.18);
+                overflow: hidden;
+                transition: transform 0.24s ease, box-shadow 0.24s ease, border-color 0.24s ease;
+            }
+
+            .qa-sidebar-author-link-card::before {
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: linear-gradient(135deg, var(--card-glow), transparent 55%);
+                opacity: 0.95;
+                pointer-events: none;
+            }
+
+            .qa-sidebar-author-link-card::after {
+                content: "";
+                position: absolute;
+                top: 12px;
+                bottom: 12px;
+                left: 0;
+                width: 4px;
+                border-radius: 999px;
+                background: var(--card-accent);
+                box-shadow: 0 0 18px var(--card-glow);
+            }
+
+            .qa-sidebar-author-link-card:hover {
+                transform: translateY(-3px) scale(1.01);
+                border-color: rgba(250, 204, 21, 0.28);
+                box-shadow: 0 18px 28px rgba(15, 23, 42, 0.26);
+            }
+
+            .qa-sidebar-author-link-icon {
+                position: relative;
+                z-index: 1;
+                width: 42px;
+                height: 42px;
+                border-radius: 14px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 18px;
+                font-weight: 900;
+                background: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+                flex: 0 0 auto;
+            }
+
+            .qa-sidebar-author-link-body {
+                position: relative;
+                z-index: 1;
+                min-width: 0;
+                flex: 1;
+            }
+
+            .qa-sidebar-author-link-title {
+                color: #f8fafc;
+                font-size: 14px;
+                font-weight: 800;
+                margin-bottom: 4px;
+            }
+
+            .qa-sidebar-author-link-meta {
+                color: rgba(226, 232, 240, 0.76);
+                font-size: 11px;
+                line-height: 1.6;
+                margin-bottom: 8px;
+            }
+
+            .qa-sidebar-author-link-cta {
+                color: var(--card-accent);
+                font-size: 11px;
+                font-weight: 800;
+                letter-spacing: 0.03em;
+            }
+
+            .qa-sidebar-author-drawer-note {
+                color: #64748b;
+                font-size: 12px;
+                line-height: 1.7;
+                margin-bottom: 10px;
+            }
+
+            .qa-sidebar-author-mini-grid {
+                display: grid;
+                gap: 8px;
+                margin-top: 10px;
+            }
+
+            .qa-sidebar-author-mini-card {
+                display: block;
+                text-decoration: none;
+                color: #0f172a !important;
+                border-radius: 14px;
+                padding: 11px 12px;
+                background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%);
+                border: 1px solid rgba(251, 146, 60, 0.18);
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+            }
+
+            .qa-sidebar-author-mini-card:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 10px 18px rgba(249, 115, 22, 0.12);
+            }
+
+            .qa-sidebar-author-mini-card strong {
+                display: block;
+                font-size: 12px;
+                margin-bottom: 3px;
+            }
+
+            .qa-sidebar-author-mini-card span {
+                display: block;
+                font-size: 11px;
+                color: #475569;
+                line-height: 1.5;
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    def _build_sidebar_compact_showcase_html(self):
+        avatar_uri = self._image_to_data_uri("csdn_profile.jpg")
+        avatar_markup = (
+            f'<img src="{avatar_uri}" alt="作者头像" class="qa-sidebar-author-avatar" />'
+            if avatar_uri
+            else '<div class="qa-sidebar-author-avatar-fallback">L</div>'
+        )
+        chips_html = "".join(
+            f'<span class="qa-sidebar-author-chip">{skill}</span>'
+            for skill in self.author_info["skills"][:4]
+        )
+
+        return f"""
+        <div class="qa-sidebar-author-showcase">
+            <div class="qa-sidebar-author-glow"></div>
+            <div class="qa-sidebar-author-curtain qa-sidebar-author-curtain--left"></div>
+            <div class="qa-sidebar-author-curtain qa-sidebar-author-curtain--right"></div>
+            <div class="qa-sidebar-author-stage-copy">
+                <div class="qa-sidebar-author-kicker">Author Deck</div>
+                <div class="qa-sidebar-author-stage-title">开门见山</div>
+                <div class="qa-sidebar-author-stage-subtitle">侧边栏改成了更像舞台入口的作者名片，信息更直给，交互更轻。</div>
+            </div>
+            <div class="qa-sidebar-author-avatar-shell">
+                {avatar_markup}
+                <div class="qa-sidebar-author-ribbon">冒险模式开启</div>
+            </div>
+            <div class="qa-sidebar-author-copy">
+                <div class="qa-sidebar-author-name">{self.author_info['name']}</div>
+                <div class="qa-sidebar-author-title">航海风技术卡片 · {self.author_info['title']}</div>
+                <div class="qa-sidebar-author-description">{self.author_info['description']}</div>
+                <div class="qa-sidebar-author-chip-row">{chips_html}</div>
+            </div>
+        </div>
+        """
+
+    def _build_sidebar_compact_link_cards_html(self):
+        cards = [
+            {
+                "title": "CSDN 专栏",
+                "meta": "工具拆解、AI 测试开发、实战教程",
+                "cta": "点击进入专栏",
+                "icon": "📚",
+                "href": self.author_info["csdn_url"],
+                "accent": "#fb7185",
+                "glow": "rgba(251, 113, 133, 0.22)",
+            },
+            {
+                "title": "GitHub 仓库",
+                "meta": "开源项目、更新记录、Issue 协作",
+                "cta": "查看仓库动态",
+                "icon": "⚙",
+                "href": self.author_info["github_url"],
+                "accent": "#38bdf8",
+                "glow": "rgba(56, 189, 248, 0.20)",
+            },
+            {
+                "title": "GitCode 镜像",
+                "meta": "国内访问更顺手，适合快速拉代码",
+                "cta": "打开国内镜像",
+                "icon": "🧩",
+                "href": self.author_info["gitcode_url"],
+                "accent": "#f97316",
+                "glow": "rgba(249, 115, 22, 0.22)",
+            },
+            {
+                "title": "公众号专栏",
+                "meta": "精选合集、工具复盘、测试方法论",
+                "cta": "点击查看文章集",
+                "icon": "📡",
+                "href": self.author_info["wechat_url"],
+                "accent": "#2dd4bf",
+                "glow": "rgba(45, 212, 191, 0.22)",
+            },
+        ]
+
+        cards_html = "".join(
+            f"""
+            <a class="qa-sidebar-author-link-card"
+               href="{card['href']}"
+               target="_blank"
+               rel="noopener noreferrer"
+               style="--card-accent: {card['accent']}; --card-glow: {card['glow']};">
+                <div class="qa-sidebar-author-link-icon">{card['icon']}</div>
+                <div class="qa-sidebar-author-link-body">
+                    <div class="qa-sidebar-author-link-title">{card['title']}</div>
+                    <div class="qa-sidebar-author-link-meta">{card['meta']}</div>
+                    <div class="qa-sidebar-author-link-cta">{card['cta']} →</div>
+                </div>
+            </a>
+            """
+            for card in cards
+        )
+        return f'<div class="qa-sidebar-author-card-stack">{cards_html}</div>'
+
+    def _build_sidebar_compact_component_html(self):
+        avatar_uri = self._image_to_data_uri("csdn_profile.jpg")
+        avatar_html = (
+            f'<img src="{avatar_uri}" alt="作者头像" class="hero-avatar" />'
+            if avatar_uri
+            else '<div class="hero-avatar hero-avatar-fallback">L</div>'
+        )
+        hero_gif_url = self.author_info.get("sidebar_hero_gif_url", "").strip()
+        hero_visual_html = (
+            f'<img src="{hero_gif_url}" alt="路飞跳动动图" class="hero-luffy" />'
+            if hero_gif_url
+            else avatar_html
+        )
+        logo_uris = {
+            "CSDN 专栏": self._image_to_data_uri("brand_csdn.ico"),
+            "GitHub 仓库": self._image_to_data_uri("brand_github.png"),
+            "GitCode 镜像": self._image_to_data_uri("brand_gitcode.png"),
+        }
+
+        cards = [
+            {
+                "title": "CSDN 专栏",
+                "desc": "文章与实践总结。",
+                "cta": "阅读文章",
+                "href": self.author_info["csdn_url"],
+                "accent": "#fb7185",
+                "glow": "rgba(251, 113, 133, 0.24)",
+            },
+            {
+                "title": "GitHub 仓库",
+                "desc": "源码、迭代与协作记录。",
+                "cta": "查看源码",
+                "href": self.author_info["github_url"],
+                "accent": "#38bdf8",
+                "glow": "rgba(56, 189, 248, 0.24)",
+            },
+            {
+                "title": "GitCode 镜像",
+                "desc": "国内访问更稳的镜像仓库。",
+                "cta": "访问镜像",
+                "href": self.author_info["gitcode_url"],
+                "accent": "#f97316",
+                "glow": "rgba(249, 115, 22, 0.24)",
+            },
+        ]
+        cards_html = "".join(
+            f"""
+            <a class="deck-card" href="{card['href']}" target="_blank" rel="noopener noreferrer"
+               style="--accent:{card['accent']};--glow:{card['glow']};">
+                <div class="deck-card__icon">
+                    <img src="{logo_uris.get(card['title'], '')}" alt="{card['title']} 图标" class="deck-card__logo" />
+                </div>
+                <div class="deck-card__body">
+                    <div class="deck-card__title">{card['title']}</div>
+                    <div class="deck-card__desc">{card['desc']}</div>
+                    <div class="deck-card__cta">{card['cta']} →</div>
+                </div>
+            </a>
+            """
+            for card in cards
+        )
+
+        skill_html = "".join(
+            f'<span class="skill-chip">{skill}</span>'
+            for skill in self.author_info["skills"][:4]
+        )
+
+        return f"""
+        <!doctype html>
+        <html lang="zh-CN">
+        <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <style>
+            * {{ box-sizing: border-box; }}
+            body {{
+                margin: 0;
+                font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+                background: transparent;
+                color: #e2e8f0;
+            }}
+            @keyframes curtainLeft {{
+                0% {{ transform: translateX(0) skewY(0deg); }}
+                100% {{ transform: translateX(-118%) skewY(-7deg); }}
+            }}
+            @keyframes curtainRight {{
+                0% {{ transform: translateX(0) skewY(0deg); }}
+                100% {{ transform: translateX(118%) skewY(7deg); }}
+            }}
+            @keyframes captainPop {{
+                0% {{ opacity: 0; transform: translateY(18px) scale(.76) rotate(-11deg); }}
+                65% {{ opacity: 1; transform: translateY(-4px) scale(1.04) rotate(2deg); }}
+                100% {{ opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }}
+            }}
+            @keyframes glowDrift {{
+                0%, 100% {{ transform: translate3d(0,0,0) scale(1); }}
+                50% {{ transform: translate3d(7px,-10px,0) scale(1.05); }}
+            }}
+            @keyframes ribbonFloat {{
+                0%, 100% {{ transform: translateX(-50%) translateY(0); }}
+                50% {{ transform: translateX(-50%) translateY(-3px); }}
+            }}
+            @keyframes heroFloat {{
+                0%, 100% {{ transform: translateY(0px); }}
+                50% {{ transform: translateY(-5px); }}
+            }}
+            .author-deck {{
+                position: relative;
+                overflow: hidden;
+                border-radius: 26px;
+                padding: 18px 16px 16px;
+                background:
+                    radial-gradient(circle at 16% 15%, rgba(250, 204, 21, .26), transparent 28%),
+                    radial-gradient(circle at 84% 14%, rgba(45, 212, 191, .18), transparent 22%),
+                    linear-gradient(160deg, #071427 0%, #13294b 48%, #09111f 100%);
+                border: 1px solid rgba(250, 204, 21, .18);
+                box-shadow: 0 18px 36px rgba(7, 20, 39, .34);
+            }}
+            .author-deck::before {{
+                content: "";
+                position: absolute;
+                inset: 10px;
+                border: 1px solid rgba(255,255,255,.10);
+                border-radius: 22px;
+                pointer-events: none;
+            }}
+            .glow {{
+                position: absolute;
+                left: 20px;
+                bottom: 18px;
+                width: 94px;
+                height: 94px;
+                border-radius: 999px;
+                background: radial-gradient(circle, rgba(250, 204, 21, .34), rgba(250, 204, 21, 0));
+                filter: blur(8px);
+                animation: glowDrift 4.2s ease-in-out infinite;
+            }}
+            .curtain {{
+                position: absolute;
+                top: -8%;
+                bottom: -8%;
+                width: 54%;
+                z-index: 2;
+                background: linear-gradient(180deg, #fb923c 0%, #ea580c 44%, #7c2d12 100%);
+            }}
+            .curtain::after {{
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: repeating-linear-gradient(
+                    90deg,
+                    rgba(255,255,255,.14) 0,
+                    rgba(255,255,255,.14) 6px,
+                    transparent 6px,
+                    transparent 18px
+                );
+                opacity: .36;
+            }}
+            .curtain--left {{
+                left: -6%;
+                border-radius: 22px 0 0 22px;
+                box-shadow: inset -12px 0 20px rgba(124,45,18,.30);
+                animation: curtainLeft 1.16s cubic-bezier(.66,0,.2,1) forwards;
+            }}
+            .curtain--right {{
+                right: -6%;
+                border-radius: 0 22px 22px 0;
+                box-shadow: inset 12px 0 20px rgba(124,45,18,.30);
+                animation: curtainRight 1.16s cubic-bezier(.66,0,.2,1) forwards;
+            }}
+            .deck-copy {{
+                position: relative;
+                z-index: 1;
+                text-align: center;
+                margin-bottom: 12px;
+            }}
+            .deck-kicker {{
+                font-size: 11px;
+                letter-spacing: .22em;
+                text-transform: uppercase;
+                color: rgba(250, 204, 21, .94);
+                font-weight: 800;
+                margin-bottom: 6px;
+            }}
+            .deck-title {{
+                font-size: 22px;
+                font-weight: 900;
+                line-height: 1.1;
+                color: #f8fafc;
+                margin-bottom: 8px;
+            }}
+            .deck-subtitle {{
+                font-size: 12px;
+                line-height: 1.75;
+                color: rgba(226, 232, 240, .84);
+                max-width: 250px;
+                margin: 0 auto;
+            }}
+            .hero-shell {{
+                position: relative;
+                z-index: 3;
+                width: 126px;
+                height: 126px;
+                margin: 0 auto 16px;
+                padding: 3px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, #facc15 0%, #fb7185 100%);
+                box-shadow: 0 18px 28px rgba(15, 23, 42, .26);
+                animation: captainPop 1.08s .35s both, heroFloat 4.6s 1.2s ease-in-out infinite;
+                overflow: visible;
+            }}
+            .hero-avatar {{
+                width: 100%;
+                height: 100%;
+                border-radius: 999px;
+                object-fit: cover;
+                display: block;
+                border: 2px solid rgba(255,255,255,.72);
+                background: #fff;
+            }}
+            .hero-avatar-fallback {{
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 30px;
+                font-weight: 900;
+                color: #9a3412;
+                background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
+            }}
+            .hero-luffy {{
+                width: 100%;
+                height: 100%;
+                border-radius: 999px;
+                object-fit: cover;
+                display: block;
+                border: 2px solid rgba(255,255,255,.72);
+                background: radial-gradient(circle at 50% 40%, #fff7ed 0%, #ffedd5 58%, #fdba74 100%);
+                box-shadow: inset 0 0 18px rgba(255,255,255,.18);
+            }}
+            .hero-ribbon {{
+                position: absolute;
+                left: 50%;
+                bottom: -10px;
+                transform: translateX(-50%);
+                white-space: nowrap;
+                padding: 4px 10px;
+                border-radius: 999px;
+                background: rgba(8, 15, 29, .88);
+                border: 1px solid rgba(250, 204, 21, .28);
+                color: #fef3c7;
+                font-size: 10px;
+                font-weight: 800;
+                letter-spacing: .04em;
+                animation: ribbonFloat 3.4s ease-in-out infinite;
+            }}
+            .identity {{
+                position: relative;
+                z-index: 1;
+                text-align: center;
+            }}
+            .identity-name {{
+                font-size: 20px;
+                font-weight: 900;
+                color: #f8fafc;
+                margin-bottom: 4px;
+            }}
+            .identity-summary {{
+                font-size: 11px;
+                line-height: 1.7;
+                color: rgba(191, 219, 254, .84);
+                max-width: 250px;
+                margin: 0 auto 8px;
+            }}
+            .identity-role {{
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                gap: 6px;
+                padding: 6px 12px;
+                border-radius: 999px;
+                background: linear-gradient(135deg, rgba(250, 204, 21, .16), rgba(248, 113, 113, .18));
+                color: #fde68a;
+                font-size: 11px;
+                font-weight: 800;
+                border: 1px solid rgba(250, 204, 21, .18);
+                margin-bottom: 10px;
+            }}
+            .identity-text {{
+                font-size: 12px;
+                line-height: 1.82;
+                color: rgba(226, 232, 240, .9);
+                margin: 0 auto 12px;
+                max-width: 252px;
+            }}
+            .skill-row {{
+                display: flex;
+                flex-wrap: wrap;
+                justify-content: center;
+                gap: 7px;
+                margin-bottom: 14px;
+            }}
+            .skill-chip {{
+                padding: 5px 10px;
+                border-radius: 999px;
+                font-size: 10px;
+                font-weight: 700;
+                color: #e2e8f0;
+                background: rgba(255,255,255,.10);
+                border: 1px solid rgba(255,255,255,.14);
+                backdrop-filter: blur(8px);
+            }}
+            .cards {{
+                display: grid;
+                gap: 8px;
+            }}
+            .deck-card {{
+                position: relative;
+                display: flex;
+                align-items: flex-start;
+                gap: 12px;
+                text-decoration: none;
+                color: inherit;
+                padding: 12px 13px;
+                border-radius: 18px;
+                background: linear-gradient(135deg, rgba(15, 23, 42, .92), rgba(30, 41, 59, .96));
+                border: 1px solid rgba(148, 163, 184, .18);
+                box-shadow: 0 12px 22px rgba(15, 23, 42, .18);
+                overflow: hidden;
+                transition: transform .24s ease, box-shadow .24s ease, border-color .24s ease, background .24s ease;
+            }}
+            .deck-card::before {{
+                content: "";
+                position: absolute;
+                inset: 0;
+                background: linear-gradient(135deg, var(--glow), transparent 56%);
+                opacity: .86;
+            }}
+            .deck-card::after {{
+                content: "";
+                position: absolute;
+                top: 12px;
+                bottom: 12px;
+                left: 0;
+                width: 4px;
+                border-radius: 999px;
+                background: var(--accent);
+                box-shadow: 0 0 18px var(--glow);
+            }}
+            .deck-card:hover {{
+                transform: translateY(-4px) scale(1.012);
+                box-shadow: 0 20px 30px rgba(15, 23, 42, .28);
+                border-color: rgba(250, 204, 21, .30);
+                background: linear-gradient(135deg, rgba(15, 23, 42, .96), rgba(37, 49, 71, .98));
+            }}
+            .deck-card__icon {{
+                position: relative;
+                z-index: 1;
+                width: 46px;
+                height: 46px;
+                flex: 0 0 auto;
+                border-radius: 16px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                background: rgba(255,255,255,.10);
+                border: 1px solid rgba(255,255,255,.12);
+                padding: 8px;
+                transition: transform .24s ease, background .24s ease, border-color .24s ease;
+            }}
+            .deck-card__logo {{
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+                display: block;
+                filter: drop-shadow(0 2px 8px rgba(15, 23, 42, .24));
+            }}
+            .deck-card:hover .deck-card__icon {{
+                transform: translateY(-2px) scale(1.05);
+                background: rgba(255,255,255,.14);
+                border-color: rgba(255,255,255,.20);
+            }}
+            .deck-card__body {{
+                position: relative;
+                z-index: 1;
+                min-width: 0;
+            }}
+            .deck-card__title {{
+                font-size: 14px;
+                font-weight: 800;
+                color: #f8fafc;
+                margin-bottom: 4px;
+            }}
+            .deck-card__desc {{
+                font-size: 10.5px;
+                line-height: 1.55;
+                color: rgba(226, 232, 240, .78);
+                margin-bottom: 7px;
+            }}
+            .deck-card__cta {{
+                font-size: 11px;
+                font-weight: 800;
+                color: var(--accent);
+                transition: transform .24s ease, letter-spacing .24s ease;
+            }}
+            .deck-card:hover .deck-card__cta {{
+                transform: translateX(2px);
+                letter-spacing: .02em;
+            }}
+        </style>
+        </head>
+        <body>
+            <div class="author-deck">
+                <div class="glow"></div>
+                <div class="curtain curtain--left"></div>
+                <div class="curtain curtain--right"></div>
+                <div class="deck-copy">
+                    <div class="deck-kicker">AUTHOR LINKS</div>
+                    <div class="deck-title">作者入口</div>
+                    <div class="deck-subtitle">文章、源码与镜像入口，直接点开就能看。</div>
+                </div>
+                <div class="hero-shell">
+                    {hero_visual_html}
+                    <div class="hero-ribbon">技术布道者</div>
+                </div>
+                <div class="identity">
+                    <div class="identity-name">{self.author_info['name']}</div>
+                    <div class="identity-summary">{self.author_info['description']}</div>
+                    <div class="identity-role">{self.author_info['sidebar_tagline']}</div>
+                    <div class="identity-text">
+                        {self.author_info['sidebar_story']}
+                    </div>
+                    <div class="skill-row">{skill_html}</div>
+                </div>
+                <div class="cards">
+                    {cards_html}
+                </div>
+            </div>
+        </body>
+        </html>
+        """
 
     def render_main_profile(self):
         """渲染底部作者介绍"""
@@ -492,52 +1435,18 @@ class AuthorProfile:
         st.markdown(self.styles, unsafe_allow_html=True)
         with st.sidebar:
             st.markdown("---")
-            st.markdown(
-                f"""
-                <div class="author-card" style="
-                    background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
-                    border: 1px solid #dbe4ff;
-                    border-radius: 18px;
-                    padding: 16px 16px 14px 16px;
-                    box-shadow: 0 10px 24px rgba(79, 70, 229, 0.10);
-                    margin-bottom: 14px;
-                ">
-                    <div style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
-                        关于作者
-                    </div>
-                    <div style="font-size: 18px; font-weight: 800; color: #1e293b; margin-bottom: 4px;">
-                        {self.author_info['name']}
-                    </div>
-                    <div style="font-size: 13px; color: #475569; line-height: 1.7; margin-bottom: 10px;">
-                        {self.author_info['description']}
-                    </div>
-                    <div style="display:flex;flex-wrap:wrap;gap:6px;">
-                        {''.join(
-                            f"<span style='background:#ffffff;border:1px solid #dbe4ff;border-radius:999px;padding:4px 10px;font-size:11px;color:#334155;'>{skill}</span>"
-                            for skill in self.author_info['skills'][:4]
-                        )}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            components.html(self._build_sidebar_compact_component_html(), height=860, scrolling=False)
 
-            link_col1, link_col2 = st.columns(2)
-            with link_col1:
-                st.link_button("CSDN", self.author_info["csdn_url"], use_container_width=True)
-            with link_col2:
-                st.link_button("GitHub", self.author_info["github_url"], use_container_width=True)
-
-            with st.expander("公众号与更多资源", expanded=False):
-                st.caption("需要深入内容时再展开，默认不打断工具操作。")
+            with st.expander("扫码名片 / 更多资源", expanded=False):
                 wechat_image = self.load_image("wechat_qrcode.jpg")
                 if wechat_image:
                     st.image(wechat_image, width="stretch")
-                st.markdown(
-                    f"- 微信公众号：`{self.author_info['wechat_public']}`\n"
-                    f"- GitCode：{self.author_info['gitcode_url']}\n"
-                    f"- 微信文章：{self.author_info['wechat_url']}"
-                )
+                st.caption(f"公众号：{self.author_info['wechat_public']}")
+                action_col1, action_col2 = st.columns(2)
+                with action_col1:
+                    st.link_button("公众号合集", self.author_info["wechat_url"], use_container_width=True)
+                with action_col2:
+                    st.link_button("CSDN主页", self.author_info["csdn_url"], use_container_width=True)
 
     def _render_sidebar_wechat_card(self):
         """渲染侧边栏微信公众号卡片"""

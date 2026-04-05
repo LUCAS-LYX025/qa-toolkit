@@ -54,39 +54,49 @@ def _inject_styles() -> None:
             color: #ffffff;
         }
         .qa-tool-shell-empty {
-            border: 1px dashed rgba(100, 116, 139, 0.45);
+            border: 1px dashed rgba(250, 204, 21, 0.28);
             border-radius: 18px;
             padding: 20px 18px;
             margin: 14px 0;
-            background: linear-gradient(180deg, rgba(248, 250, 252, 0.9), rgba(241, 245, 249, 0.96));
+            background:
+                radial-gradient(circle at top right, rgba(250, 204, 21, 0.10), rgba(250, 204, 21, 0) 40%),
+                linear-gradient(145deg, rgba(247, 249, 253, 0.98), rgba(238, 243, 250, 0.98), rgba(247, 239, 223, 0.98));
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.88),
+                0 12px 22px rgba(7, 20, 39, 0.06);
         }
         .qa-tool-shell-empty h4 {
             margin: 0 0 8px;
             font-size: 1rem;
-            color: #0f172a;
+            color: #17324a;
         }
         .qa-tool-shell-empty p {
             margin: 0;
-            color: #475569;
+            color: #436176;
             line-height: 1.6;
             font-size: 0.92rem;
         }
         .qa-tool-shell-tips {
-            border-radius: 16px;
+            border-radius: 18px;
             padding: 14px 16px;
             margin: 8px 0 18px;
-            background: #f8fafc;
-            border: 1px solid rgba(148, 163, 184, 0.24);
+            background:
+                radial-gradient(circle at top right, rgba(250, 204, 21, 0.10), rgba(250, 204, 21, 0) 38%),
+                linear-gradient(145deg, rgba(247, 249, 253, 0.98), rgba(238, 243, 250, 0.98), rgba(247, 239, 223, 0.98));
+            border: 1px solid rgba(213, 220, 232, 0.96);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.88),
+                0 10px 20px rgba(7, 20, 39, 0.06);
         }
         .qa-tool-shell-tips strong {
             display: block;
             margin-bottom: 8px;
-            color: #0f172a;
+            color: #17324a;
         }
         .qa-tool-shell-tips ul {
             margin: 0;
             padding-left: 18px;
-            color: #334155;
+            color: #436176;
         }
         .qa-tool-shell-tips li {
             margin: 4px 0;
