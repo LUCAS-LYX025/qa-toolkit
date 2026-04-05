@@ -1,5 +1,7 @@
 import streamlit as st
 import datetime
+import html
+import re
 from qa_toolkit.config.constants import TOOL_CATEGORIES
 
 # === 留言反馈区域 ===
@@ -13,6 +15,71 @@ class FeedbackSection:
             st.session_state.user_feedbacks = []
         if 'feedback_count' not in st.session_state:
             st.session_state.feedback_count = 0
+
+    def render_tool_feedback_bar(self, tool_name):
+        """渲染贴近当前工具的轻量反馈入口。"""
+        st.markdown('<div id="tool-feedback-anchor"></div>', unsafe_allow_html=True)
+        st.markdown("---")
+
+        tool_feedback_count = len(
+            [fb for fb in st.session_state.user_feedbacks if fb.get("tool_name") == tool_name]
+        )
+        total_feedback_count = len(st.session_state.user_feedbacks)
+        tool_key = self._tool_key(tool_name)
+
+        st.markdown(
+            f"""
+            <div style="
+                background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+                border: 1px solid #dbe4ff;
+                border-radius: 18px;
+                padding: 18px 20px;
+                margin: 10px 0 14px 0;
+                box-shadow: 0 12px 28px rgba(79, 70, 229, 0.08);
+            ">
+                <div style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
+                    用户反馈
+                </div>
+                <div style="font-size: 18px; font-weight: 700; color: #1e293b; margin-bottom: 6px;">
+                    刚用完「{tool_name}」？给个快速反馈
+                </div>
+                <div style="font-size: 14px; color: #475569; line-height: 1.7;">
+                    详细表单改成弹出式，不再占一整段页面。当前工具已收到 {tool_feedback_count} 条反馈，全站累计 {total_feedback_count} 条。
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        action_col1, action_col2, action_col3, action_col4 = st.columns(4)
+        with action_col1:
+            if st.button("👍 有帮助", key=f"feedback_helpful_{tool_key}", use_container_width=True):
+                self._record_quick_feedback(tool_name, reaction="有帮助")
+        with action_col2:
+            with st.popover("👎 没帮助", use_container_width=True):
+                self._render_compact_feedback_form(
+                    tool_name=tool_name,
+                    default_mode="issue",
+                    form_key=f"feedback_issue_{tool_key}",
+                )
+        with action_col3:
+            with st.popover("💡 提建议", use_container_width=True):
+                self._render_compact_feedback_form(
+                    tool_name=tool_name,
+                    default_mode="suggestion",
+                    form_key=f"feedback_suggestion_{tool_key}",
+                )
+        with action_col4:
+            with st.popover("🕘 最近反馈", use_container_width=True):
+                recent_tool_feedbacks = [
+                    fb for fb in reversed(st.session_state.user_feedbacks) if fb.get("tool_name") == tool_name
+                ][:3]
+                if recent_tool_feedbacks:
+                    st.caption("只展示当前工具最近 3 条反馈。")
+                    for feedback in recent_tool_feedbacks:
+                        self._render_feedback_card(feedback, compact=True)
+                else:
+                    st.caption("当前工具还没有反馈记录。")
 
     def render_feedback_section(self):
         """渲染完整的留言反馈区域"""
@@ -107,15 +174,85 @@ class FeedbackSection:
                 if submitted:
                     self._handle_feedback_submission(feedback_type, urgency, rating, feedback_content, nickname)
 
-    def _handle_feedback_submission(self, feedback_type, urgency, rating, content, nickname):
+    def _render_compact_feedback_form(self, tool_name, default_mode, form_key):
+        mode = default_mode
+        default_type = "问题反馈" if mode == "issue" else "功能建议"
+        default_rating = 2 if mode == "issue" else 4
+        placeholder = (
+            "哪里不符合预期？最好附上操作步骤、输入示例和期望结果。"
+            if mode == "issue"
+            else "希望新增什么能力？用在什么场景？"
+        )
+
+        st.caption(f"当前工具: `{tool_name}`，提交时间和工具名会自动记录。")
+        with st.form(key=form_key):
+            col1, col2 = st.columns(2)
+            with col1:
+                feedback_type = st.selectbox(
+                    "反馈类型",
+                    ["功能建议", "问题反馈", "体验优化", "新工具需求", "其他"],
+                    index=["功能建议", "问题反馈", "体验优化", "新工具需求", "其他"].index(default_type),
+                    key=f"{form_key}_type",
+                )
+                nickname = st.text_input("昵称（可选）", placeholder="匿名也可以", key=f"{form_key}_nickname")
+            with col2:
+                urgency = st.radio(
+                    "紧急程度",
+                    ["一般", "重要", "紧急"],
+                    horizontal=True,
+                    key=f"{form_key}_urgency",
+                )
+                rating = st.slider("当前满意度", 1, 5, default_rating, key=f"{form_key}_rating")
+
+            feedback_content = st.text_area(
+                "反馈内容",
+                height=140,
+                placeholder=placeholder,
+                key=f"{form_key}_content",
+            )
+
+            submitted = st.form_submit_button("提交反馈", use_container_width=True)
+
+            if submitted:
+                self._handle_feedback_submission(
+                    feedback_type,
+                    urgency,
+                    rating,
+                    feedback_content,
+                    nickname,
+                    tool_name=tool_name,
+                    source="compact_popover",
+                )
+
+    def _tool_key(self, tool_name):
+        return re.sub(r"\W+", "_", tool_name).strip("_").lower() or "tool"
+
+    def _record_quick_feedback(self, tool_name, reaction):
+        feedback_record = {
+            'id': st.session_state.feedback_count + 1,
+            'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            'type': "快速反馈",
+            'urgency': "一般",
+            'rating': 5 if reaction == "有帮助" else 2,
+            'content': f"用户对「{tool_name}」给出快速反馈：{reaction}",
+            'nickname': "匿名用户",
+            'tool_name': tool_name,
+            'source': "quick_action",
+            'reaction': reaction,
+        }
+        st.session_state.user_feedbacks.append(feedback_record)
+        st.session_state.feedback_count += 1
+        st.success(f"已记录：{reaction}。后续会优先优化「{tool_name}」相关体验。")
+
+    def _handle_feedback_submission(self, feedback_type, urgency, rating, content, nickname, tool_name=None, source="full_page"):
         """处理反馈提交"""
         if not content.strip():
             st.error("❌ 请填写反馈内容")
-            return
+            return False
 
         if not rating:
             st.error("❌ 请选择满意度评分")
-            return
+            return False
 
         # 创建反馈记录
         feedback_record = {
@@ -125,7 +262,9 @@ class FeedbackSection:
             'urgency': urgency,
             'rating': rating,
             'content': content,
-            'nickname': nickname or "匿名用户"
+            'nickname': nickname or "匿名用户",
+            'tool_name': tool_name,
+            'source': source,
         }
 
         # 添加到反馈列表
@@ -142,11 +281,13 @@ class FeedbackSection:
         st.info(f"""
         **反馈摘要：**
         - 类型：{feedback_type}
+        - 工具：{tool_name or '全局反馈'}
         - 紧急程度：{urgency}
         - 满意度：{rating}/5 分
         - 内容长度：{len(content)} 字符
         - 提交时间：{feedback_record['timestamp']}
         """)
+        return True
 
     def _render_feedback_history(self):
         """渲染历史反馈记录"""
@@ -201,7 +342,7 @@ class FeedbackSection:
 
         return filtered_feedbacks
 
-    def _render_feedback_card(self, feedback):
+    def _render_feedback_card(self, feedback, compact=False):
         """渲染单个反馈卡片"""
         # 根据紧急程度设置颜色
         urgency_color = {
@@ -212,6 +353,14 @@ class FeedbackSection:
 
         # 根据评分设置星星
         stars = "⭐" * feedback['rating'] + "☆" * (5 - feedback['rating'])
+        tool_badge = f" · {feedback['tool_name']}" if feedback.get("tool_name") else ""
+        content = feedback['content']
+        if compact and len(content) > 120:
+            content = content[:117] + "..."
+        nickname = html.escape(str(feedback['nickname']))
+        meta_text = html.escape(f"{feedback['type']}{tool_badge} · {feedback['urgency']}")
+        safe_content = html.escape(str(content))
+        safe_timestamp = html.escape(str(feedback['timestamp']))
 
         with st.container():
             st.markdown(f"""
@@ -225,17 +374,17 @@ class FeedbackSection:
             '>
                 <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;'>
                     <div>
-                        <strong>{feedback['nickname']}</strong>
+                        <strong>{nickname}</strong>
                         <span style='color: {urgency_color}; font-size: 0.9em; margin-left: 10px;'>
-                            {feedback['type']} · {feedback['urgency']}
+                            {meta_text}
                         </span>
                     </div>
                     <div style='color: #718096; font-size: 0.8em;'>
-                        {feedback['timestamp']}
+                        {safe_timestamp}
                     </div>
                 </div>
                 <div style='color: #4a5568; margin-bottom: 10px;'>
-                    {feedback['content']}
+                    {safe_content}
                 </div>
                 <div style='color: #d69e2e; font-size: 0.9em;'>
                     {stars} ({feedback['rating']}/5)

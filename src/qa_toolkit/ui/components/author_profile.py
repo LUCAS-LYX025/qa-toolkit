@@ -487,6 +487,58 @@ class AuthorProfile:
             self._render_sidebar_csdn_card()
             self._render_sidebar_links()
 
+    def render_sidebar_compact_profile(self):
+        """渲染更轻量的侧边栏作者卡，避免抢占工具主流程。"""
+        st.markdown(self.styles, unsafe_allow_html=True)
+        with st.sidebar:
+            st.markdown("---")
+            st.markdown(
+                f"""
+                <div class="author-card" style="
+                    background: linear-gradient(135deg, #f8fafc 0%, #eef2ff 100%);
+                    border: 1px solid #dbe4ff;
+                    border-radius: 18px;
+                    padding: 16px 16px 14px 16px;
+                    box-shadow: 0 10px 24px rgba(79, 70, 229, 0.10);
+                    margin-bottom: 14px;
+                ">
+                    <div style="font-size: 12px; font-weight: 700; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
+                        关于作者
+                    </div>
+                    <div style="font-size: 18px; font-weight: 800; color: #1e293b; margin-bottom: 4px;">
+                        {self.author_info['name']}
+                    </div>
+                    <div style="font-size: 13px; color: #475569; line-height: 1.7; margin-bottom: 10px;">
+                        {self.author_info['description']}
+                    </div>
+                    <div style="display:flex;flex-wrap:wrap;gap:6px;">
+                        {''.join(
+                            f"<span style='background:#ffffff;border:1px solid #dbe4ff;border-radius:999px;padding:4px 10px;font-size:11px;color:#334155;'>{skill}</span>"
+                            for skill in self.author_info['skills'][:4]
+                        )}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            link_col1, link_col2 = st.columns(2)
+            with link_col1:
+                st.link_button("CSDN", self.author_info["csdn_url"], use_container_width=True)
+            with link_col2:
+                st.link_button("GitHub", self.author_info["github_url"], use_container_width=True)
+
+            with st.expander("公众号与更多资源", expanded=False):
+                st.caption("需要深入内容时再展开，默认不打断工具操作。")
+                wechat_image = self.load_image("wechat_qrcode.jpg")
+                if wechat_image:
+                    st.image(wechat_image, width="stretch")
+                st.markdown(
+                    f"- 微信公众号：`{self.author_info['wechat_public']}`\n"
+                    f"- GitCode：{self.author_info['gitcode_url']}\n"
+                    f"- 微信文章：{self.author_info['wechat_url']}"
+                )
+
     def _render_sidebar_wechat_card(self):
         """渲染侧边栏微信公众号卡片"""
         st.markdown("""
