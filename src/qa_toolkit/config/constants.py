@@ -597,7 +597,7 @@ TOOL_CATEGORIES = {
     },
     "文本对比工具": {
         "icon": "🔍",
-        "description": "文本差异比较、版本对比分析",
+        "description": "文本差异比较、规范化对比、Diff 导出",
         "color": "#ed8936"
     },
     "字数统计工具": {

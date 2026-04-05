@@ -19,6 +19,7 @@ class TestCaseGenerator:
     """
     测试用例生成器 - 统一封装多个AI平台的测试用例生成API
     """
+    __test__ = False
 
     def __init__(self):
         self.supported_platforms = {
@@ -711,13 +712,18 @@ class TestCaseGenerator:
         role_keywords = ["用户", "管理员", "访客", "运营", "审核", "商家", "客服", "测试人员", "开发人员"]
 
         feature_points = []
-        for line in lines:
+        candidates = lines + sentences
+        for line in candidates:
             if re.match(r"^[-*•\d一二三四五六七八九十]", line) or any(keyword in line for keyword in feature_keywords):
-                feature_points.append(line)
+                if line not in feature_points:
+                    feature_points.append(line)
         if not feature_points:
             feature_points = sentences[:5]
 
-        business_rules = [line for line in lines if any(keyword in line for keyword in rule_keywords)]
+        business_rules = []
+        for line in candidates:
+            if any(keyword in line for keyword in rule_keywords) and line not in business_rules:
+                business_rules.append(line)
         roles = []
         for role in role_keywords:
             if role in cleaned and role not in roles:
@@ -733,7 +739,7 @@ class TestCaseGenerator:
         if not any(keyword in cleaned for keyword in ["状态", "流程", "完成后", "提交后", "回调", "审批"]):
             unclear_points.append("未明确状态流转、前后置动作或处理时机")
 
-        complexity_score = len(feature_points) + len(business_rules) + len(roles)
+        complexity_score = len(feature_points) + len(sentences) + len(business_rules) * 2 + len(roles) * 2
         if complexity_score >= 10:
             complexity = "高"
         elif complexity_score >= 5:

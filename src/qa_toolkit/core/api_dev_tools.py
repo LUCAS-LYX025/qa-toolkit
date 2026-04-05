@@ -1354,7 +1354,20 @@ if __name__ == "__main__":
     def _is_auth_related(self, interface: Dict[str, Any]) -> bool:
         headers = interface.get("headers") or {}
         auth_keywords = ("authorization", "token", "api-key", "apikey", "x-auth", "access-key")
-        return any(any(keyword in str(key).lower() for keyword in auth_keywords) for key in headers.keys())
+        if any(any(keyword in str(key).lower() for keyword in auth_keywords) for key in headers.keys()):
+            return True
+
+        auth_text_keywords = ("auth", "login", "logout", "token", "signin", "sign-in", "鉴权", "登录", "认证")
+        candidates = [
+            interface.get("name"),
+            interface.get("path"),
+            interface.get("description"),
+            " ".join(interface.get("tags") or []),
+        ]
+        return any(
+            any(keyword in str(candidate or "").lower() for keyword in auth_text_keywords)
+            for candidate in candidates
+        )
 
     def _has_pagination_hint(self, interface: Dict[str, Any]) -> bool:
         query_params = interface.get("query_params") or {}
