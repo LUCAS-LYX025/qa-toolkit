@@ -23,6 +23,8 @@ RAW_FORMAT_MAP = {
 }
 MOBSF_LOCAL_PROFILE_PATH = Path(__file__).resolve().parents[4] / "workspace" / "mobsf_profile.local.json"
 DEFAULT_STATE = {
+    "app_sec_active_top_tab": "API 文档安全",
+    "app_sec_mobile_active_tab": "本地静态扫描",
     "api_sec_interfaces": [],
     "api_sec_source_name": "",
     "api_sec_source_type": "",
@@ -2754,10 +2756,16 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
 
 
 def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
-    mobile_tab1, mobile_tab2 = st.tabs(["本地静态扫描", "MobSF 集成"])
-    with mobile_tab1:
+    active_mobile_tab = st.radio(
+        "移动安全视图",
+        ["本地静态扫描", "MobSF 集成"],
+        key="app_sec_mobile_active_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+    if active_mobile_tab == "本地静态扫描":
         _render_local_mobile_security_tab(app_tool)
-    with mobile_tab2:
+    else:
         _render_mobsf_mobile_security_tab(app_tool)
 
 
@@ -2933,9 +2941,15 @@ def render_api_security_test_page():
         tips=["默认坚持低风险探测", "适合授权环境", "自动发现后仍建议人工复核"],
         eyebrow="页面向导",
     )
-    tab_api, tab_mobile, tab_web = st.tabs(["API 文档安全", "移动包 / MobSF", "Web 站点 URL"])
+    active_top_tab = st.radio(
+        "应用安全视图",
+        ["API 文档安全", "移动包 / MobSF", "Web 站点 URL"],
+        key="app_sec_active_top_tab",
+        horizontal=True,
+        label_visibility="collapsed",
+    )
 
-    with tab_api:
+    if active_top_tab == "API 文档安全":
         _render_source_section(core)
         interfaces = st.session_state.get("api_sec_interfaces", [])
         if not interfaces:
@@ -2949,8 +2963,7 @@ def render_api_security_test_page():
             _render_action_bar(tool, interfaces)
             _render_results(tool)
 
-    with tab_mobile:
+    elif active_top_tab == "移动包 / MobSF":
         _render_mobile_security_tab(app_tool)
-
-    with tab_web:
+    else:
         _render_web_security_tab(app_tool)
