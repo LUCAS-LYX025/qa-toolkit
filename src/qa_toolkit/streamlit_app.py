@@ -1,4 +1,5 @@
 from PIL import Image
+from importlib import import_module
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import codecs
 import datetime
 import hashlib
 import hmac
+import traceback
 import zipfile
 import pandas as pd
 import streamlit as st
@@ -43,13 +45,6 @@ from qa_toolkit.tools.ip_lookup import IPQueryTool
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
 from qa_toolkit.ui.components.author_profile import AuthorProfile
 from qa_toolkit.ui.components.feedback_panel import FeedbackSection
-from qa_toolkit.ui.pages.api_automation_page import render_api_automation_test_page
-from qa_toolkit.ui.pages.api_dev_tools_page import render_api_dev_tools_page
-from qa_toolkit.ui.pages.api_performance_page import render_api_performance_test_page
-from qa_toolkit.ui.pages.api_security_page import render_api_security_test_page
-from qa_toolkit.ui.pages.log_analysis_page import render_log_analysis_page
-from qa_toolkit.ui.pages.text_comparison_page import render_text_comparison_page
-from qa_toolkit.ui.pages.word_counter_page import render_word_counter_page
 from qa_toolkit.utils.datetime_tools import DateTimeUtils
 from qa_toolkit.utils.json_utils import JSONFileUtils
 
@@ -73,6 +68,67 @@ st.set_page_config(
 
 # 现代化CSS样式
 st.markdown(CSS_STYLES, unsafe_allow_html=True)
+
+
+def _build_page_renderer(module_path, function_name, page_label):
+    """延迟导入页面模块，避免单个页面缺失导致整站启动失败。"""
+
+    def _render():
+        try:
+            render_fn = getattr(import_module(module_path), function_name)
+        except Exception as exc:
+            st.error(f"{page_label}加载失败，当前已跳过该页面。")
+            if isinstance(exc, ModuleNotFoundError):
+                st.info(
+                    f"缺少模块: `{exc.name}`。常见原因是新文件没有提交到 GitHub，"
+                    "或 `requirements.txt` 中缺少依赖。"
+                )
+            else:
+                st.info("页面模块存在，但其内部导入或初始化失败。")
+            with st.expander("查看详细错误"):
+                st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+            return
+
+        render_fn()
+
+    return _render
+
+
+render_api_automation_test_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.api_automation_page",
+    "render_api_automation_test_page",
+    "API 自动化测试页面",
+)
+render_api_dev_tools_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.api_dev_tools_page",
+    "render_api_dev_tools_page",
+    "API 开发工具页面",
+)
+render_api_performance_test_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.api_performance_page",
+    "render_api_performance_test_page",
+    "API 性能测试页面",
+)
+render_api_security_test_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.api_security_page",
+    "render_api_security_test_page",
+    "API 安全测试页面",
+)
+render_log_analysis_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.log_analysis_page",
+    "render_log_analysis_page",
+    "日志分析页面",
+)
+render_text_comparison_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.text_comparison_page",
+    "render_text_comparison_page",
+    "文本对比页面",
+)
+render_word_counter_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.word_counter_page",
+    "render_word_counter_page",
+    "字数统计页面",
+)
 
 
 def generate_regex_from_examples(text, examples):
