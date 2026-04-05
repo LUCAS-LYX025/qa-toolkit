@@ -190,6 +190,7 @@ include_pdf = false
 | 症状 | 常见原因 | 处理动作 |
 | --- | --- | --- |
 | 应用构建失败 | `requirements.txt` 或 `packages.txt` 依赖没有正确安装 | 检查构建日志，确认根目录仍有 `requirements.txt`、`packages.txt`；不要在 `packages.txt` 手动钉 `libglib2.0-0` 这类基础库版本，修正后重新部署 |
+| 页面启动时报 `ModuleNotFoundError`，指向 `qa_toolkit.ui.pages.*` 或 `qa_toolkit.utils.*` | 新增页面或工具文件只在本地存在，还没有提交并推送到 GitHub；或者对应依赖没有写入 `requirements.txt` | 先执行 `git status`，确认新增的 `src/qa_toolkit/...` 文件已经 `git add`、`git commit`、`git push`；如果模块文件已入库，再检查 `requirements.txt` 是否包含该页面新增依赖 |
 | 页面能打开，但某些功能导入失败 | 新增依赖后应用没有重启，或云端安装没完成 | 在 Community Cloud 后台执行 `Reboot app`，必要时重新部署 |
 | OCR 不可用 | `tesseract` 没装好或系统依赖没生效 | 检查 `packages.txt`，确认包含 `tesseract-ocr`、`tesseract-ocr-chi-sim`，然后重启应用 |
 | PDF 转图片失败 | `poppler-utils` 未安装或大 PDF 超资源限制 | 确认 `packages.txt` 包含 `poppler-utils`，先用小 PDF 验证，再检查资源占用 |
