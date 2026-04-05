@@ -234,6 +234,7 @@ class TestCaseGenerator:
             "Authorization": f"Bearer {api_config['api_key']}",
             "Content-Type": "application/json"
         }
+        request_url = self._resolve_chat_completion_url(api_config.get("api_base"))
 
         prompt = self._build_prompt(
             requirement,
@@ -254,7 +255,7 @@ class TestCaseGenerator:
 
         try:
             response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
+                request_url,
                 headers=headers,
                 json=payload,
                 timeout=60
@@ -388,6 +389,16 @@ class TestCaseGenerator:
             target_case_count,
             coverage_focus
         )
+
+    def _resolve_chat_completion_url(self, api_base: Optional[str] = None) -> str:
+        """将兼容网关地址归一化为 chat completions 端点。"""
+        normalized = str(api_base or "https://api.openai.com/v1").strip().rstrip("/")
+        if not normalized:
+            normalized = "https://api.openai.com/v1"
+
+        if normalized.endswith("/chat/completions"):
+            return normalized
+        return f"{normalized}/chat/completions"
 
     def _build_prompt(self, requirement: str, id_prefix: str, case_style: str,
                       language: str, platform: str = "default",

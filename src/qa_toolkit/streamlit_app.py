@@ -30,15 +30,13 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from qa_toolkit.config.constants import PROVINCES, COUNTRIES, CATEGORIES, PROVINCE_MAP, TO_SECONDS, RANDOM_STRING_TYPES, \
     PASSWORD_OPTIONS, DOMAINS_PRESET, GENDERS, TOOL_CATEGORIES, CSS_STYLES, HEADLINE_STYLES, PRESET_SIZES
-from qa_toolkit.config.constants import LANGUAGE_TEMPLATES
-from qa_toolkit.config.constants import PREDEFINED_PATTERNS
 from qa_toolkit.config.constants import PROVINCE_CITY_AREA_CODES
 from qa_toolkit.config.constants import PLATFORM_MAPPING
 from qa_toolkit.config.constants import STYLE_PREVIEWS
 from qa_toolkit.config.constants import LANGUAGE_DESCRIPTIONS
 from qa_toolkit.config.constants import SIMPLE_EXAMPLE, MEDIUM_EXAMPLE, COMPLEX_EXAMPLE
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
-from qa_toolkit.support.documentation import show_doc, show_general_guidelines
+from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
 from qa_toolkit.tools.data_generator import DataGenerator
 from qa_toolkit.tools.ip_lookup import IPQueryTool
@@ -124,46 +122,48 @@ render_text_comparison_page = _build_page_renderer(
     "render_text_comparison_page",
     "文本对比页面",
 )
+render_regex_tester_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.regex_tester_page",
+    "render_regex_tester_page",
+    "正则测试页面",
+)
+render_test_case_generator_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.test_case_generator_page",
+    "render_test_case_generator_page",
+    "测试用例生成页面",
+)
+render_zentao_performance_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.zentao_performance_page",
+    "render_zentao_performance_page",
+    "禅道绩效统计页面",
+)
+render_bi_analysis_page = _build_page_renderer(
+    "qa_toolkit.ui.pages.bi_analysis_page",
+    "render_bi_analysis_page",
+    "BI 数据分析页面",
+)
 render_word_counter_page = _build_page_renderer(
     "qa_toolkit.ui.pages.word_counter_page",
     "render_word_counter_page",
     "字数统计页面",
 )
 
+TOOL_DOC_MAPPING = {
+    "加密/解密工具": "crypto_tools",
+    "时间处理工具": "time_processor",
+    "图片处理工具": "image_processor",
+    "IP/域名查询工具": "ip_domain_query",
+}
 
-def generate_regex_from_examples(text, examples):
-    """根据示例文本生成正则表达式"""
-    if not text or not examples:
-        return ""
 
-    example_list = [ex.strip() for ex in examples.split(",") if ex.strip()]
+def render_tool_placeholder_page(tool_name):
+    """未迁移完成的工具页兜底，避免点击菜单后出现空白页。"""
+    doc_key = TOOL_DOC_MAPPING.get(tool_name)
+    if doc_key:
+        show_doc(doc_key)
 
-    if not example_list:
-        return ""
-
-    # 简化的模式识别逻辑
-    common_pattern = example_list[0]
-
-    for example in example_list[1:]:
-        # 找出共同前缀
-        i = 0
-        while i < min(len(common_pattern), len(example)) and common_pattern[i] == example[i]:
-            i += 1
-        common_pattern = common_pattern[:i]
-
-    if len(common_pattern) < 2:
-        return re.escape(example_list[0])
-
-    escaped_pattern = re.escape(common_pattern)
-
-    # 简单的模式推断
-    if len(example_list) > 1:
-        if all(ex.replace(common_pattern, "").isdigit() for ex in example_list):
-            return escaped_pattern + r"\d+"
-        elif all(ex.replace(common_pattern, "").isalpha() for ex in example_list):
-            return escaped_pattern + r"[A-Za-z]+"
-
-    return escaped_pattern + ".*"
+    st.warning(f"{tool_name} 当前还在迁移到独立页面，已先恢复入口和说明展示。")
+    st.info("这个工具不再是空白页了；如果你要，我可以继续把它的完整功能也迁过来。")
 
 
 def escape_js_string(text):
@@ -253,37 +253,227 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
 
 
 def render_back_to_top_button():
-    """渲染固定在右下角的返回顶部按钮"""
+    """渲染固定在右下角的悬浮操作按钮。"""
     st.markdown(
         """
         <style>
-        .qa-toolkit-back-to-top {
+        .qa-toolkit-floating-shell {
             position: fixed;
             right: 24px;
             bottom: 24px;
             z-index: 999;
+            opacity: 1;
+            transform: translateY(0);
+            transition: opacity 0.24s ease, transform 0.24s ease;
+            pointer-events: auto;
+        }
+        .qa-toolkit-floating-shell.is-dimmed {
+            opacity: 0.38;
+            transform: translateY(6px);
+        }
+        .qa-toolkit-floating-shell.is-hidden {
+            opacity: 0;
+            transform: translateY(12px);
+            pointer-events: none;
+        }
+        .qa-toolkit-floating-menu {
+            position: relative;
+        }
+        .qa-toolkit-floating-summary {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 128px;
+            padding: 12px 18px;
+            border-radius: 999px;
+            color: #ffffff !important;
+            text-decoration: none !important;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            user-select: none;
+            list-style: none;
+            background: linear-gradient(135deg, #0f172a 0%, #2563eb 100%);
+            box-shadow: 0 14px 30px rgba(15, 23, 42, 0.24);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .qa-toolkit-floating-summary::-webkit-details-marker {
+            display: none;
+        }
+        .qa-toolkit-floating-summary:hover {
+            transform: translateY(-2px);
+        }
+        .qa-toolkit-floating-menu[open] .qa-toolkit-floating-summary {
+            box-shadow: 0 16px 34px rgba(37, 99, 235, 0.26);
+        }
+        .qa-toolkit-floating-items {
+            position: absolute;
+            right: 0;
+            bottom: calc(100% + 12px);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            align-items: flex-end;
+        }
+        .qa-toolkit-floating-link {
             display: inline-flex;
             align-items: center;
             justify-content: center;
             min-width: 116px;
             padding: 11px 16px;
             border-radius: 999px;
-            background: linear-gradient(135deg, #1f4b99 0%, #0f766e 100%);
             color: #ffffff !important;
             text-decoration: none !important;
             font-size: 14px;
             font-weight: 700;
-            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
             transition: transform 0.2s ease, box-shadow 0.2s ease;
+            white-space: nowrap;
+        }
+        .qa-toolkit-feedback-link {
+            background: linear-gradient(135deg, #7c3aed 0%, #2563eb 100%);
+            box-shadow: 0 12px 28px rgba(79, 70, 229, 0.24);
+        }
+        .qa-toolkit-back-to-top {
+            background: linear-gradient(135deg, #1f4b99 0%, #0f766e 100%);
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
+        }
+        .qa-toolkit-feedback-link:hover {
+            box-shadow: 0 16px 32px rgba(79, 70, 229, 0.30);
         }
         .qa-toolkit-back-to-top:hover {
-            transform: translateY(-2px);
             box-shadow: 0 16px 32px rgba(15, 23, 42, 0.28);
         }
+        @media (max-width: 768px) {
+            .qa-toolkit-floating-shell {
+                right: 14px;
+                bottom: 14px;
+            }
+            .qa-toolkit-floating-items {
+                gap: 8px;
+                bottom: calc(100% + 10px);
+            }
+            .qa-toolkit-floating-summary {
+                min-width: 118px;
+                padding: 11px 16px;
+                font-size: 13px;
+            }
+            .qa-toolkit-floating-link {
+                min-width: 102px;
+                padding: 10px 14px;
+                font-size: 13px;
+            }
+        }
         </style>
-        <a class="qa-toolkit-back-to-top" href="#page-top">↑ 返回顶部</a>
+        <div class="qa-toolkit-floating-shell">
+            <details class="qa-toolkit-floating-menu">
+                <summary class="qa-toolkit-floating-summary">⚡ 快捷操作</summary>
+                <div class="qa-toolkit-floating-items">
+                    <a class="qa-toolkit-floating-link qa-toolkit-feedback-link" href="#tool-feedback-anchor">💬 意见反馈</a>
+                    <a class="qa-toolkit-floating-link qa-toolkit-back-to-top" href="#page-top">↑ 返回顶部</a>
+                </div>
+            </details>
+        </div>
         """,
         unsafe_allow_html=True,
+    )
+    components.html(
+        """
+        <script>
+        (function() {
+            const THRESHOLD_SHOW = 220;
+            const THRESHOLD_DIM = 80;
+            let lastScrollTop = 0;
+
+            function getShell() {
+                try {
+                    return window.parent.document.querySelector('.qa-toolkit-floating-shell');
+                } catch (error) {
+                    return null;
+                }
+            }
+
+            function getMenu() {
+                try {
+                    return window.parent.document.querySelector('.qa-toolkit-floating-menu');
+                } catch (error) {
+                    return null;
+                }
+            }
+
+            function getScrollTop() {
+                try {
+                    const doc = window.parent.document.documentElement;
+                    const body = window.parent.document.body;
+                    return (doc && doc.scrollTop) || (body && body.scrollTop) || 0;
+                } catch (error) {
+                    return 0;
+                }
+            }
+
+            function updateFloatingActions() {
+                const shell = getShell();
+                if (!shell) {
+                    return;
+                }
+                const scrollTop = getScrollTop();
+                const delta = scrollTop - lastScrollTop;
+                shell.classList.remove('is-hidden', 'is-dimmed');
+
+                if (scrollTop < THRESHOLD_DIM) {
+                    shell.classList.add('is-dimmed');
+                    lastScrollTop = scrollTop;
+                    return;
+                }
+                if (scrollTop < THRESHOLD_SHOW) {
+                    shell.classList.add('is-hidden');
+                    lastScrollTop = scrollTop;
+                    return;
+                }
+
+                if (delta > 6) {
+                    shell.classList.remove('is-hidden', 'is-dimmed');
+                } else if (delta < -6) {
+                    shell.classList.add('is-dimmed');
+                }
+
+                lastScrollTop = scrollTop;
+            }
+
+            function bindMenuLinks() {
+                try {
+                    const menu = getMenu();
+                    if (!menu) {
+                        return;
+                    }
+                    menu.querySelectorAll('a').forEach((link) => {
+                        link.addEventListener('click', function() {
+                            menu.removeAttribute('open');
+                        });
+                    });
+                } catch (error) {
+                    // ignore
+                }
+            }
+
+            function bindScrollListener() {
+                try {
+                    const targetWindow = window.parent;
+                    targetWindow.removeEventListener('scroll', updateFloatingActions);
+                    targetWindow.addEventListener('scroll', updateFloatingActions, { passive: true });
+                    updateFloatingActions();
+                } catch (error) {
+                    // 保持默认可见，避免脚本能力异常时按钮消失。
+                }
+            }
+
+            bindScrollListener();
+            bindMenuLinks();
+            setTimeout(updateFloatingActions, 120);
+            setTimeout(updateFloatingActions, 600);
+        })();
+        </script>
+        """,
+        height=0,
     )
 
 
@@ -468,6 +658,9 @@ tool_category = st.session_state.selected_tool
 
 st.markdown('<div id="tool-content-anchor"></div>', unsafe_allow_html=True)
 render_tool_picker()
+author = AuthorProfile()
+author.render_sidebar_compact_profile()
+feedback_section = FeedbackSection()
 
 # === 工具功能实现 ===
 if tool_category == "数据生成工具":
@@ -1008,6 +1201,27 @@ if tool_category == "数据生成工具":
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 字数统计工具
+elif tool_category == "测试用例生成器":
+    render_test_case_generator_page()
+
+elif tool_category == "禅道绩效统计":
+    render_zentao_performance_page()
+
+elif tool_category == "BI数据分析工具":
+    render_bi_analysis_page()
+
+elif tool_category == "接口自动化测试":
+    render_api_automation_test_page()
+
+elif tool_category == "接口研发辅助":
+    render_api_dev_tools_page()
+
+elif tool_category == "接口性能测试":
+    render_api_performance_test_page()
+
+elif tool_category == "接口安全测试":
+    render_api_security_test_page()
+
 elif tool_category == "字数统计工具":
     render_word_counter_page()
 
@@ -1017,277 +1231,7 @@ elif tool_category == "文本对比工具":
 
 # 正则表达式测试工具
 elif tool_category == "正则测试工具":
-    show_doc("regex_tester")
-
-    # 初始化session_state
-    if 'regex_clear_counter' not in st.session_state:
-        st.session_state.regex_clear_counter = 0
-
-    # 添加工具选择选项卡
-    tab1, tab2, tab3 = st.tabs(["正则表达式测试", "代码生成器", "从示例生成"])
-
-    with tab1:
-        col1, col2 = st.columns(2)
-        with col1:
-            # 预定义模式选择
-            st.markdown("**选择预定义模式**")
-            selected_pattern = st.selectbox("", ["自定义"] + list(PREDEFINED_PATTERNS.keys()), key="pattern_select")
-
-            # 使用不同的key策略来避免session_state冲突
-            if selected_pattern != "自定义":
-                regex_pattern = PREDEFINED_PATTERNS[selected_pattern]
-                st.code(f"当前模式: {regex_pattern}")
-                # 同时允许用户修改预定义模式
-                custom_regex = st.text_input("或自定义正则表达式", value=regex_pattern, placeholder="可在此修改表达式",
-                                             key=f"custom_regex_input_{st.session_state.regex_clear_counter}")
-                if custom_regex != regex_pattern:
-                    regex_pattern = custom_regex
-            else:
-                regex_pattern = st.text_input("正则表达式", placeholder="例如: ^[a-zA-Z0-9]+$",
-                                              key=f"manual_regex_input_{st.session_state.regex_clear_counter}")
-
-            test_text = st.text_area("测试文本", height=200, placeholder="在此输入要测试的文本...",
-                                     key=f"test_text_area_{st.session_state.regex_clear_counter}")
-
-        with col2:
-            st.markdown("**匹配选项**")
-            global_match = st.checkbox("全局匹配 (g)", value=True, key="global_match_check")
-            ignore_case = st.checkbox("忽略大小写 (i)", key="ignore_case_check")
-            multiline = st.checkbox("多行模式 (m)", key="multiline_check")
-            dotall = st.checkbox("点号匹配换行 (s)", key="dotall_check")
-
-            st.markdown("**替换功能**")
-            replace_text = st.text_input("替换文本", placeholder="输入替换文本（可选）",
-                                         key=f"replace_text_input_{st.session_state.regex_clear_counter}")
-
-        button_col1, button_col2 = st.columns(2)
-        with button_col1:
-            if st.button("测试正则表达式", use_container_width=True, key="test_regex"):
-                # 获取当前输入框的值
-                current_regex = ""
-                if selected_pattern != "自定义":
-                    current_regex = custom_regex
-                else:
-                    current_regex = regex_pattern
-
-                current_test_text = test_text
-
-                if current_regex and current_test_text:
-                    try:
-                        flags = 0
-                        if ignore_case:
-                            flags |= re.IGNORECASE
-                        if multiline:
-                            flags |= re.MULTILINE
-                        if dotall:
-                            flags |= re.DOTALL
-
-                        if global_match:
-                            matches = list(re.finditer(current_regex, current_test_text, flags))
-                            match_count = len(matches)
-
-                            if match_count > 0:
-                                st.success(f"匹配成功！找到 {match_count} 个匹配项。")
-
-                                # 增强的匹配详情显示
-                                st.markdown("**匹配详情**")
-                                for i, match in enumerate(matches):
-                                    with st.expander(f"匹配 {i + 1}: 位置 {match.start()}-{match.end()}"):
-                                        st.write(f"匹配文本: `{match.group()}`")
-                                        if match.groups():
-                                            st.write("**捕获组:**")
-                                            for j, group in enumerate(match.groups(), 1):
-                                                st.write(f"  组 {j}: `{group}`")
-                                        if match.groupdict():
-                                            st.write("**命名分组:**")
-                                            for name, group in match.groupdict().items():
-                                                st.write(f"  {name}: `{group}`")
-                            else:
-                                st.warning("未找到匹配项。")
-                        else:
-                            match = re.search(current_regex, current_test_text, flags)
-                            if match:
-                                st.success("匹配成功！")
-                                st.write(f"匹配文本: `{match.group()}`")
-                                st.write(f"匹配位置: {match.start()}-{match.end()}")
-                                if match.groups():
-                                    st.write("**捕获组:**")
-                                    for i, group in enumerate(match.groups(), 1):
-                                        st.write(f"组 {i}: `{group}`")
-                            else:
-                                st.warning("未找到匹配项。")
-
-                        if replace_text:
-                            replaced_text = re.sub(current_regex, replace_text, current_test_text, flags=flags)
-                            st.markdown("**替换结果**")
-                            display_generated_results("替换后的文本", replaced_text, "regex_replaced")
-                    except re.error as e:
-                        st.error(f"正则表达式错误: {e}")
-                else:
-                    st.warning("请输入正则表达式和测试文本")
-
-        with button_col2:
-            if st.button("🗑️ 清空输入", use_container_width=True, key="clear_input"):
-                # 通过增加计数器并重新渲染来清空
-                st.session_state.regex_clear_counter += 1
-                st.rerun()
-
-    with tab2:
-        st.markdown("### 正则表达式代码生成器")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # 模式选择：预定义或自定义
-            pattern_source = st.radio("正则表达式来源", ["预定义模式", "自定义表达式"],
-                                      key=f"pattern_source_{st.session_state.regex_clear_counter}")
-
-            if pattern_source == "预定义模式":
-                code_pattern = st.selectbox("选择预定义模式", list(PREDEFINED_PATTERNS.keys()),
-                                            key=f"code_pattern_{st.session_state.regex_clear_counter}")
-                pattern_display = PREDEFINED_PATTERNS[code_pattern]
-                st.code(f"模式: {pattern_display}")
-            else:
-                pattern_display = st.text_input("输入自定义正则表达式", placeholder="例如: ^[a-zA-Z0-9]+$",
-                                                key=f"custom_pattern_input_{st.session_state.regex_clear_counter}")
-                if pattern_display:
-                    st.code(f"模式: {pattern_display}")
-
-            # 编程语言选择
-            target_language = st.selectbox("选择目标语言", list(LANGUAGE_TEMPLATES.keys()),
-                                           key=f"target_lang_{st.session_state.regex_clear_counter}")
-
-            # 操作类型
-            operation_type = st.radio("选择操作类型", ["匹配", "测试", "替换"],
-                                      key=f"operation_type_{st.session_state.regex_clear_counter}")
-
-            # 替换文本
-            replacement_code = ""
-            if operation_type == "替换":
-                replacement_code = st.text_input("替换文本", placeholder="输入替换文本",
-                                                 key=f"replacement_input_{st.session_state.regex_clear_counter}")
-
-        with col2:
-            st.markdown("**代码生成选项**")
-
-            # 标志选择
-            flags_selected = []
-            lang_flags = LANGUAGE_TEMPLATES[target_language]["flags"]
-
-            for flag_name, flag_char in lang_flags.items():
-                if st.checkbox(f"{flag_name} ({flag_char})",
-                               key=f"flag_{flag_char}_{target_language}_{st.session_state.regex_clear_counter}"):
-                    flags_selected.append(flag_name)
-
-            # 生成代码按钮
-            if st.button("生成代码", use_container_width=True, key="generate_code"):
-                current_pattern = ""
-                if pattern_source == "预定义模式":
-                    current_pattern = PREDEFINED_PATTERNS[code_pattern]
-                else:
-                    current_pattern = pattern_display
-
-                if not current_pattern:
-                    st.warning("请输入或选择正则表达式")
-                else:
-                    # 构建标志
-                    if target_language in ["Python", "Java", "C#"]:
-                        flags_value = " | ".join(flags_selected) if flags_selected else "0"
-                    else:
-                        flags_value = "".join([lang_flags[flag] for flag in flags_selected])
-
-                    # 获取模板
-                    template_key = "match" if operation_type == "匹配" else "test" if operation_type == "测试" else "replace"
-                    template = LANGUAGE_TEMPLATES[target_language][template_key]
-
-                    # 生成代码
-                    try:
-                        generated_code = template.format(
-                            pattern=current_pattern,
-                            flags=flags_value,
-                            flags_value=flags_value,
-                            replacement=replacement_code
-                        )
-
-                        st.session_state.generated_code = generated_code
-                        st.session_state.generated_language = target_language
-
-                    except KeyError as e:
-                        st.error(f"代码生成错误: {e}")
-
-            # 显示已生成的代码（如果有）
-            if 'generated_code' in st.session_state and st.session_state.generated_code:
-                language = st.session_state.generated_language if 'generated_language' in st.session_state else target_language
-                display_generated_results(
-                    f"{language} 代码",
-                    st.session_state.generated_code,
-                    f"regex_{language.lower()}_code"
-                )
-
-        # 清空所有按钮
-        button_col3, _ = st.columns(2)
-        with button_col3:
-            if st.button("🗑️ 清空所有", use_container_width=True, key="clear_all_code"):
-                # 清除生成的代码状态
-                if 'generated_code' in st.session_state:
-                    del st.session_state.generated_code
-                if 'generated_language' in st.session_state:
-                    del st.session_state.generated_language
-                # 通过增加计数器清空输入
-                st.session_state.regex_clear_counter += 1
-                st.rerun()
-
-    with tab3:
-        st.markdown("### 从示例生成正则表达式")
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            source_text = st.text_area("原文内容", height=150,
-                                       placeholder="输入包含要提取内容的原文...",
-                                       key=f"source_text_area_{st.session_state.regex_clear_counter}")
-
-        with col2:
-            examples_text = st.text_area("示例文本（用逗号分隔）", height=150,
-                                         placeholder="输入要匹配的示例，用逗号分隔...",
-                                         key=f"examples_text_area_{st.session_state.regex_clear_counter}")
-
-        button_col4, button_col5 = st.columns(2)
-        with button_col4:
-            if st.button("生成正则表达式", use_container_width=True, key="generate_from_examples"):
-                current_source = source_text
-                current_examples = examples_text
-
-                if current_source and current_examples:
-                    generated_regex = generate_regex_from_examples(current_source, current_examples)
-
-                    if generated_regex:
-                        st.success("已生成正则表达式！")
-
-                        # 使用统一的显示函数
-                        display_generated_results("生成的正则表达式", generated_regex, "generated_regex")
-
-                        # 测试生成的正则表达式
-                        try:
-                            matches = re.findall(generated_regex, current_source)
-                            if matches:
-                                st.write(f"在原文中找到 {len(matches)} 个匹配项:")
-                                for i, match in enumerate(matches):
-                                    st.write(f"{i + 1}. `{match}`")
-                            else:
-                                st.warning("生成的正则表达式在原文中未找到匹配项")
-                        except re.error as e:
-                            st.error(f"生成的正则表达式有误: {e}")
-                    else:
-                        st.warning("无法生成合适的正则表达式，请提供更多或更明确的示例")
-                else:
-                    st.warning("请输入原文内容和示例文本")
-
-        with button_col5:
-            if st.button("🗑️ 清空示例", use_container_width=True, key="clear_examples"):
-                # 通过增加计数器清空输入
-                st.session_state.regex_clear_counter += 1
-                st.rerun()
+    render_regex_tester_page()
 
     st.markdown('</div>', unsafe_allow_html=True)
 # JSON数据对比工具
@@ -1573,18 +1517,10 @@ elif tool_category == "JSON处理工具":
                     st.warning("❌ 未找到匹配项")
 
 # 日志分析工具
-if tool_category == "日志分析工具":
+elif tool_category == "日志分析工具":
     render_log_analysis_page()
 
-# 初始化并使用留言区
-feedback_section = FeedbackSection()
-feedback_section.render_feedback_section()
+else:
+    render_tool_placeholder_page(tool_category)
 
-# show_general_guidelines()
-author = AuthorProfile()
-
-# 在需要显示底部作者介绍的地方调用
-author.render_main_profile()
-
-# 在需要显示侧边栏作者信息的地方调用
-# author.render_sidebar_profile()
+feedback_section.render_tool_feedback_bar(tool_category)

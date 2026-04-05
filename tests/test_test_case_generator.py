@@ -165,3 +165,16 @@ def test_resolve_tesseract_command_prefers_usable_system_binary(monkeypatch):
     monkeypatch.setattr(generator, "_is_usable_tesseract_command", lambda candidate: candidate == "/usr/bin/tesseract")
 
     assert generator._resolve_tesseract_command() == "/usr/bin/tesseract"
+
+
+def test_resolve_chat_completion_url_supports_default_and_custom_base(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+
+    assert generator._resolve_chat_completion_url() == "https://api.openai.com/v1/chat/completions"
+    assert generator._resolve_chat_completion_url("https://gateway.example.com/v1") == (
+        "https://gateway.example.com/v1/chat/completions"
+    )
+    assert generator._resolve_chat_completion_url("https://gateway.example.com/v1/chat/completions") == (
+        "https://gateway.example.com/v1/chat/completions"
+    )
