@@ -35,6 +35,7 @@ from qa_toolkit.config.constants import PLATFORM_MAPPING
 from qa_toolkit.config.constants import STYLE_PREVIEWS
 from qa_toolkit.config.constants import LANGUAGE_DESCRIPTIONS
 from qa_toolkit.config.constants import SIMPLE_EXAMPLE, MEDIUM_EXAMPLE, COMPLEX_EXAMPLE
+from qa_toolkit.config.tool_routes import INLINE_TOOL_CATEGORIES, PAGE_TOOL_CONFIG, PLACEHOLDER_DOC_MAPPING
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
@@ -92,73 +93,19 @@ def _build_page_renderer(module_path, function_name, page_label):
     return _render
 
 
-render_api_automation_test_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.api_automation_page",
-    "render_api_automation_test_page",
-    "API 自动化测试页面",
-)
-render_api_dev_tools_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.api_dev_tools_page",
-    "render_api_dev_tools_page",
-    "API 开发工具页面",
-)
-render_api_performance_test_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.api_performance_page",
-    "render_api_performance_test_page",
-    "API 性能测试页面",
-)
-render_api_security_test_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.api_security_page",
-    "render_api_security_test_page",
-    "API 安全测试页面",
-)
-render_log_analysis_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.log_analysis_page",
-    "render_log_analysis_page",
-    "日志分析页面",
-)
-render_text_comparison_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.text_comparison_page",
-    "render_text_comparison_page",
-    "文本对比页面",
-)
-render_regex_tester_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.regex_tester_page",
-    "render_regex_tester_page",
-    "正则测试页面",
-)
-render_test_case_generator_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.test_case_generator_page",
-    "render_test_case_generator_page",
-    "测试用例生成页面",
-)
-render_zentao_performance_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.zentao_performance_page",
-    "render_zentao_performance_page",
-    "禅道绩效统计页面",
-)
-render_bi_analysis_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.bi_analysis_page",
-    "render_bi_analysis_page",
-    "BI 数据分析页面",
-)
-render_word_counter_page = _build_page_renderer(
-    "qa_toolkit.ui.pages.word_counter_page",
-    "render_word_counter_page",
-    "字数统计页面",
-)
-
-TOOL_DOC_MAPPING = {
-    "加密/解密工具": "crypto_tools",
-    "时间处理工具": "time_processor",
-    "图片处理工具": "image_processor",
-    "IP/域名查询工具": "ip_domain_query",
+PAGE_RENDERERS = {
+    tool_name: _build_page_renderer(
+        module_path=config["module_path"],
+        function_name=config["function_name"],
+        page_label=config["page_label"],
+    )
+    for tool_name, config in PAGE_TOOL_CONFIG.items()
 }
 
 
 def render_tool_placeholder_page(tool_name):
     """未迁移完成的工具页兜底，避免点击菜单后出现空白页。"""
-    doc_key = TOOL_DOC_MAPPING.get(tool_name)
+    doc_key = PLACEHOLDER_DOC_MAPPING.get(tool_name)
     if doc_key:
         show_doc(doc_key)
 
@@ -1201,40 +1148,6 @@ if tool_category == "数据生成工具":
     st.markdown('</div>', unsafe_allow_html=True)
 
 # 字数统计工具
-elif tool_category == "测试用例生成器":
-    render_test_case_generator_page()
-
-elif tool_category == "禅道绩效统计":
-    render_zentao_performance_page()
-
-elif tool_category == "BI数据分析工具":
-    render_bi_analysis_page()
-
-elif tool_category == "接口自动化测试":
-    render_api_automation_test_page()
-
-elif tool_category == "接口研发辅助":
-    render_api_dev_tools_page()
-
-elif tool_category == "接口性能测试":
-    render_api_performance_test_page()
-
-elif tool_category == "接口安全测试":
-    render_api_security_test_page()
-
-elif tool_category == "字数统计工具":
-    render_word_counter_page()
-
-# 文本对比工具
-elif tool_category == "文本对比工具":
-    render_text_comparison_page()
-
-# 正则表达式测试工具
-elif tool_category == "正则测试工具":
-    render_regex_tester_page()
-
-    st.markdown('</div>', unsafe_allow_html=True)
-# JSON数据对比工具
 elif tool_category == "JSON处理工具":
     utils = JSONFileUtils()
 
@@ -1516,9 +1429,10 @@ elif tool_category == "JSON处理工具":
                 else:
                     st.warning("❌ 未找到匹配项")
 
-# 日志分析工具
-elif tool_category == "日志分析工具":
-    render_log_analysis_page()
+elif tool_category in PAGE_RENDERERS:
+    PAGE_RENDERERS[tool_category]()
+    if tool_category == "正则测试工具":
+        st.markdown('</div>', unsafe_allow_html=True)
 
 else:
     render_tool_placeholder_page(tool_category)

@@ -10,6 +10,13 @@ import streamlit as st
 
 from qa_toolkit.config.constants import LANGUAGE_TEMPLATES, PREDEFINED_PATTERNS
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.status_feedback import (
+    push_status_feedback,
+    render_error_feedback,
+    render_flash_status_feedback,
+    render_info_feedback,
+    render_warning_feedback,
+)
 from qa_toolkit.utils.regex_tools import (
     analyze_regex,
     build_regex_code,
@@ -30,6 +37,7 @@ DEFAULT_STATE = {
     "regex_tool_enable_replacement": False,
     "regex_tool_replacement_text": "",
     "regex_tool_replace_all": True,
+    "regex_tool_replace_scope": "全部匹配",
     "regex_tool_recent_patterns": [],
     "regex_tool_recent_choice": "",
     "regex_tool_favorites": [],
@@ -91,6 +99,7 @@ CODE_LANGUAGE_MAP = {
 
 MAX_MATCH_PREVIEW_ROWS = 500
 MAX_UNIQUE_PREVIEW_ROWS = 200
+REGEX_FLASH_SLOT = "regex_tester"
 
 
 def _ensure_defaults():
@@ -99,10 +108,20 @@ def _ensure_defaults():
             st.session_state[key] = value
 
 
+def _flash_regex_feedback(kind: str, description: str, title: str | None = None) -> None:
+    push_status_feedback(REGEX_FLASH_SLOT, kind, description, title=title)
+
+
+def _reset_playground_result() -> None:
+    st.session_state.regex_tool_test_result = None
+    st.session_state.regex_tool_test_error = ""
+
+
 def _load_selected_preset():
     preset_name = st.session_state.regex_tool_selected_preset
     if preset_name != "自定义":
         st.session_state.regex_tool_pattern = PREDEFINED_PATTERNS[preset_name]
+        _reset_playground_result()
 
 
 def _load_selected_sample():
@@ -111,12 +130,15 @@ def _load_selected_sample():
     st.session_state.regex_tool_text = sample["text"]
     st.session_state.regex_tool_enable_replacement = True
     st.session_state.regex_tool_replacement_text = sample["replacement"]
-    st.session_state.regex_tool_test_error = ""
+    st.session_state.regex_tool_replace_scope = "全部匹配"
+    st.session_state.regex_tool_replace_all = True
+    _reset_playground_result()
 
 
 def _apply_recent_pattern():
     if st.session_state.regex_tool_recent_choice:
         st.session_state.regex_tool_pattern = st.session_state.regex_tool_recent_choice
+        _reset_playground_result()
 
 
 def _clear_playground():
@@ -125,8 +147,9 @@ def _clear_playground():
     st.session_state.regex_tool_selected_preset = "自定义"
     st.session_state.regex_tool_enable_replacement = False
     st.session_state.regex_tool_replacement_text = ""
-    st.session_state.regex_tool_test_result = None
-    st.session_state.regex_tool_test_error = ""
+    st.session_state.regex_tool_replace_scope = "全部匹配"
+    st.session_state.regex_tool_replace_all = True
+    _reset_playground_result()
 
 
 def _clear_codegen():
@@ -146,7 +169,7 @@ def _clear_examples():
 def _add_current_favorite():
     pattern = st.session_state.regex_tool_pattern.strip()
     if not pattern:
-        st.warning("当前没有可收藏的表达式。")
+        _flash_regex_feedback("warning", "当前没有可收藏的表达式。", title="收藏失败")
         return
 
     name = st.session_state.regex_tool_favorite_name.strip() or f"收藏表达式 {len(st.session_state.regex_tool_favorites) + 1}"
@@ -157,12 +180,13 @@ def _add_current_favorite():
     st.session_state.regex_tool_favorites = favorites[:20]
     st.session_state.regex_tool_favorite_name = ""
     st.session_state.regex_tool_favorite_note = ""
-    st.success("已加入收藏夹。")
+    _flash_regex_feedback("success", "已加入收藏夹。", title="收藏成功")
 
 
 def _apply_favorite(index: int):
     favorite = st.session_state.regex_tool_favorites[index]
     st.session_state.regex_tool_pattern = favorite["pattern"]
+    _reset_playground_result()
 
 
 def _delete_favorite(index: int):
@@ -175,17 +199,17 @@ def _delete_favorite(index: int):
 def _import_favorites():
     raw_text = st.session_state.regex_tool_favorite_import_text.strip()
     if not raw_text:
-        st.warning("请先粘贴收藏夹 JSON。")
+        _flash_regex_feedback("warning", "请先粘贴收藏夹 JSON。", title="导入失败")
         return
 
     try:
         payload = json.loads(raw_text)
     except json.JSONDecodeError as exc:
-        st.error(f"收藏夹 JSON 解析失败: {exc}")
+        _flash_regex_feedback("error", f"收藏夹 JSON 解析失败: {exc}", title="导入失败")
         return
 
     if not isinstance(payload, list):
-        st.error("收藏夹 JSON 需要是数组格式。")
+        _flash_regex_feedback("error", "收藏夹 JSON 需要是数组格式。", title="导入失败")
         return
 
     imported_items = []
@@ -204,7 +228,7 @@ def _import_favorites():
         )
 
     if not imported_items:
-        st.warning("没有导入到有效的收藏项。")
+        _flash_regex_feedback("warning", "没有导入到有效的收藏项。", title="导入结果")
         return
 
     merged = imported_items + list(st.session_state.regex_tool_favorites)
@@ -218,7 +242,7 @@ def _import_favorites():
 
     st.session_state.regex_tool_favorites = deduped[:20]
     st.session_state.regex_tool_favorite_import_text = ""
-    st.success(f"已导入 {len(imported_items)} 条收藏。")
+    _flash_regex_feedback("success", f"已导入 {len(imported_items)} 条收藏。", title="导入完成")
 
 
 def _push_recent_pattern(pattern: str):
@@ -231,6 +255,30 @@ def _push_recent_pattern(pattern: str):
     history.insert(0, normalized)
     st.session_state.regex_tool_recent_patterns = history[:8]
     st.session_state.regex_tool_recent_choice = normalized
+
+
+def _apply_replaced_text(text: str) -> None:
+    st.session_state.regex_tool_text = text
+    _reset_playground_result()
+    _flash_regex_feedback("success", "已用替换结果覆盖测试文本。", title="回填成功")
+
+
+def _apply_generated_pattern_to_playground(pattern: str, source_text: str) -> None:
+    st.session_state.regex_tool_pattern = pattern
+    st.session_state.regex_tool_text = source_text
+    _reset_playground_result()
+    _flash_regex_feedback("success", "已把生成结果带回测试页表达式和测试文本。", title="回填成功")
+
+
+def _copy_text_to_quick_extract(source_text: str) -> None:
+    st.session_state.regex_tool_quick_extract_source = source_text
+
+
+def _apply_quick_candidate_to_playground(pattern: str, source_text: str) -> None:
+    st.session_state.regex_tool_pattern = pattern
+    st.session_state.regex_tool_text = source_text
+    _reset_playground_result()
+    _flash_regex_feedback("success", "已带回测试页。", title="回填成功")
 
 
 def _resolve_codegen_pattern() -> str:
@@ -282,17 +330,17 @@ def _render_result_summary(result: Dict[str, Any]):
     if result["flags_display"]:
         st.caption("已启用 flags: " + " / ".join(result["flags_display"]))
     for warning_item in result.get("risk_warnings", []):
-        message = f"**{warning_item['title']}**: {warning_item['message']}"
         if warning_item["level"] == "warning":
-            st.warning(message)
+            render_warning_feedback(warning_item["message"], title=warning_item["title"])
         else:
-            st.info(message)
+            render_info_feedback(warning_item["message"], title=warning_item["title"])
     if result["zero_length_match_count"]:
-        st.warning(
-            f"检测到 {result['zero_length_match_count']} 个零宽匹配，表达式可能在空位置反复命中。"
+        render_warning_feedback(
+            f"检测到 {result['zero_length_match_count']} 个零宽匹配，表达式可能在空位置反复命中。",
+            title="零宽匹配提醒",
         )
     if not result["has_match"]:
-        st.info("当前文本未命中任何结果，可以切换 flags 或调小约束后重试。")
+        render_info_feedback("当前文本未命中任何结果，可以切换 flags 或调小约束后重试。", title="匹配结果")
 
 
 def _render_playground_result():
@@ -318,7 +366,7 @@ def _render_playground_result():
                 mime="text/csv",
             )
         else:
-            st.info("暂无匹配明细。")
+            render_info_feedback("暂无匹配明细。", title="匹配明细")
 
     with unique_tab:
         if result["unique_matches"]:
@@ -333,12 +381,12 @@ def _render_playground_result():
                 mime="text/csv",
             )
         else:
-            st.info("当前没有可提取的唯一值。")
+            render_info_feedback("当前没有可提取的唯一值。", title="唯一值提取")
 
     with replace_tab:
         replacement_result = result.get("replacement")
         if not replacement_result:
-            st.info("未启用替换预览。勾选“启用替换预览”后可查看替换结果。")
+            render_info_feedback("未启用替换预览。勾选“启用替换预览”后可查看替换结果。", title="替换预览")
             return
 
         replace_cols = st.columns(3)
@@ -354,9 +402,13 @@ def _render_playground_result():
         )
         action_col1, action_col2 = st.columns(2)
         with action_col1:
-            if st.button("用替换结果覆盖测试文本", key="regex_tool_apply_replaced_text", use_container_width=True):
-                st.session_state.regex_tool_text = replacement_result["text"]
-                st.rerun()
+            st.button(
+                "用替换结果覆盖测试文本",
+                key="regex_tool_apply_replaced_text",
+                use_container_width=True,
+                on_click=_apply_replaced_text,
+                args=(replacement_result["text"],),
+            )
         with action_col2:
             st.download_button(
                 "下载替换结果",
@@ -377,8 +429,7 @@ def _render_favorites_panel():
     with st.expander("收藏夹", expanded=False):
         st.text_input("收藏名称", key="regex_tool_favorite_name", placeholder="例如: 订单号提取")
         st.text_input("备注", key="regex_tool_favorite_note", placeholder="例如: 适用于 OMS 返回 / 日志脱敏")
-        if st.button("收藏当前表达式", key="regex_tool_add_favorite", use_container_width=True):
-            _add_current_favorite()
+        st.button("收藏当前表达式", key="regex_tool_add_favorite", use_container_width=True, on_click=_add_current_favorite)
 
         favorites = st.session_state.regex_tool_favorites
         if favorites:
@@ -396,13 +447,21 @@ def _render_favorites_panel():
                     st.caption(item["note"])
                 button_col1, button_col2 = st.columns(2)
                 with button_col1:
-                    if st.button("应用", key=f"regex_tool_apply_favorite_{index}", use_container_width=True):
-                        _apply_favorite(index)
-                        st.rerun()
+                    st.button(
+                        "应用",
+                        key=f"regex_tool_apply_favorite_{index}",
+                        use_container_width=True,
+                        on_click=_apply_favorite,
+                        args=(index,),
+                    )
                 with button_col2:
-                    if st.button("删除", key=f"regex_tool_delete_favorite_{index}", use_container_width=True):
-                        _delete_favorite(index)
-                        st.rerun()
+                    st.button(
+                        "删除",
+                        key=f"regex_tool_delete_favorite_{index}",
+                        use_container_width=True,
+                        on_click=_delete_favorite,
+                        args=(index,),
+                    )
         else:
             st.caption("还没有收藏的表达式。")
 
@@ -412,8 +471,7 @@ def _render_favorites_panel():
             height=120,
             placeholder='例如: [{"name":"订单号","pattern":"ORD-\\\\d+","note":"OMS"}]',
         )
-        if st.button("导入收藏夹", key="regex_tool_import_favorites", use_container_width=True):
-            _import_favorites()
+        st.button("导入收藏夹", key="regex_tool_import_favorites", use_container_width=True, on_click=_import_favorites)
 
 
 def _run_playground():
@@ -441,7 +499,7 @@ def _run_playground():
             multiline=bool(st.session_state.regex_tool_multiline),
             dotall=bool(st.session_state.regex_tool_dotall),
             replacement=replacement,
-            replace_all=bool(st.session_state.regex_tool_replace_all),
+            replace_all=st.session_state.regex_tool_replace_scope == "全部匹配",
         )
         st.session_state.regex_tool_test_result = result
         st.session_state.regex_tool_test_error = ""
@@ -463,8 +521,7 @@ def _render_playground_tab():
         )
         with preset_col2:
             st.write("")
-            if st.button("载入模式", key="regex_tool_load_preset", use_container_width=True):
-                _load_selected_preset()
+            st.button("载入模式", key="regex_tool_load_preset", use_container_width=True, on_click=_load_selected_preset)
 
         st.text_input(
             "正则表达式",
@@ -480,8 +537,7 @@ def _render_playground_tab():
         )
         with sample_col2:
             st.write("")
-            if st.button("载入示例", key="regex_tool_load_sample", use_container_width=True):
-                _load_selected_sample()
+            st.button("载入示例", key="regex_tool_load_sample", use_container_width=True, on_click=_load_selected_sample)
 
         st.text_area(
             "测试文本",
@@ -510,7 +566,6 @@ def _render_playground_tab():
             "替换范围",
             ["全部匹配", "仅首个匹配"],
             horizontal=True,
-            index=0 if st.session_state.regex_tool_replace_all else 1,
             key="regex_tool_replace_scope",
             disabled=not st.session_state.regex_tool_enable_replacement,
         )
@@ -519,13 +574,14 @@ def _render_playground_tab():
         st.markdown("### 最近使用")
         history = st.session_state.regex_tool_recent_patterns
         if history:
+            if st.session_state.regex_tool_recent_choice not in history:
+                st.session_state.regex_tool_recent_choice = history[0]
             st.selectbox(
                 "最近使用过的表达式",
                 history,
                 key="regex_tool_recent_choice",
             )
-            if st.button("应用最近表达式", key="regex_tool_apply_recent", use_container_width=True):
-                _apply_recent_pattern()
+            st.button("应用最近表达式", key="regex_tool_apply_recent", use_container_width=True, on_click=_apply_recent_pattern)
         else:
             st.caption("本次会话里运行成功的表达式会出现在这里。")
 
@@ -541,15 +597,12 @@ def _render_playground_tab():
 
     action_col1, action_col2 = st.columns(2)
     with action_col1:
-        if st.button("运行正则测试", key="regex_tool_run", use_container_width=True):
-            _run_playground()
+        st.button("运行正则测试", key="regex_tool_run", use_container_width=True, on_click=_run_playground)
     with action_col2:
-        if st.button("清空当前输入", key="regex_tool_clear", use_container_width=True):
-            _clear_playground()
-            st.rerun()
+        st.button("清空当前输入", key="regex_tool_clear", use_container_width=True, on_click=_clear_playground)
 
     if st.session_state.regex_tool_test_error:
-        st.error(st.session_state.regex_tool_test_error)
+        render_error_feedback(st.session_state.regex_tool_test_error, title="运行失败")
 
     _render_playground_result()
 
@@ -610,12 +663,12 @@ def _render_codegen_tab():
             help="不同语言支持的正则 flags 会有差异。",
         )
         if language == "Go":
-            st.info("Go 会把 flags 以内联形式拼接到表达式前缀，例如 `(?i)`。")
+            render_info_feedback("Go 会把 flags 以内联形式拼接到表达式前缀，例如 `(?i)`。", title="Go flags 说明")
 
         if st.button("生成代码", key="regex_tool_generate_code", use_container_width=True):
             pattern = _resolve_codegen_pattern()
             if not pattern:
-                st.warning("当前没有可用的表达式，请先填写或从测试页带入。")
+                render_warning_feedback("当前没有可用的表达式，请先填写或从测试页带入。", title="生成失败")
             else:
                 st.session_state.regex_tool_generated_code = build_regex_code(
                     pattern,
@@ -625,9 +678,7 @@ def _render_codegen_tab():
                     replacement=st.session_state.regex_tool_codegen_replacement,
                 )
 
-        if st.button("清空代码生成区", key="regex_tool_clear_codegen", use_container_width=True):
-            _clear_codegen()
-            st.rerun()
+        st.button("清空代码生成区", key="regex_tool_clear_codegen", use_container_width=True, on_click=_clear_codegen)
 
     generated = st.session_state.regex_tool_generated_code
     if generated:
@@ -694,12 +745,10 @@ def _render_examples_tab():
         if st.button("生成表达式", key="regex_tool_generate_from_examples", use_container_width=True):
             _run_example_generator()
     with button_col2:
-        if st.button("清空示例区", key="regex_tool_clear_examples", use_container_width=True):
-            _clear_examples()
-            st.rerun()
+        st.button("清空示例区", key="regex_tool_clear_examples", use_container_width=True, on_click=_clear_examples)
 
     if st.session_state.regex_tool_examples_error:
-        st.error(st.session_state.regex_tool_examples_error)
+        render_error_feedback(st.session_state.regex_tool_examples_error, title="生成失败")
 
     result = st.session_state.regex_tool_generated_example_result
     if not result:
@@ -716,10 +765,13 @@ def _render_examples_tab():
 
     action_col1, action_col2 = st.columns(2)
     with action_col1:
-        if st.button("带回测试页继续调试", key="regex_tool_apply_generated_pattern", use_container_width=True):
-            st.session_state.regex_tool_pattern = result["pattern"]
-            st.session_state.regex_tool_text = st.session_state.regex_tool_examples_source
-            st.success("已把生成结果带回测试页表达式和测试文本。")
+        st.button(
+            "带回测试页继续调试",
+            key="regex_tool_apply_generated_pattern",
+            use_container_width=True,
+            on_click=_apply_generated_pattern_to_playground,
+            args=(result["pattern"], st.session_state.regex_tool_examples_source),
+        )
     with action_col2:
         st.download_button(
             "下载生成表达式",
@@ -759,13 +811,21 @@ def _run_quick_extract():
 def _render_quick_extract_tab():
     action_col1, action_col2 = st.columns(2)
     with action_col1:
-        if st.button("带入测试页文本", key="regex_tool_quick_use_test_text", use_container_width=True):
-            st.session_state.regex_tool_quick_extract_source = st.session_state.regex_tool_text
-            st.rerun()
+        st.button(
+            "带入测试页文本",
+            key="regex_tool_quick_use_test_text",
+            use_container_width=True,
+            on_click=_copy_text_to_quick_extract,
+            args=(st.session_state.regex_tool_text,),
+        )
     with action_col2:
-        if st.button("带入示例页原文", key="regex_tool_quick_use_example_text", use_container_width=True):
-            st.session_state.regex_tool_quick_extract_source = st.session_state.regex_tool_examples_source
-            st.rerun()
+        st.button(
+            "带入示例页原文",
+            key="regex_tool_quick_use_example_text",
+            use_container_width=True,
+            on_click=_copy_text_to_quick_extract,
+            args=(st.session_state.regex_tool_examples_source,),
+        )
 
     st.text_input(
         "字段名 / 参数名",
@@ -783,7 +843,7 @@ def _render_quick_extract_tab():
         _run_quick_extract()
 
     if st.session_state.regex_tool_quick_extract_error:
-        st.error(st.session_state.regex_tool_quick_extract_error)
+        render_error_feedback(st.session_state.regex_tool_quick_extract_error, title="候选生成失败")
 
     suggestions = st.session_state.regex_tool_quick_extract_result
     if not suggestions:
@@ -794,15 +854,19 @@ def _render_quick_extract_tab():
         st.markdown(f"### 候选 {index + 1}: {item['label']}")
         st.code(item["pattern"], language="regex")
         st.caption(f"命中 {item['match_count']} 次，示例值: {', '.join(item['sample_values'])}")
-        if st.button(f"应用候选 {index + 1} 到测试页", key=f"regex_tool_apply_quick_candidate_{index}", use_container_width=True):
-            st.session_state.regex_tool_pattern = item["pattern"]
-            st.session_state.regex_tool_text = st.session_state.regex_tool_quick_extract_source
-            st.success("已带回测试页。")
+        st.button(
+            f"应用候选 {index + 1} 到测试页",
+            key=f"regex_tool_apply_quick_candidate_{index}",
+            use_container_width=True,
+            on_click=_apply_quick_candidate_to_playground,
+            args=(item["pattern"], st.session_state.regex_tool_quick_extract_source),
+        )
 
 
 def render_regex_tester_page():
     _ensure_defaults()
     show_doc("regex_tester")
+    render_flash_status_feedback(REGEX_FLASH_SLOT)
 
     tab1, tab2, tab3, tab4 = st.tabs(["表达式测试", "代码生成", "示例反推", "字段提取向导"])
     with tab1:

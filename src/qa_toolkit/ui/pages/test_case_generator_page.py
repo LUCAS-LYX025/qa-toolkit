@@ -9,7 +9,15 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.action_controls import action_download_button, primary_action_button, secondary_action_button
+from qa_toolkit.ui.components.status_feedback import (
+    render_error_feedback,
+    render_info_feedback,
+    render_success_feedback,
+    render_warning_feedback,
+)
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
+from qa_toolkit.ui.components.tool_page_shell import render_tool_empty_state, render_tool_page_hero, render_tool_tips
 
 
 SAMPLE_REQUIREMENT = """用户可在 App 端新增收货地址，并支持将地址设为默认地址。
@@ -173,7 +181,7 @@ def _render_analysis_result(analysis: Dict[str, Any]) -> None:
     metric_cols[2].metric("识别业务规则", len(analysis["business_rules"]))
     metric_cols[3].metric("建议覆盖维度", len(analysis["suggested_focus"]))
 
-    st.info(f"需求摘要: {analysis['summary'] or '当前暂无摘要'}")
+    render_info_feedback(analysis["summary"] or "当前暂无可展示的需求摘要。", title="需求摘要")
 
     col1, col2 = st.columns(2)
     with col1:
@@ -274,7 +282,7 @@ def _render_generation_results(generator: TestCaseGenerator) -> None:
         filtered_rows.append(row)
 
     if not filtered_rows:
-        st.info("当前过滤条件下没有匹配的测试用例。")
+        render_info_feedback("当前过滤条件下没有匹配的测试用例。", title="筛选结果为空")
         return
 
     st.dataframe(pd.DataFrame(filtered_rows), use_container_width=True, hide_index=True)
@@ -299,36 +307,32 @@ def _render_generation_results(generator: TestCaseGenerator) -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     export_col1, export_col2, export_col3, export_col4 = st.columns(4)
     with export_col1:
-        st.download_button(
-            "下载 Excel",
+        action_download_button(
+            "导出 Excel",
             data=export_buffers["excel"],
             file_name=f"test_cases_{timestamp}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
         )
     with export_col2:
-        st.download_button(
-            "下载 CSV",
+        action_download_button(
+            "导出 CSV",
             data=export_buffers["csv"],
             file_name=f"test_cases_{timestamp}.csv",
             mime="text/csv",
-            use_container_width=True,
         )
     with export_col3:
-        st.download_button(
-            "下载 JSON",
+        action_download_button(
+            "导出 JSON",
             data=export_buffers["json"],
             file_name=f"test_cases_{timestamp}.json",
             mime="application/json",
-            use_container_width=True,
         )
     with export_col4:
-        st.download_button(
-            "下载 Markdown",
+        action_download_button(
+            "导出 Markdown",
             data=export_buffers["markdown"],
             file_name=f"test_cases_{timestamp}.md",
             mime="text/markdown",
-            use_container_width=True,
         )
 
 
@@ -337,15 +341,29 @@ def render_test_case_generator_page() -> None:
     generator = TestCaseGenerator()
 
     show_doc("test_case_generator")
-    st.markdown('<div class="category-card">🧪 AI 测试用例生成器</div>', unsafe_allow_html=True)
+    render_tool_page_hero(
+        "🧪",
+        "AI 测试用例生成器",
+        "把需求原文、OCR 补充、业务规则和验收标准整理成模型更易理解的上下文，再输出可筛选、可导出的测试用例结果。",
+        tags=["多模型", "OCR 补充", "本地需求分析", "Excel / CSV / JSON / Markdown"],
+        accent="#be185d",
+    )
+    render_tool_tips(
+        "推荐流程",
+        [
+            "先做“需求梳理”，确认功能点、业务规则和待澄清项，再开始生成。",
+            "需求越结构化，生成质量越稳定，建议把模块、约束和验收标准补充完整。",
+            "生成后先按优先级和关键词过滤，再导出到测试管理系统或评审材料里。",
+        ],
+    )
 
     top_col1, top_col2, top_col3 = st.columns([1, 1, 3])
     with top_col1:
-        if st.button("载入示例需求", use_container_width=True, key="tcg_load_example"):
+        if secondary_action_button("载入示例", key="tcg_load_example"):
             _load_example_requirement()
             st.rerun()
     with top_col2:
-        if st.button("清空当前内容", use_container_width=True, key="tcg_clear_input"):
+        if secondary_action_button("清空输入", key="tcg_clear_input"):
             for key in [
                 "tcg_requirement_text",
                 "tcg_ocr_text",
@@ -379,9 +397,9 @@ def render_test_case_generator_page() -> None:
             ocr_status = generator.get_ocr_status()
             status_type = ocr_status["status"]
             if status_type == "available":
-                st.success(ocr_status["message"])
+                render_success_feedback(ocr_status["message"], title="OCR 状态")
             else:
-                st.info(ocr_status["message"])
+                render_info_feedback(ocr_status["message"], title="OCR 状态")
 
             uploaded_image = st.file_uploader(
                 "上传需求截图 / 原型图",
@@ -401,11 +419,11 @@ def render_test_case_generator_page() -> None:
                     generator.get_ocr_preprocess_modes(),
                     key="tcg_ocr_preprocess_mode",
                 )
-            if st.button("识别图片文字", use_container_width=True, key="tcg_run_ocr"):
+            if primary_action_button("开始 OCR 识别", key="tcg_run_ocr"):
                 if uploaded_image is None:
-                    st.warning("请先上传图片。")
+                    render_warning_feedback("请先上传一张需求截图或原型图。")
                 elif not generator.is_ocr_available():
-                    st.warning("当前环境 OCR 不可用，无法识别图片文字。")
+                    render_warning_feedback("当前环境 OCR 不可用，暂时无法识别图片文字。")
                 else:
                     try:
                         ocr_text = generator.extract_text_from_image(
@@ -414,9 +432,9 @@ def render_test_case_generator_page() -> None:
                             preprocess_mode=st.session_state.tcg_ocr_preprocess_mode,
                         )
                         st.session_state.tcg_ocr_text = ocr_text
-                        st.success("图片文字识别完成。")
+                        render_success_feedback("图片文字识别完成，识别结果已自动回填到补充文本区域。")
                     except Exception as exc:
-                        st.error(f"OCR 识别失败: {exc}")
+                        render_error_feedback(f"OCR 识别失败: {exc}")
 
         with st.expander("结构化补充说明", expanded=True):
             field_col1, field_col2 = st.columns(2)
@@ -431,7 +449,7 @@ def render_test_case_generator_page() -> None:
 
         action_col1, action_col2 = st.columns(2)
         with action_col1:
-            if st.button("梳理需求并推荐覆盖维度", use_container_width=True, key="tcg_analyze_requirement"):
+            if primary_action_button("开始需求梳理", key="tcg_analyze_requirement"):
                 composed_requirement = _compose_requirement(generator)
                 analysis = generator.analyze_requirement(composed_requirement)
                 st.session_state.tcg_composed_requirement = composed_requirement
@@ -476,17 +494,17 @@ def render_test_case_generator_page() -> None:
             key="tcg_selected_focus",
         )
 
-        if st.button("生成测试用例", use_container_width=True, key="tcg_generate_cases"):
+        if primary_action_button("开始生成测试用例", key="tcg_generate_cases"):
             composed_requirement = _compose_requirement(generator)
             st.session_state.tcg_composed_requirement = composed_requirement
             st.session_state.tcg_generation_error = ""
 
             if not composed_requirement.strip():
-                st.warning("请先输入需求内容。")
+                render_warning_feedback("请先输入需求内容，再开始生成测试用例。")
             else:
                 validation_error = _validate_api_config(st.session_state.tcg_platform, api_config)
                 if validation_error:
-                    st.warning(validation_error)
+                    render_warning_feedback(validation_error, title="配置不完整")
                 else:
                     try:
                         with st.spinner("正在调用模型生成测试用例..."):
@@ -509,14 +527,14 @@ def render_test_case_generator_page() -> None:
                                 "cases": generator.normalize_cases_for_display(cases),
                             }
                         )
-                        st.success(f"已生成 {len(cases)} 条测试用例。")
+                        render_success_feedback(f"测试用例生成完成，本次共输出 {len(cases)} 条结果。")
                     except Exception as exc:
                         st.session_state.tcg_generated_cases = None
                         st.session_state.tcg_generation_error = str(exc)
-                        st.error(f"生成失败: {exc}")
+                        render_error_feedback(f"生成失败: {exc}")
 
         if st.session_state.tcg_generation_error:
-            st.error(st.session_state.tcg_generation_error)
+            render_error_feedback(st.session_state.tcg_generation_error)
 
         if st.session_state.tcg_history:
             with st.expander("最近生成记录", expanded=False):
@@ -526,7 +544,7 @@ def render_test_case_generator_page() -> None:
                     with history_col1:
                         st.write(title)
                     with history_col2:
-                        if st.button("回填", key=f"tcg_history_apply_{index}", use_container_width=True):
+                        if secondary_action_button("回填结果", key=f"tcg_history_apply_{index}"):
                             st.session_state.tcg_requirement_text = item["requirement"]
                             st.session_state.tcg_composed_requirement = item["requirement"]
                             st.session_state.tcg_generated_cases = item["cases"]
@@ -534,6 +552,9 @@ def render_test_case_generator_page() -> None:
 
     with result_tab:
         if not st.session_state.tcg_generated_cases:
-            st.info("生成完成后，这里会展示可筛选的用例列表和多格式导出按钮。")
+            render_tool_empty_state(
+                "等待生成结果",
+                "完成需求分析并执行生成后，这里会展示可筛选的测试用例列表和多格式导出按钮。",
+            )
         else:
             _render_generation_results(generator)

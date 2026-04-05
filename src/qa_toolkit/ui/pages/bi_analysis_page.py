@@ -7,6 +7,9 @@ import streamlit as st
 
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
+from qa_toolkit.ui.components.action_controls import primary_action_button, secondary_action_button
+from qa_toolkit.ui.components.status_feedback import render_error_feedback, render_success_feedback, render_warning_feedback
+from qa_toolkit.ui.components.tool_page_shell import render_tool_empty_state, render_tool_page_hero, render_tool_tips
 
 
 DEFAULT_STATE = {
@@ -33,7 +36,7 @@ def _clear_loaded_dataset(analyzer: BIAnalyzer) -> None:
 
 def _load_dataset(analyzer: BIAnalyzer, uploaded_file, sheet_name: str) -> None:
     if uploaded_file is None:
-        st.warning("请先上传一个待分析的数据文件。")
+        render_warning_feedback("请先上传一个待分析的数据文件。")
         return
 
     signature = f"{uploaded_file.name}:{getattr(uploaded_file, 'size', 0)}:{sheet_name or ''}"
@@ -42,7 +45,7 @@ def _load_dataset(analyzer: BIAnalyzer, uploaded_file, sheet_name: str) -> None:
 
     df, message = analyzer.load_data(uploaded_file, sheet_name=sheet_name or None)
     if df is None:
-        st.error(message)
+        render_error_feedback(message)
         return
 
     st.session_state.bi_loaded_df = df
@@ -50,7 +53,7 @@ def _load_dataset(analyzer: BIAnalyzer, uploaded_file, sheet_name: str) -> None:
     st.session_state.bi_loaded_signature = signature
     st.session_state.bi_loaded_sheet_name = sheet_name or ""
     if message:
-        st.success(message)
+        render_success_feedback(message)
 
 
 def _render_dataset_summary(df: pd.DataFrame, context: Dict[str, Any]) -> None:
@@ -76,7 +79,21 @@ def render_bi_analysis_page() -> None:
     analyzer = BIAnalyzer()
 
     show_doc("bi_analyzer")
-    st.markdown('<div class="category-card">📊 BI 数据分析工作台</div>', unsafe_allow_html=True)
+    render_tool_page_hero(
+        "📊",
+        "BI 数据分析工作台",
+        "面向测试、开发、数据和业务场景做统一验数，覆盖模板下载、场景识别、质量诊断、可视化分析和报告导出。",
+        tags=["CSV / Excel / JSON", "质量诊断", "透视趋势", "图表导出"],
+        accent="#0f766e",
+    )
+    render_tool_tips(
+        "推荐路径",
+        [
+            "先上传模板或真实数据并加载，再看“场景洞察”确认字段语义。",
+            "进入“质量诊断”和“测试校验”优先排掉空值、重复键和时间格式问题。",
+            "最后再看统计分析和图表工作台，避免基于脏数据输出结论。",
+        ],
+    )
 
     uploaded_file = analyzer.show_upload_section()
     selected_sheet = ""
@@ -94,10 +111,10 @@ def render_bi_analysis_page() -> None:
 
     action_col1, action_col2, action_col3 = st.columns([1, 1, 3])
     with action_col1:
-        if st.button("加载数据", use_container_width=True, key="bi_load_dataset"):
+        if primary_action_button("开始加载数据", key="bi_load_dataset"):
             _load_dataset(analyzer, uploaded_file, selected_sheet)
     with action_col2:
-        if st.button("清空当前数据", use_container_width=True, key="bi_clear_dataset"):
+        if secondary_action_button("清空数据", key="bi_clear_dataset"):
             _clear_loaded_dataset(analyzer)
             st.rerun()
     with action_col3:
@@ -108,7 +125,10 @@ def render_bi_analysis_page() -> None:
 
     df = st.session_state.bi_loaded_df
     if not isinstance(df, pd.DataFrame):
-        st.info("上传文件后点击“加载数据”，即可进入场景洞察、质量诊断、校验与可视化分析。")
+        render_tool_empty_state(
+            "等待数据集加载",
+            "上传文件后点击“加载数据”，就可以继续做场景洞察、质量诊断、测试校验和图表分析。",
+        )
         return
 
     context = analyzer.build_analysis_context(df)

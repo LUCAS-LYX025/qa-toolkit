@@ -10,6 +10,14 @@ import plotly.express as px
 import streamlit as st
 
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.status_feedback import (
+    push_status_feedback,
+    render_error_feedback,
+    render_flash_status_feedback,
+    render_info_feedback,
+    render_success_feedback,
+    render_warning_feedback,
+)
 from qa_toolkit.utils.log_analysis import (
     apply_json_filters,
     apply_text_filters,
@@ -252,6 +260,7 @@ def _summary_export_payload(summary: Dict[str, Any], scope_label: str) -> str:
 
 
 def _render_import_tab():
+    render_flash_status_feedback("log_analyzer_import")
     st.markdown("### 导入方式")
     import_method = st.radio("选择来源", ["文件上传", "直接粘贴"], horizontal=True)
 
@@ -294,10 +303,10 @@ def _render_import_tab():
                     else:
                         text = decode_log_bytes(raw_bytes)
                         _load_text_source(text, file_name, "text")
-                    st.success("日志数据导入成功")
+                    push_status_feedback("log_analyzer_import", "success", "日志数据导入成功。", title="导入完成")
                     st.rerun()
                 except Exception as exc:
-                    st.error(f"导入失败: {exc}")
+                    render_error_feedback(f"导入失败: {exc}")
     else:
         pasted_text = st.text_area(
             "粘贴日志内容",
@@ -307,10 +316,10 @@ def _render_import_tab():
         )
         if st.button("导入粘贴内容", use_container_width=True):
             if not pasted_text.strip():
-                st.warning("请输入日志内容")
+                render_warning_feedback("请输入日志内容。", title="缺少输入")
             else:
                 _load_text_source(pasted_text, "手动粘贴", "text")
-                st.success("日志数据导入成功")
+                push_status_feedback("log_analyzer_import", "success", "日志数据导入成功。", title="导入完成")
                 st.rerun()
 
     if st.session_state.log_analyzer_raw_text or isinstance(st.session_state.log_analyzer_df, pd.DataFrame):
@@ -318,12 +327,13 @@ def _render_import_tab():
         if isinstance(st.session_state.log_analyzer_df, pd.DataFrame):
             st.dataframe(st.session_state.log_analyzer_df.head(20), use_container_width=True, height=320)
             if st.session_state.log_analyzer_json_fields:
-                st.info(
+                render_info_feedback(
                     "检测到 JSON 列: "
                     + "、".join(
                         f"{column} ({len(fields)} 个字段)"
                         for column, fields in st.session_state.log_analyzer_json_fields.items()
-                    )
+                    ),
+                    title="结构识别",
                 )
         else:
             preview_lines = _get_source_lines()[:20]
@@ -354,7 +364,7 @@ def _render_overview_tab(summary: Dict[str, Any], scope_label: str):
     metric_cols2[4].metric("分析范围", scope_label)
 
     notes = build_health_notes(summary)
-    st.info(" | ".join(notes))
+    render_info_feedback(" | ".join(notes), title="健康提示")
 
     time_range = summary.get("time_range")
     if time_range:
@@ -443,7 +453,7 @@ def _render_active_conditions(
 ):
     st.markdown("### 当前条件")
     if not quick_text_filters and not advanced_text_filters and not json_filters:
-        st.info("当前没有活动过滤条件。")
+        render_info_feedback("当前没有活动过滤条件。", title="过滤条件")
         return
 
     for index, filter_config in enumerate(quick_text_filters):
@@ -537,7 +547,7 @@ def _render_filter_tab(source_lines: List[str]):
                 value = col3.text_input("值", key="log_csv_filter_value")
             if col4.button("添加 CSV 条件", use_container_width=True):
                 if operator not in {"有值", "没有值"} and not value:
-                    st.warning("请输入条件值")
+                    render_warning_feedback("请输入条件值。", title="条件未完成")
                 else:
                     st.session_state.log_analyzer_advanced_text_filters.append(
                         {
@@ -577,7 +587,7 @@ def _render_filter_tab(source_lines: List[str]):
                 json_value = col4.text_input("字段值", key="log_json_filter_value")
             if col5.button("添加 JSON 条件", use_container_width=True):
                 if json_operator not in {"有值", "没有值", "数值范围"} and not json_value:
-                    st.warning("请输入字段值")
+                    render_warning_feedback("请输入字段值。", title="条件未完成")
                 else:
                     st.session_state.log_analyzer_json_filters.append(
                         {
@@ -601,7 +611,7 @@ def _render_filter_tab(source_lines: List[str]):
     st.caption(f"当前结果 {len(filtered_lines):,} 行 / 原始 {len(source_lines):,} 行")
 
     if not filtered_lines:
-        st.warning("当前条件下没有匹配结果。")
+        render_warning_feedback("当前条件下没有匹配结果。", title="过滤结果")
         return
 
     if filtered_df is not None:
@@ -646,7 +656,7 @@ def _render_search_tab(source_lines: List[str]):
 
     keyword = str(st.session_state.log_analyzer_search_keyword or "").strip()
     if not keyword:
-        st.info("请输入搜索关键词后查看结果。")
+        render_info_feedback("请输入搜索关键词后查看结果。", title="等待搜索")
         return
 
     if st.session_state.log_analyzer_search_scope == "过滤结果" and active_filters:
@@ -669,11 +679,11 @@ def _render_search_tab(source_lines: List[str]):
             max_results=200,
         )
     except ValueError as exc:
-        st.error(str(exc))
+        render_error_feedback(str(exc), title="搜索失败")
         return
 
     if not results:
-        st.warning("未找到匹配结果。")
+        render_warning_feedback("未找到匹配结果。", title="搜索结果")
         return
 
     metric_cols = st.columns(4)
@@ -718,7 +728,7 @@ def _render_search_tab(source_lines: List[str]):
 def _render_counter_table(title: str, pairs: List[tuple[Any, Any]], first_col: str, second_col: str):
     st.markdown(f"### {title}")
     if not pairs:
-        st.info("当前范围暂无相关数据。")
+        render_info_feedback("当前范围暂无相关数据。", title=title)
         return
     st.dataframe(
         pd.DataFrame([{first_col: key, second_col: value} for key, value in pairs]),
@@ -747,7 +757,7 @@ def _render_insights_tab(summary: Dict[str, Any], scope_label: str):
     if summary["duplicate_lines"]:
         st.dataframe(pd.DataFrame(summary["duplicate_lines"]), use_container_width=True, hide_index=True)
     else:
-        st.success("当前范围没有重复日志。")
+        render_success_feedback("当前范围没有重复日志。", title="重复检测")
 
     if st.session_state.log_analyzer_show_charts and summary["timeline"]:
         timeline_df = pd.DataFrame(summary["timeline"])
@@ -776,7 +786,7 @@ def render_log_analysis_page():
     if not source_lines:
         for tab in tabs[1:]:
             with tab:
-                st.info("请先导入日志数据。")
+                render_info_feedback("请先导入日志数据。", title="等待日志导入")
         return
 
     filtered_lines, _, _ = _apply_active_filters()

@@ -7,6 +7,11 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.status_feedback import (
+    render_error_feedback,
+    render_info_feedback,
+    render_success_feedback,
+)
 from qa_toolkit.utils.text_analysis import TEXT_UPLOAD_TYPES, decode_uploaded_text
 from qa_toolkit.utils.text_comparison import (
     DEFAULT_LEFT_TEXT,
@@ -87,7 +92,7 @@ def _render_source_panel(side: str, label: str):
                 _load_side_text(side, decoded_text, uploaded_file.name)
                 st.rerun()
             except ValueError as exc:
-                st.error(f"导入失败: {exc}")
+                render_error_feedback(f"导入失败: {exc}")
 
     text_value = st.text_area(
         label,
@@ -115,7 +120,7 @@ def _render_normalization_notes(comparison: Dict[str, Any]):
         notes.append(f"对比文本: {'；'.join(right_changes)}")
 
     if notes:
-        st.info("本次对比已应用以下规则:\n\n" + "\n\n".join(notes))
+        render_info_feedback("本次对比已应用以下规则:\n" + "\n".join(notes), title="规则预处理")
 
 
 def _build_profile_table(comparison: Dict[str, Any]) -> pd.DataFrame:
@@ -140,7 +145,7 @@ def _render_overview_tab(comparison: Dict[str, Any]):
     _render_normalization_notes(comparison)
 
     if not summary["changed"]:
-        st.success("两侧文本在当前对比规则下完全一致。")
+        render_success_feedback("两侧文本在当前对比规则下完全一致。", title="对比完成")
     else:
         finding_parts = [
             f"共识别 {summary['change_group_count']} 组差异",
@@ -152,7 +157,7 @@ def _render_overview_tab(comparison: Dict[str, Any]):
             finding_parts.append(
                 f"首个变化位置 左 {summary['first_change_left_line'] or '-'} / 右 {summary['first_change_right_line'] or '-'}"
             )
-        st.info(" | ".join(finding_parts))
+        render_info_feedback(" | ".join(finding_parts), title="差异摘要")
 
     st.markdown("### 对比概览")
     metric_cols = st.columns(6)
@@ -173,7 +178,7 @@ def _render_line_diff_tab(comparison: Dict[str, Any]):
     unified_diff = comparison["line_diff"]["unified_diff"]
 
     if not rows:
-        st.success("当前没有行级差异。")
+        render_success_feedback("当前没有行级差异。", title="行级差异")
         if unified_diff:
             st.code(unified_diff, language="diff")
         return
@@ -211,7 +216,7 @@ def _render_line_diff_tab(comparison: Dict[str, Any]):
             )
         st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
     else:
-        st.info("当前过滤条件下没有匹配的差异行。")
+        render_info_feedback("当前过滤条件下没有匹配的差异行。", title="过滤结果")
 
     st.markdown("### 差异块")
     st.dataframe(pd.DataFrame(blocks), use_container_width=True, hide_index=True)
@@ -244,7 +249,7 @@ def _render_token_diff_tab(comparison: Dict[str, Any], hide_equal_tokens: bool):
     if token_rows:
         st.dataframe(pd.DataFrame(token_rows), use_container_width=True, hide_index=True)
     else:
-        st.success("当前没有词级差异。")
+        render_success_feedback("当前没有词级差异。", title="词级高亮")
 
 
 def _render_export_tab(comparison: Dict[str, Any]):
@@ -336,7 +341,7 @@ def render_text_comparison_page():
     left_text = st.session_state.text_comparison_left_text
     right_text = st.session_state.text_comparison_right_text
     if not left_text and not right_text:
-        st.info("请先输入任意一侧文本，或直接载入示例。")
+        render_info_feedback("请先输入任意一侧文本，或直接载入示例。", title="等待文本输入")
         return
 
     comparison = compare_texts(

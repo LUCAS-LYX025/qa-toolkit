@@ -9,6 +9,9 @@ import streamlit as st
 
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.action_controls import action_download_button, primary_action_button
+from qa_toolkit.ui.components.status_feedback import render_info_feedback, render_success_feedback, render_warning_feedback
+from qa_toolkit.ui.components.tool_page_shell import render_tool_empty_state, render_tool_page_hero, render_tool_tips
 
 
 DEFAULT_STATE = {
@@ -56,7 +59,7 @@ def _get_db_config() -> Dict[str, Any]:
 def _create_exporter() -> Optional[ZenTaoPerformanceExporter]:
     db_config = _get_db_config()
     if not all([db_config["host"], db_config["user"], db_config["db"]]):
-        st.warning("请先填写完整的数据库连接信息。")
+        render_warning_feedback("请先填写完整的数据库连接信息。")
         return None
 
     exporter = ZenTaoPerformanceExporter(db_config)
@@ -140,7 +143,21 @@ def render_zentao_performance_page() -> None:
     _ensure_defaults()
 
     show_doc("zentao_performance_stats")
-    st.markdown('<div class="category-card">📈 禅道绩效统计</div>', unsafe_allow_html=True)
+    render_tool_page_hero(
+        "📈",
+        "禅道绩效统计",
+        "连接禅道数据库后生成测试绩效、开发绩效和超时明细，适合绩效复盘、缺陷响应分析和数据核对。",
+        tags=["测试绩效", "开发绩效", "超时明细", "Excel / CSV 导出"],
+        accent="#15803d",
+    )
+    render_tool_tips(
+        "使用建议",
+        [
+            "先连接数据库并加载产品、角色和缺陷类型，再开始配置统计参数。",
+            "角色和排除类型尽量贴近实际考核口径，否则汇总结果会偏差较大。",
+            "汇总先看趋势，争议数据再用“超时明细”按人员回查原始 Bug 记录。",
+        ],
+    )
 
     with st.expander("数据库连接配置", expanded=True):
         col1, col2, col3 = st.columns([1.5, 1, 1.2])
@@ -159,18 +176,21 @@ def render_zentao_performance_page() -> None:
 
         action_col1, action_col2 = st.columns(2)
         with action_col1:
-            if st.button("连接并加载基础数据", use_container_width=True, key="zentao_connect_button"):
+            if primary_action_button("连接并加载数据", key="zentao_connect_button"):
                 _load_metadata()
                 if st.session_state.zentao_connection_ready:
-                    st.success("数据库连接成功，产品、角色和缺陷类型已加载。")
+                    render_success_feedback("数据库连接成功，产品、角色和缺陷类型已加载。")
         with action_col2:
             if st.session_state.zentao_connection_ready:
-                st.success("当前状态: 已连接")
+                render_success_feedback("当前连接状态正常，可继续执行统计分析。", title="连接状态")
             else:
                 st.caption("当前状态: 未连接")
 
     if not st.session_state.zentao_connection_ready:
-        st.info("先完成数据库连接，再配置统计参数和生成报表。")
+        render_tool_empty_state(
+            "等待数据库连接",
+            "先完成数据库连接并加载基础数据，再继续配置统计周期、角色范围和超时阈值。",
+        )
         return
 
     products = list(st.session_state.zentao_products)
@@ -235,7 +255,7 @@ def render_zentao_performance_page() -> None:
         with timeout_col4:
             st.number_input("普通优先级周末时限(小时)", min_value=1, key="zentao_normal_priority_weekend_hours")
 
-        if st.button("生成汇总报表", use_container_width=True, key="zentao_run_summary"):
+        if primary_action_button("开始汇总统计", key="zentao_run_summary"):
             exporter = _create_exporter()
             if exporter is not None:
                 try:
@@ -249,16 +269,16 @@ def render_zentao_performance_page() -> None:
                     if summary_df is not None and not summary_df.empty:
                         person_column = summary_df.columns[0]
                         st.session_state.zentao_selected_person = str(summary_df.iloc[0][person_column])
-                        st.success(f"已生成 {len(summary_df)} 行汇总报表。")
+                        render_success_feedback(f"汇总统计完成，本次共生成 {len(summary_df)} 行报表。")
                     else:
-                        st.info("当前条件下没有查询到统计结果。")
+                        render_info_feedback("当前条件下没有查询到统计结果。", title="汇总结果为空")
                 finally:
                     exporter.close_connection()
 
     with summary_tab:
         summary_df = st.session_state.zentao_summary_df
         if not isinstance(summary_df, pd.DataFrame) or summary_df.empty:
-            st.info("先在“统计配置”页生成汇总报表。")
+            render_info_feedback("先在“统计配置”页生成汇总报表。", title="暂无汇总结果")
         else:
             _render_summary_metrics(summary_df)
             st.dataframe(summary_df, use_container_width=True, hide_index=True)
@@ -267,26 +287,24 @@ def render_zentao_performance_page() -> None:
             csv_bytes = summary_df.to_csv(index=False).encode("utf-8-sig")
             export_col1, export_col2 = st.columns(2)
             with export_col1:
-                st.download_button(
-                    "下载 Excel",
+                action_download_button(
+                    "导出 Excel",
                     data=excel_bytes,
                     file_name="zentao_summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
                 )
             with export_col2:
-                st.download_button(
-                    "下载 CSV",
+                action_download_button(
+                    "导出 CSV",
                     data=csv_bytes,
                     file_name="zentao_summary.csv",
                     mime="text/csv",
-                    use_container_width=True,
                 )
 
     with detail_tab:
         summary_df = st.session_state.zentao_summary_df
         if not isinstance(summary_df, pd.DataFrame) or summary_df.empty:
-            st.info("先生成汇总报表，再查询指定人员的超时明细。")
+            render_info_feedback("先生成汇总报表，再查询指定人员的超时明细。", title="暂无明细结果")
             return
 
         person_column = summary_df.columns[0]
@@ -298,7 +316,7 @@ def render_zentao_performance_page() -> None:
         with detail_col1:
             st.selectbox("选择人员", person_options, key="zentao_selected_person")
         with detail_col2:
-            if st.button("查询超时明细", use_container_width=True, key="zentao_run_detail"):
+            if primary_action_button("查询超时明细", key="zentao_run_detail"):
                 exporter = _create_exporter()
                 if exporter is not None:
                     try:
@@ -321,9 +339,9 @@ def render_zentao_performance_page() -> None:
                             )
                         st.session_state.zentao_detail_df = detail_df
                         if detail_df is not None and not detail_df.empty:
-                            st.success(f"已查询到 {len(detail_df)} 条超时明细。")
+                            render_success_feedback(f"超时明细查询完成，本次共返回 {len(detail_df)} 条记录。")
                         else:
-                            st.info("当前人员在该时间范围内没有超时明细。")
+                            render_info_feedback("当前人员在该时间范围内没有超时明细。", title="明细结果为空")
                     finally:
                         exporter.close_connection()
 
@@ -335,18 +353,16 @@ def render_zentao_performance_page() -> None:
             csv_bytes = detail_df.to_csv(index=False).encode("utf-8-sig")
             export_col1, export_col2 = st.columns(2)
             with export_col1:
-                st.download_button(
-                    "下载明细 Excel",
+                action_download_button(
+                    "导出明细 Excel",
                     data=excel_bytes,
                     file_name="zentao_timeout_detail.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
                 )
             with export_col2:
-                st.download_button(
-                    "下载明细 CSV",
+                action_download_button(
+                    "导出明细 CSV",
                     data=csv_bytes,
                     file_name="zentao_timeout_detail.csv",
                     mime="text/csv",
-                    use_container_width=True,
                 )
