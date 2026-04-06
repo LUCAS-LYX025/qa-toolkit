@@ -4,14 +4,8 @@ from typing import Any, Dict, List, Optional, Sequence
 import streamlit as st
 
 
-_STYLE_FLAG = "_qa_toolkit_workflow_panels_style_loaded"
-
-
 def ensure_workflow_panel_styles() -> None:
     """注入统一的页面引导和导出区样式。"""
-    if st.session_state.get(_STYLE_FLAG):
-        return
-
     st.markdown(
         """
         <style>
@@ -173,7 +167,6 @@ def ensure_workflow_panel_styles() -> None:
         """,
         unsafe_allow_html=True,
     )
-    st.session_state[_STYLE_FLAG] = True
 
 
 def render_workflow_guide(

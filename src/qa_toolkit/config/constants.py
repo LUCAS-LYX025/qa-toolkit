@@ -919,9 +919,13 @@ CSS_STYLES = """
     .qa-app-hero__desc {
         margin: 0 0 1rem 0;
         max-width: 44rem;
-        color: rgba(226, 232, 240, 0.88);
-        font-size: 1.02rem;
+        color: #ffffff;
+        font-size: 1.05rem;
+        font-weight: 800;
         line-height: 1.8;
+        text-shadow:
+            0 1px 4px rgba(7, 20, 39, 0.42),
+            0 0 16px rgba(15, 23, 42, 0.22);
     }
 
     .qa-app-hero__chip-row,

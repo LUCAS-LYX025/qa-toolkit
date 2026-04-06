@@ -38,10 +38,6 @@ STATUS_META = {
 
 
 def _inject_styles() -> None:
-    if st.session_state.get("_status_feedback_styles_ready"):
-        return
-
-    st.session_state["_status_feedback_styles_ready"] = True
     st.markdown(
         """
         <style>

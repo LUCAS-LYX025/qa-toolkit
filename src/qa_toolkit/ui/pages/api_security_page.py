@@ -2940,7 +2940,7 @@ def render_api_security_test_page():
         "应用安全测试",
         "统一的应用安全工作台，覆盖 API 文档安全、移动端 APK/IPA/APPX 静态扫描、MobSF 官方集成和 Web 站点基线扫描。默认坚持安全边界，只做授权范围内的低风险探测和清单化审计。",
         tags=["API 文档安全", "移动包静态扫描", "MobSF 集成", "Web 基线扫描"],
-        accent="#166534",
+        accent="#3182ce",
     )
     render_tool_tips(
         "安全边界",

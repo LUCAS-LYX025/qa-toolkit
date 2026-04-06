@@ -271,8 +271,8 @@ def render_back_to_top_button():
             pointer-events: auto;
         }
         .qa-toolkit-floating-shell.is-dimmed {
-            opacity: 0.38;
-            transform: translateY(6px);
+            opacity: 1;
+            transform: translateY(0);
         }
         .qa-toolkit-floating-shell.is-hidden {
             opacity: 0;

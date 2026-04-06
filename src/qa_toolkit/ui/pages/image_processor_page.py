@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import zipfile
 from pathlib import Path
@@ -137,6 +138,143 @@ def _get_crop_metrics(crop_box: tuple[int, int, int, int], image_width: int, ima
     crop_height = bottom - top
     usage_ratio = crop_width * crop_height / max(1, image_width * image_height) * 100
     return crop_width, crop_height, usage_ratio
+
+
+def _build_upload_signature(uploaded_file) -> str:
+    payload = uploaded_file.getvalue()
+    digest = hashlib.sha1(payload).hexdigest()[:12]
+    stem_name = Path(getattr(uploaded_file, "name", "uploaded-image")).stem or "uploaded-image"
+    size = getattr(uploaded_file, "size", len(payload))
+    return f"{stem_name}-{size}-{digest}"
+
+
+def _build_default_crop_box(
+    processor: ImageProcessor,
+    image_width: int,
+    image_height: int,
+    aspect_ratio: tuple[int, int] | None,
+) -> tuple[int, int, int, int]:
+    inset_ratio = 0.08
+    max_crop_width = max(1, int(round(image_width * (1 - inset_ratio * 2))))
+    max_crop_height = max(1, int(round(image_height * (1 - inset_ratio * 2))))
+
+    if aspect_ratio:
+        target_ratio = aspect_ratio[0] / aspect_ratio[1]
+        if max_crop_width / max_crop_height > target_ratio:
+            crop_height = max_crop_height
+            crop_width = max(1, int(round(crop_height * target_ratio)))
+        else:
+            crop_width = max_crop_width
+            crop_height = max(1, int(round(crop_width / target_ratio)))
+    else:
+        crop_width = max_crop_width
+        crop_height = max_crop_height
+
+    left = max(0, (image_width - crop_width) // 2)
+    top = max(0, (image_height - crop_height) // 2)
+    return processor.normalize_crop_box((left, top, left + crop_width, top + crop_height), image_width, image_height)
+
+
+def _to_cropper_default_coords(
+    processor: ImageProcessor,
+    crop_box: tuple[int, int, int, int],
+    image_width: int,
+    image_height: int,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = processor.normalize_crop_box(crop_box, image_width, image_height)
+    return left, right, top, bottom
+
+
+def _render_cropper_style() -> None:
+    st.markdown(
+        """
+        <style>
+        .qa-image-cropper-guide {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 14px;
+            padding: 14px 16px;
+            border-radius: 16px;
+            border: 1px solid rgba(255, 122, 24, 0.28);
+            background: linear-gradient(135deg, rgba(255, 247, 237, 0.96) 0%, rgba(255, 255, 255, 0.98) 100%);
+            box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+        }
+        .qa-image-cropper-guide__dot {
+            width: 12px;
+            height: 12px;
+            margin-top: 5px;
+            flex: 0 0 12px;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #ff7a18 0%, #ffb347 100%);
+            box-shadow: 0 0 0 4px rgba(255, 122, 24, 0.16);
+        }
+        .qa-image-cropper-guide__title {
+            color: #8a3b06;
+            font-size: 1rem;
+            font-weight: 800;
+            line-height: 1.45;
+            margin-bottom: 2px;
+        }
+        .qa-image-cropper-guide__desc {
+            color: #92400e;
+            font-size: 0.93rem;
+            font-weight: 600;
+            line-height: 1.6;
+        }
+        .qa-image-cropper-metrics {
+            padding: 16px 18px;
+            border-radius: 18px;
+            border: 1px solid rgba(15, 76, 129, 0.12);
+            background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(240, 249, 255, 0.95) 100%);
+            box-shadow: 0 18px 32px rgba(15, 23, 42, 0.07);
+            margin-bottom: 12px;
+        }
+        .qa-image-cropper-metrics__eyebrow {
+            color: #0f4c81;
+            font-size: 0.8rem;
+            font-weight: 800;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 6px;
+        }
+        .qa-image-cropper-metrics__size {
+            color: #10253a;
+            font-size: 1.45rem;
+            font-weight: 900;
+            line-height: 1.15;
+            margin-bottom: 8px;
+        }
+        .qa-image-cropper-metrics__meta {
+            color: #365168;
+            font-size: 0.92rem;
+            font-weight: 700;
+            line-height: 1.65;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_crop_metrics_card(
+    crop_box: tuple[int, int, int, int],
+    original_width: int,
+    original_height: int,
+) -> None:
+    crop_width, crop_height, usage_ratio = _get_crop_metrics(crop_box, original_width, original_height)
+    left, top, right, bottom = crop_box
+    st.markdown(
+        f"""
+        <div class="qa-image-cropper-metrics">
+            <div class="qa-image-cropper-metrics__eyebrow">Current Selection</div>
+            <div class="qa-image-cropper-metrics__size">{crop_width} × {crop_height} px</div>
+            <div class="qa-image-cropper-metrics__meta">起点 ({left}, {top}) · 终点 ({right}, {bottom})</div>
+            <div class="qa-image-cropper-metrics__meta">原图利用率 {usage_ratio:.1f}%</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _crop_box_to_coordinates(processor: ImageProcessor, box, image_width: int, image_height: int) -> tuple[int, int, int, int] | None:
@@ -384,7 +522,7 @@ def _render_rotate_tab(processor: ImageProcessor, image: Image.Image, stem_name:
             render_error_feedback(f"图片旋转失败: {exc}")
 
 
-def _render_crop_tab(processor: ImageProcessor, image: Image.Image, stem_name: str) -> None:
+def _render_crop_tab(processor: ImageProcessor, image: Image.Image, stem_name: str, upload_signature: str) -> None:
     crop_method = st.radio("裁剪方式", ["自由裁剪", "按比例裁剪"], horizontal=True, key="image_tool_crop_method")
     crop_interaction_options = ["拖拽裁剪框", "数值微调"] if INTERACTIVE_CROP_AVAILABLE else ["数值微调"]
     crop_interaction = st.radio("裁剪交互", crop_interaction_options, horizontal=True, key="image_tool_crop_interaction")
@@ -414,28 +552,41 @@ def _render_crop_tab(processor: ImageProcessor, image: Image.Image, stem_name: s
     original_height = image.height
 
     if crop_interaction == "拖拽裁剪框" and INTERACTIVE_CROP_AVAILABLE:
+        _render_cropper_style()
         cropper_col, info_col = st.columns([1.35, 1])
         with cropper_col:
+            st.markdown(
+                """
+                <div class="qa-image-cropper-guide">
+                    <span class="qa-image-cropper-guide__dot"></span>
+                    <div>
+                        <div class="qa-image-cropper-guide__title">拖动高亮裁剪框，首屏会自动给出一个清晰可见的默认区域</div>
+                        <div class="qa-image-cropper-guide__desc">橙色边框就是最终保留范围。拖四角可以改尺寸，拖中间可以改位置。</div>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            default_crop_box = _build_default_crop_box(processor, original_width, original_height, aspect_ratio_tuple)
             cropped_preview, crop_box_data = st_cropper(
                 image,
                 realtime_update=True,
-                box_color="#0f4c81",
+                default_coords=_to_cropper_default_coords(processor, default_crop_box, original_width, original_height),
+                box_color="#ff7a18",
                 aspect_ratio=aspect_ratio_tuple,
                 return_type="both",
                 should_resize_image=True,
-                stroke_width=2,
-                key=f"image_tool_cropper_{crop_method}_{aspect_ratio_tuple}",
+                stroke_width=4,
+                key=f"image_tool_cropper_{upload_signature}_{crop_method}_{aspect_ratio_tuple or 'free'}",
             )
-        crop_box = _crop_box_to_coordinates(processor, crop_box_data, original_width, original_height)
+        crop_box = _crop_box_to_coordinates(processor, crop_box_data, original_width, original_height) or default_crop_box
+        if cropped_preview is None:
+            cropped_preview = processor.crop_image(image, crop_box)
         with info_col:
             if crop_box is not None:
-                crop_width, crop_height, usage_ratio = _get_crop_metrics(crop_box, original_width, original_height)
-                st.success(f"裁剪区域: {crop_width} × {crop_height} 像素")
-                st.image(cropped_preview, caption="裁剪预览", use_container_width=True)
-                st.caption(
-                    f"位置 ({crop_box[0]}, {crop_box[1]}) 到 ({crop_box[2]}, {crop_box[3]})，"
-                    f"原图利用率 {usage_ratio:.1f}%"
-                )
+                _render_crop_metrics_card(crop_box, original_width, original_height)
+                if cropped_preview is not None:
+                    st.image(cropped_preview, caption="裁剪预览", use_container_width=True)
     else:
         if crop_method == "自由裁剪":
             col_setting, col_preview = st.columns([1, 1])
@@ -582,6 +733,7 @@ def render_image_processor_page() -> None:
 
     processor = ImageProcessor()
     stem_name = Path(uploaded_file.name).stem
+    upload_signature = _build_upload_signature(uploaded_file)
     st.image(image, caption="原图预览", use_container_width=True)
     _render_source_summary(image, uploaded_file)
 
@@ -609,6 +761,6 @@ def render_image_processor_page() -> None:
     with rotate_tab:
         _render_rotate_tab(processor, image, stem_name)
     with crop_tab:
-        _render_crop_tab(processor, image, stem_name)
+        _render_crop_tab(processor, image, stem_name, upload_signature)
     with watermark_tab:
         _render_watermark_tab(processor, image, stem_name)

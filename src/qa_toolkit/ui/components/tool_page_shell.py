@@ -6,10 +6,6 @@ import streamlit as st
 
 
 def _inject_styles() -> None:
-    if st.session_state.get("_tool_page_shell_styles_ready"):
-        return
-
-    st.session_state["_tool_page_shell_styles_ready"] = True
     st.markdown(
         """
         <style>
@@ -21,19 +17,21 @@ def _inject_styles() -> None:
             padding: 24px 24px 20px;
             margin: 10px 0 18px;
             background:
-                radial-gradient(circle at top right, rgba(255,255,255,0.24), transparent 34%),
-                linear-gradient(135deg, var(--hero-accent) 0%, #10253a 58%, #0f172a 100%);
-            color: #f8fafc;
-            border: 1px solid rgba(255, 255, 255, 0.12);
-            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+                radial-gradient(circle at top right, color-mix(in srgb, var(--hero-accent) 18%, white 82%), transparent 52%),
+                linear-gradient(145deg, rgba(250, 252, 255, 0.99) 0%, rgba(241, 246, 252, 0.99) 56%, rgba(248, 244, 236, 0.99) 100%);
+            color: #17324a;
+            border: 1px solid rgba(208, 218, 231, 0.96);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.88),
+                0 18px 36px rgba(15, 23, 42, 0.08);
         }
         .qa-tool-shell-hero::before {
             content: "";
             position: absolute;
             inset: 0;
             background:
-                linear-gradient(135deg, rgba(7, 20, 39, 0.14), rgba(7, 20, 39, 0.34)),
-                radial-gradient(circle at bottom left, rgba(255,255,255,0.08), rgba(255,255,255,0) 42%);
+                linear-gradient(135deg, rgba(255,255,255,0.22), rgba(255,255,255,0.02)),
+                radial-gradient(circle at bottom left, color-mix(in srgb, var(--hero-accent) 10%, white 90%), rgba(255,255,255,0) 42%);
             pointer-events: none;
             z-index: 0;
         }
@@ -41,22 +39,41 @@ def _inject_styles() -> None:
             position: relative;
             z-index: 1;
             max-width: 920px;
+            padding: 18px 20px 16px;
+            border-radius: 18px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.84), rgba(255,255,255,0.70));
+            border: 1px solid rgba(214, 223, 234, 0.92);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.84),
+                0 10px 22px rgba(15, 23, 42, 0.06);
         }
-        .qa-tool-shell-hero h3 {
+        .qa-tool-shell-hero__content::before {
+            content: "";
+            position: absolute;
+            inset: 0 auto 0 0;
+            width: 4px;
+            border-radius: 18px 0 0 18px;
+            background: linear-gradient(180deg, var(--hero-accent) 0%, color-mix(in srgb, var(--hero-accent) 42%, white 58%) 100%);
+            opacity: 0.9;
+        }
+        .qa-tool-shell-hero__title {
             margin: 0 0 8px;
-            font-size: 1.72rem;
-            font-weight: 800;
+            font-size: 1.76rem;
+            font-weight: 900;
             letter-spacing: 0.01em;
-            color: #ffffff;
-            text-shadow: 0 2px 8px rgba(7, 20, 39, 0.28);
+            color: var(--hero-title-color);
+            text-shadow:
+                0 1px 0 rgba(255,255,255,0.52),
+                0 2px 8px rgba(15, 23, 42, 0.08);
         }
-        .qa-tool-shell-hero p {
+        .qa-tool-shell-hero__desc {
             margin: 0;
-            font-size: 1rem;
+            font-size: 1.02rem;
             line-height: 1.72;
-            color: rgba(248, 250, 252, 0.98);
-            font-weight: 600;
-            text-shadow: 0 1px 4px rgba(7, 20, 39, 0.32);
+            color: var(--hero-desc-color);
+            font-weight: 700;
+            text-shadow:
+                0 1px 0 rgba(255,255,255,0.42);
         }
         .qa-tool-shell-tags {
             display: flex;
@@ -69,11 +86,10 @@ def _inject_styles() -> None:
             border-radius: 999px;
             font-size: 0.82rem;
             font-weight: 700;
-            background: rgba(255, 255, 255, 0.18);
-            border: 1px solid rgba(255, 255, 255, 0.28);
-            color: #ffffff;
-            backdrop-filter: blur(6px);
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+            background: color-mix(in srgb, var(--hero-accent) 10%, white 90%);
+            border: 1px solid color-mix(in srgb, var(--hero-accent) 22%, white 78%);
+            color: #17324a;
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.72);
         }
         .qa-tool-shell-empty {
             border: 1px dashed rgba(250, 204, 21, 0.28);
@@ -135,15 +151,17 @@ def render_tool_page_hero(
     description: str,
     tags: Iterable[str] | None = None,
     accent: str = "#2563eb",
+    title_color: str = "#10253a",
+    description_color: str = "#365168",
 ) -> None:
     _inject_styles()
     tag_items = "".join(f'<span class="qa-tool-shell-tag">{tag}</span>' for tag in (tags or []))
     st.markdown(
         f"""
-        <div class="qa-tool-shell-hero" style="--hero-accent: {accent};">
+        <div class="qa-tool-shell-hero" style="--hero-accent: {accent}; --hero-title-color: {title_color}; --hero-desc-color: {description_color};">
             <div class="qa-tool-shell-hero__content">
-                <h3>{icon} {title}</h3>
-                <p>{description}</p>
+                <h3 class="qa-tool-shell-hero__title">{icon} {title}</h3>
+                <p class="qa-tool-shell-hero__desc">{description}</p>
                 <div class="qa-tool-shell-tags">{tag_items}</div>
             </div>
         </div>
