@@ -37,9 +37,11 @@
 
 ## 3. 配置 Secrets
 
-如果要启用 MobSF 远程能力，在 Community Cloud 的 App Settings -> Secrets 中填入：
+如果要启用“测试用例生成器”的免费体验示范和 MobSF 远程能力，在 Community Cloud 的 App Settings -> Secrets 中填入：
 
 ```toml
+TCG_DEMO_GLM_API_KEY = "replace-with-your-demo-glm-api-key"
+
 [mobsf]
 base_url = "https://your-mobsf.example.com"
 api_key = "replace-with-your-mobsf-api-key"
@@ -50,6 +52,7 @@ include_pdf = false
 
 说明：
 
+- `TCG_DEMO_GLM_API_KEY` 用于“测试用例生成器 -> 免费体验示范”，配置后用户可免填 API Key 直接体验默认示范模型
 - `base_url` 填 MobSF 根地址，不要只填到某个单独接口
 - 如果你的 MobSF 在反向代理子路径下，填子路径根地址，例如 `https://demo.example.com/mobsf`
 - `api_key` 建议只放在 Secrets，不要写进仓库

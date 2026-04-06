@@ -178,3 +178,109 @@ def test_resolve_chat_completion_url_supports_default_and_custom_base(monkeypatc
     assert generator._resolve_chat_completion_url("https://gateway.example.com/v1/chat/completions") == (
         "https://gateway.example.com/v1/chat/completions"
     )
+
+
+def test_resolve_anthropic_messages_url_supports_default_and_custom_base(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+
+    assert generator._resolve_anthropic_messages_url() == "https://api.anthropic.com/v1/messages"
+    assert generator._resolve_anthropic_messages_url("https://gateway.example.com/v1") == (
+        "https://gateway.example.com/v1/messages"
+    )
+    assert generator._resolve_anthropic_messages_url("https://api.anthropic.com") == (
+        "https://api.anthropic.com/v1/messages"
+    )
+    assert generator._resolve_anthropic_messages_url("https://gateway.example.com/v1/messages") == (
+        "https://gateway.example.com/v1/messages"
+    )
+
+
+def test_call_ali_api_uses_configured_model_version(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+    captured = {}
+
+    class _DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "output": {
+                    "text": (
+                        '[{"用例ID":"TC001","用例名称":"登录成功","前置条件":"账号存在",'
+                        '"测试步骤":"1. 输入账号","预期结果":"登录成功","优先级":"高","测试类型":"功能"}]'
+                    )
+                }
+            }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _DummyResponse()
+
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.requests.post", _fake_post)
+
+    cases = generator._call_ali_api(
+        requirement="用户可以登录系统",
+        api_config={"api_key": "test-key", "model_version": "qwen3-max"},
+        id_prefix="TC",
+        case_style="标准格式",
+        language="中文",
+        target_case_count=3,
+        coverage_focus=["核心功能"],
+    )
+
+    assert captured["json"]["model"] == "qwen3-max"
+    assert captured["url"].endswith("/generation")
+    assert cases[0]["用例ID"] == "TC001"
+
+
+def test_call_anthropic_api_uses_messages_endpoint_and_model_version(monkeypatch):
+    monkeypatch.setattr(TestCaseGenerator, "_configure_ocr", lambda self: None)
+    generator = TestCaseGenerator()
+    captured = {}
+
+    class _DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            '[{"用例ID":"TC001","用例名称":"登录失败提示","前置条件":"账号存在",'
+                            '"测试步骤":"1. 输入错误密码","预期结果":"提示密码错误","优先级":"高","测试类型":"异常"}]'
+                        ),
+                    }
+                ]
+            }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _DummyResponse()
+
+    monkeypatch.setattr("qa_toolkit.tools.test_case_generator.requests.post", _fake_post)
+
+    cases = generator._call_anthropic_api(
+        requirement="用户登录失败时需要给出提示",
+        api_config={"api_key": "test-key", "model_version": "claude-sonnet-4-20250514"},
+        id_prefix="TC",
+        case_style="标准格式",
+        language="中文",
+        target_case_count=3,
+        coverage_focus=["异常处理"],
+    )
+
+    assert captured["url"].endswith("/messages")
+    assert captured["json"]["model"] == "claude-sonnet-4-20250514"
+    assert captured["headers"]["anthropic-version"] == "2023-06-01"
+    assert cases[0]["测试类型"] == "异常"

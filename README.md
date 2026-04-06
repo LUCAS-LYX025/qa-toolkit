@@ -447,6 +447,8 @@ Streamlit Cloud 部署：
 - 如需在 Cloud 中使用 MobSF，建议在应用 Secrets 中配置：
 
 ```toml
+TCG_DEMO_GLM_API_KEY = "replace-with-your-demo-glm-api-key"
+
 [mobsf]
 base_url = "https://your-mobsf.example.com"
 api_key = "replace-with-your-mobsf-api-key"
@@ -455,6 +457,7 @@ verify_ssl = true
 include_pdf = false
 ```
 
+- `TCG_DEMO_GLM_API_KEY` 用于“测试用例生成器 -> 免费体验示范”，配置后用户可免填 API Key 直接体验默认示范模型
 - 仓库提供示例文件：`.streamlit/secrets.toml.example`
 - Community Cloud 中本地文件系统是临时的，`workspace/mobsf_profile.local.json` 只适合本机，不适合当长期云端配置
 

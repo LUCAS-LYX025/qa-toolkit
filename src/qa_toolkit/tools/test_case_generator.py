@@ -23,11 +23,12 @@ class TestCaseGenerator:
 
     def __init__(self):
         self.supported_platforms = {
-            "ali": "阿里通义千问",
-            "openai": "OpenAI GPT",
+            "ali": "阿里通义千问（DashScope）",
+            "openai": "OpenAI / 兼容网关",
+            "anthropic": "Anthropic Claude",
             "baidu": "百度文心一言",
             "spark": "讯飞星火",
-            "glm": "智谱ChatGLM"
+            "glm": "智谱 GLM（兼容接口）"
         }
 
         self.case_styles = {
@@ -168,6 +169,7 @@ class TestCaseGenerator:
         platform_methods = {
             "ali": self._call_ali_api,
             "openai": self._call_openai_api,
+            "anthropic": self._call_anthropic_api,
             "baidu": self._call_baidu_api,
             "spark": self._call_spark_api,
             "glm": self._call_glm_api
@@ -202,7 +204,7 @@ class TestCaseGenerator:
         )
 
         payload = {
-            "model": "qwen-turbo",
+            "model": api_config.get("model_version", "qwen-flash"),
             "input": {"messages": [{"role": "user", "content": prompt}]},
             "parameters": {"result_format": "text"}
         }
@@ -320,6 +322,55 @@ class TestCaseGenerator:
         except Exception as e:
             raise Exception(f"百度文心一言API调用失败: {str(e)}")
 
+    def _call_anthropic_api(self, requirement: str, api_config: Dict, id_prefix: str,
+                            case_style: str, language: str, target_case_count: int,
+                            coverage_focus: List[str]) -> List[Dict]:
+        """调用 Anthropic Claude Messages API。"""
+        headers = {
+            "x-api-key": api_config["api_key"],
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        request_url = self._resolve_anthropic_messages_url(api_config.get("api_base"))
+        prompt = self._build_prompt(
+            requirement,
+            id_prefix,
+            case_style,
+            language,
+            "anthropic",
+            target_case_count=target_case_count,
+            coverage_focus=coverage_focus,
+        )
+
+        payload = {
+            "model": api_config.get("model_version", "claude-sonnet-4-20250514"),
+            "max_tokens": 4096,
+            "temperature": 0.3,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+
+        try:
+            response = requests.post(
+                request_url,
+                headers=headers,
+                json=payload,
+                timeout=60,
+            )
+            response.raise_for_status()
+            response_data = response.json()
+            content_blocks = response_data.get("content", [])
+            result_parts = [
+                str(block.get("text", ""))
+                for block in content_blocks
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            result_text = "\n".join(part for part in result_parts if part).strip()
+            if not result_text:
+                raise Exception("API响应格式错误")
+            return self._parse_testcases(result_text, id_prefix, language)
+        except Exception as e:
+            raise Exception(f"Anthropic Claude API调用失败: {str(e)}")
+
     def _call_spark_api(self, requirement: str, api_config: Dict, id_prefix: str,
                         case_style: str, language: str, target_case_count: int,
                         coverage_focus: List[str]) -> List[Dict]:
@@ -399,6 +450,20 @@ class TestCaseGenerator:
         if normalized.endswith("/chat/completions"):
             return normalized
         return f"{normalized}/chat/completions"
+
+    def _resolve_anthropic_messages_url(self, api_base: Optional[str] = None) -> str:
+        """将 Anthropic 地址归一化为 messages 端点。"""
+        normalized = str(api_base or "https://api.anthropic.com/v1/messages").strip().rstrip("/")
+        if not normalized:
+            normalized = "https://api.anthropic.com/v1/messages"
+
+        if normalized.endswith("/messages"):
+            return normalized
+        if normalized.endswith("/v1"):
+            return f"{normalized}/messages"
+        if normalized.endswith("api.anthropic.com"):
+            return f"{normalized}/v1/messages"
+        return f"{normalized}/messages"
 
     def _build_prompt(self, requirement: str, id_prefix: str, case_style: str,
                       language: str, platform: str = "default",

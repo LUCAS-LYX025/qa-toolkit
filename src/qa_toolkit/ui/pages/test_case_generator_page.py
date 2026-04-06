@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List
 
@@ -27,6 +28,222 @@ SAMPLE_REQUIREMENT = """用户可在 App 端新增收货地址，并支持将地
 当接口超时、服务异常或字段校验失败时，需要给出明确提示。
 本次不覆盖批量导入地址。"""
 
+PRESET_GROUPS = {
+    "免费示范": "适合第一次试用和给用户做开箱演示。",
+    "均衡": "兼顾速度、成本和稳定性，适合日常生成。",
+    "旗舰": "优先模型上限和生成质量，适合复杂需求。",
+    "推理": "更偏复杂规则、边界和深度分析场景。",
+}
+
+MODEL_PRESETS = {
+    "glm_free_demo": {
+        "label": "智谱 GLM-4.7-Flash | 免费示范",
+        "provider": "智谱 AI",
+        "platform": "glm",
+        "group": "免费示范",
+        "summary": "官方模型概览标注为免费模型，适合作为默认示范。中文任务稳定，接入成本低。",
+        "cost": "免费模型",
+        "state_updates": {
+            "tcg_platform": "glm",
+            "tcg_glm_model_version": "glm-4.7-flash",
+            "tcg_glm_api_base": "https://open.bigmodel.cn/api/paas/v4",
+        },
+    },
+    "qwen_flash": {
+        "label": "阿里通义 Qwen-Flash | 性价比",
+        "provider": "阿里云百炼",
+        "platform": "ali",
+        "group": "均衡",
+        "summary": "Qwen3 系列里的低成本入口，适合快速生成与批量试用。",
+        "cost": "新客常见有免费额度",
+        "state_updates": {
+            "tcg_platform": "ali",
+            "tcg_ali_model_version": "qwen-flash",
+        },
+    },
+    "qwen3_max": {
+        "label": "阿里通义 Qwen3-Max | 旗舰",
+        "provider": "阿里云百炼",
+        "platform": "ali",
+        "group": "旗舰",
+        "summary": "当前旗舰强模型，复杂需求梳理和长上下文任务更稳。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "ali",
+            "tcg_ali_model_version": "qwen3-max",
+        },
+    },
+    "deepseek_chat": {
+        "label": "DeepSeek-V3.2 Chat | 通用强项",
+        "provider": "DeepSeek",
+        "platform": "openai",
+        "group": "均衡",
+        "summary": "官方兼容 OpenAI 接口，适合通用测试用例生成和日常需求拆解。",
+        "cost": "低成本商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "deepseek-chat",
+            "tcg_openai_api_base": "https://api.deepseek.com/v1",
+        },
+    },
+    "deepseek_reasoner": {
+        "label": "DeepSeek-V3.2 Reasoner | 深度推理",
+        "provider": "DeepSeek",
+        "platform": "openai",
+        "group": "推理",
+        "summary": "适合复杂规则、边界和推理链更长的需求，但响应会更慢一些。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "deepseek-reasoner",
+            "tcg_openai_api_base": "https://api.deepseek.com/v1",
+        },
+    },
+    "kimi_k25": {
+        "label": "Kimi K2.5 | 新版主力",
+        "provider": "Moonshot AI",
+        "platform": "openai",
+        "group": "旗舰",
+        "summary": "官方最新主力模型，适合长上下文、Agent 风格任务和复杂需求整理。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "kimi-k2.5",
+            "tcg_openai_api_base": "https://api.moonshot.cn/v1",
+        },
+    },
+    "kimi_k2_thinking": {
+        "label": "Kimi K2 Thinking | 推理版",
+        "provider": "Moonshot AI",
+        "platform": "openai",
+        "group": "推理",
+        "summary": "更偏深度思考和复杂任务拆解，适合高约束场景。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "kimi-k2-thinking",
+            "tcg_openai_api_base": "https://api.moonshot.cn/v1",
+        },
+    },
+    "doubao_20_lite": {
+        "label": "豆包 Doubao-Seed-2.0-Lite | 均衡",
+        "provider": "火山引擎",
+        "platform": "openai",
+        "group": "均衡",
+        "summary": "豆包 2.0 系列的均衡版本，适合普通业务需求生成和低成本试用。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "doubao-seed-2-0-lite-260215",
+            "tcg_openai_api_base": "https://operator.las.cn-beijing.volces.com/api/v1",
+        },
+    },
+    "openai_gpt54": {
+        "label": "OpenAI GPT-5.4 | 旗舰",
+        "provider": "OpenAI",
+        "platform": "openai",
+        "group": "旗舰",
+        "summary": "OpenAI 官方当前旗舰模型，适合复杂需求理解、测试设计和高质量生成。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "gpt-5.4",
+            "tcg_openai_api_base": "https://api.openai.com/v1",
+        },
+    },
+    "openai_gpt54_mini": {
+        "label": "OpenAI GPT-5.4 mini | 均衡",
+        "provider": "OpenAI",
+        "platform": "openai",
+        "group": "均衡",
+        "summary": "OpenAI 官方主推 mini 模型，适合低延迟和日常批量生成。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "gpt-5.4-mini",
+            "tcg_openai_api_base": "https://api.openai.com/v1",
+        },
+    },
+    "anthropic_claude_sonnet4": {
+        "label": "Anthropic Claude Sonnet 4 | 均衡旗舰",
+        "provider": "Anthropic",
+        "platform": "anthropic",
+        "group": "均衡",
+        "summary": "Claude 当前高性能均衡模型，适合复杂业务场景、长文需求和质量优先生成。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "anthropic",
+            "tcg_anthropic_model_version": "claude-sonnet-4-20250514",
+            "tcg_anthropic_api_base": "https://api.anthropic.com/v1/messages",
+        },
+    },
+    "anthropic_claude_opus41": {
+        "label": "Anthropic Claude Opus 4.1 | 最强档",
+        "provider": "Anthropic",
+        "platform": "anthropic",
+        "group": "旗舰",
+        "summary": "Anthropic 当前最强模型，适合高复杂度需求拆解和更强推理场景。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "anthropic",
+            "tcg_anthropic_model_version": "claude-opus-4-1-20250805",
+            "tcg_anthropic_api_base": "https://api.anthropic.com/v1/messages",
+        },
+    },
+    "gemini_25_flash": {
+        "label": "Google Gemini 2.5 Flash | 兼容网关",
+        "provider": "Google",
+        "platform": "openai",
+        "group": "均衡",
+        "summary": "Gemini 官方支持 OpenAI 兼容调用，适合高性价比快速生成。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "gemini-2.5-flash",
+            "tcg_openai_api_base": "https://generativelanguage.googleapis.com/v1beta/openai",
+        },
+    },
+    "gemini_25_pro": {
+        "label": "Google Gemini 2.5 Pro | 高质量",
+        "provider": "Google",
+        "platform": "openai",
+        "group": "旗舰",
+        "summary": "Gemini 高阶模型，适合长上下文、复杂推理和结构化输出场景。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "gemini-2.5-pro",
+            "tcg_openai_api_base": "https://generativelanguage.googleapis.com/v1beta/openai",
+        },
+    },
+    "xai_grok_fast": {
+        "label": "xAI Grok 4.1 Fast | 快速生成",
+        "provider": "xAI",
+        "platform": "openai",
+        "group": "均衡",
+        "summary": "xAI 官方 OpenAI 兼容接口，适合快速生成和较低成本试用。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "grok-4-1-fast-non-reasoning",
+            "tcg_openai_api_base": "https://api.x.ai/v1",
+        },
+    },
+    "mistral_large": {
+        "label": "Mistral Large | 通用旗舰",
+        "provider": "Mistral AI",
+        "platform": "openai",
+        "group": "旗舰",
+        "summary": "Mistral 官方聊天接口兼容当前请求格式，适合国际化文本和多语言生成。",
+        "cost": "商业计费",
+        "state_updates": {
+            "tcg_platform": "openai",
+            "tcg_openai_model_version": "mistral-large-latest",
+            "tcg_openai_api_base": "https://api.mistral.ai/v1",
+        },
+    },
+}
+
 DEFAULT_STATE = {
     "tcg_requirement_text": "",
     "tcg_ocr_text": "",
@@ -40,7 +257,10 @@ DEFAULT_STATE = {
     "tcg_generated_cases": None,
     "tcg_generation_error": "",
     "tcg_history": [],
-    "tcg_platform": "ali",
+    "tcg_platform": "glm",
+    "tcg_provider_preset": "glm_free_demo",
+    "tcg_provider_group": "免费示范",
+    "tcg_provider_group_picker": "免费示范",
     "tcg_case_style": "标准格式",
     "tcg_language": "中文",
     "tcg_target_case_count": 12,
@@ -51,17 +271,22 @@ DEFAULT_STATE = {
     "tcg_ocr_language_label": "中英混合",
     "tcg_ocr_preprocess_mode": "增强文本",
     "tcg_ali_api_key": "",
+    "tcg_ali_model_version": "qwen-flash",
     "tcg_openai_api_key": "",
-    "tcg_openai_model_version": "gpt-4o-mini",
+    "tcg_openai_model_version": "gpt-5.4-mini",
     "tcg_openai_api_base": "",
+    "tcg_anthropic_api_key": "",
+    "tcg_anthropic_model_version": "claude-sonnet-4-20250514",
+    "tcg_anthropic_api_base": "https://api.anthropic.com/v1/messages",
     "tcg_baidu_api_key": "",
     "tcg_baidu_secret_key": "",
     "tcg_spark_api_key": "",
     "tcg_spark_api_base": "http://maas-api.cn-huabei-1.xf-yun.com/v1",
     "tcg_spark_model_id": "",
     "tcg_glm_api_key": "",
-    "tcg_glm_model_version": "glm-4-flash",
+    "tcg_glm_model_version": "glm-4.7-flash",
     "tcg_glm_api_base": "https://open.bigmodel.cn/api/paas/v4",
+    "tcg_use_demo_glm_key": False,
 }
 
 
@@ -98,17 +323,149 @@ def _record_history(entry: Dict[str, Any]) -> None:
     st.session_state.tcg_history = history[:6]
 
 
-def _render_api_config(platform: str) -> Dict[str, Any]:
+def _get_model_preset_catalog() -> Dict[str, Dict[str, Any]]:
+    return MODEL_PRESETS
+
+
+def _get_preset_ids_by_group(group_name: str) -> List[str]:
+    return [
+        preset_id
+        for preset_id, preset in MODEL_PRESETS.items()
+        if preset.get("group", "均衡") == group_name
+    ]
+
+
+def _get_demo_glm_api_key() -> str:
+    for key_name in ("TCG_DEMO_GLM_API_KEY", "QA_TOOLKIT_DEMO_GLM_API_KEY"):
+        secret_value = ""
+        try:
+            secret_value = str(st.secrets.get(key_name, "")).strip()
+        except Exception:
+            secret_value = ""
+        if secret_value:
+            return secret_value
+
+        env_value = os.getenv(key_name, "").strip()
+        if env_value:
+            return env_value
+    return ""
+
+
+def _apply_model_preset(preset_id: str) -> Dict[str, Any]:
+    preset = MODEL_PRESETS[preset_id]
+    st.session_state.tcg_provider_preset = preset_id
+    st.session_state.tcg_provider_group = preset.get("group", "均衡")
+    if preset_id == "glm_free_demo" and _get_demo_glm_api_key():
+        st.session_state.tcg_use_demo_glm_key = True
+    elif preset.get("platform") != "glm":
+        st.session_state.tcg_use_demo_glm_key = False
+    for key, value in preset["state_updates"].items():
+        st.session_state[key] = value
+    return preset
+
+
+def _render_model_preset_panel() -> Dict[str, Any]:
+    presets = _get_model_preset_catalog()
+    free_demo_preset_id = "glm_free_demo"
+    demo_key_available = bool(_get_demo_glm_api_key())
+    if st.session_state.tcg_provider_preset not in presets:
+        st.session_state.tcg_provider_preset = free_demo_preset_id
+
+    st.markdown("### 免费体验示范")
+    demo_col1, demo_col2 = st.columns([2.4, 1])
+    with demo_col1:
+        feedback_renderer = render_success_feedback if demo_key_available else render_info_feedback
+        feedback_renderer(
+            (
+                f"推荐模型: {presets[free_demo_preset_id]['label']}\n"
+                f"提供方: {presets[free_demo_preset_id]['provider']}\n"
+                f"适合场景: {presets[free_demo_preset_id]['summary']}\n"
+                f"费用特征: {presets[free_demo_preset_id]['cost']}\n"
+                + (
+                    "当前部署端已配置服务端体验 Key，用户可以免填 API Key 直接体验。"
+                    if demo_key_available
+                    else "当前部署端还没有配置体验 Key；如果在 st.secrets 或环境变量里配置 TCG_DEMO_GLM_API_KEY，就能给用户免填 Key 体验。"
+                )
+            ),
+            title="默认免费示范",
+        )
+    with demo_col2:
+        st.caption("")
+        if secondary_action_button("套用免费示范", key="tcg_apply_free_demo_preset"):
+            preset = _apply_model_preset(free_demo_preset_id)
+            render_success_feedback(
+                f"已套用 {preset['label']}，下方平台、模型和 Base URL 已自动回填。",
+                title="示范已生效",
+            )
+
+    st.markdown("### 主流模型快捷预设")
+    if st.session_state.tcg_provider_group_picker not in PRESET_GROUPS:
+        st.session_state.tcg_provider_group_picker = "免费示范"
+
+    selected_group = st.radio(
+        "预设分组",
+        list(PRESET_GROUPS.keys()),
+        key="tcg_provider_group_picker",
+        horizontal=True,
+    )
+    st.caption(PRESET_GROUPS[selected_group])
+    group_presets = _get_preset_ids_by_group(selected_group)
+    picker_key = f"tcg_provider_preset_picker_{selected_group}"
+    selected_preset = st.selectbox(
+        "选择主流模型",
+        group_presets,
+        format_func=lambda key: presets[key]["label"],
+        key=picker_key,
+    )
+    active_preset = presets[selected_preset]
+    if secondary_action_button("套用所选预设", key="tcg_apply_selected_preset"):
+        preset = _apply_model_preset(selected_preset)
+        render_success_feedback(
+            f"已套用 {preset['label']}，下方平台、模型和 Base URL 已自动回填。",
+            title="预设已生效",
+        )
+
+    render_info_feedback(
+        (
+            f"提供方: {active_preset['provider']}\n"
+            f"适合场景: {active_preset['summary']}\n"
+            f"费用特征: {active_preset['cost']}\n"
+            "说明: 预设只帮你填好平台、模型和地址，API Key 仍需使用你自己的账号。"
+        ),
+        title="当前选中预设",
+    )
+    return active_preset
+
+
+def _resolve_effective_api_config(platform: str, api_config: Dict[str, Any]) -> Dict[str, Any]:
+    effective_config = dict(api_config)
+    if platform == "glm" and st.session_state.tcg_use_demo_glm_key:
+        demo_key = _get_demo_glm_api_key()
+        if demo_key:
+            effective_config["api_key"] = demo_key
+    return effective_config
+
+
+def _render_api_config(platform: str, active_preset: Dict[str, Any] | None = None) -> Dict[str, Any]:
     st.markdown("### API 配置")
 
     if platform == "ali":
-        st.text_input("阿里 API Key", key="tcg_ali_api_key", type="password")
-        return {"api_key": st.session_state.tcg_ali_api_key}
-
-    if platform == "openai":
         col1, col2 = st.columns(2)
         with col1:
-            st.text_input("OpenAI API Key", key="tcg_openai_api_key", type="password")
+            st.text_input("阿里 API Key", key="tcg_ali_api_key", type="password")
+        with col2:
+            st.text_input("模型名称", key="tcg_ali_model_version")
+        st.caption("推荐模型: qwen-flash、qwen-plus、qwen-max、qwen3-max。")
+        return {
+            "api_key": st.session_state.tcg_ali_api_key,
+            "model_version": st.session_state.tcg_ali_model_version,
+        }
+
+    if platform == "openai":
+        provider_label = active_preset["provider"] if active_preset and active_preset.get("platform") == "openai" else "兼容网关"
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input(f"{provider_label} API Key", key="tcg_openai_api_key", type="password")
         with col2:
             st.text_input("模型名称", key="tcg_openai_model_version")
         st.text_input(
@@ -116,10 +473,29 @@ def _render_api_config(platform: str) -> Dict[str, Any]:
             key="tcg_openai_api_base",
             placeholder="留空默认使用 https://api.openai.com/v1",
         )
+        st.caption("这一栏也支持 OpenAI、DeepSeek、Kimi、Gemini、Grok、Mistral、豆包等兼容网关。")
         return {
             "api_key": st.session_state.tcg_openai_api_key,
             "model_version": st.session_state.tcg_openai_model_version,
             "api_base": st.session_state.tcg_openai_api_base,
+        }
+
+    if platform == "anthropic":
+        col1, col2 = st.columns(2)
+        with col1:
+            st.text_input("Anthropic API Key", key="tcg_anthropic_api_key", type="password")
+        with col2:
+            st.text_input("模型名称", key="tcg_anthropic_model_version")
+        st.text_input(
+            "Messages API 地址",
+            key="tcg_anthropic_api_base",
+            placeholder="留空默认使用 https://api.anthropic.com/v1/messages",
+        )
+        st.caption("Claude 走 Anthropic 原生 Messages API，不走 OpenAI 兼容层。")
+        return {
+            "api_key": st.session_state.tcg_anthropic_api_key,
+            "model_version": st.session_state.tcg_anthropic_model_version,
+            "api_base": st.session_state.tcg_anthropic_api_base,
         }
 
     if platform == "baidu":
@@ -148,11 +524,20 @@ def _render_api_config(platform: str) -> Dict[str, Any]:
 
     col1, col2 = st.columns(2)
     with col1:
-        st.text_input("智谱 API Key", key="tcg_glm_api_key", type="password")
+        st.text_input(
+            "智谱 API Key",
+            key="tcg_glm_api_key",
+            type="password",
+            disabled=st.session_state.tcg_use_demo_glm_key and bool(_get_demo_glm_api_key()),
+        )
     with col2:
         st.text_input("模型名称", key="tcg_glm_model_version")
     st.text_input("兼容 Base URL", key="tcg_glm_api_base")
-    st.caption("当前按 OpenAI 兼容协议调用，若你使用智谱兼容网关，可直接填兼容地址。")
+    if _get_demo_glm_api_key():
+        st.checkbox("使用内置体验 Key", key="tcg_use_demo_glm_key")
+        if st.session_state.tcg_use_demo_glm_key:
+            render_success_feedback("当前已启用服务端体验 Key，用户无需手填 API Key。", title="体验模式")
+    st.caption("当前按 OpenAI 兼容协议调用，默认示范已预置为官方免费模型 glm-4.7-flash。")
     return {
         "api_key": st.session_state.tcg_glm_api_key,
         "model_version": st.session_state.tcg_glm_model_version,
@@ -164,6 +549,7 @@ def _validate_api_config(platform: str, api_config: Dict[str, Any]) -> str:
     required_fields = {
         "ali": ["api_key"],
         "openai": ["api_key"],
+        "anthropic": ["api_key", "model_version"],
         "baidu": ["api_key", "secret_key"],
         "spark": ["api_key", "model_id"],
         "glm": ["api_key", "model_version"],
@@ -466,6 +852,7 @@ def render_test_case_generator_page() -> None:
                 st.code(st.session_state.tcg_composed_requirement, language="markdown")
 
     with config_tab:
+        active_preset = _render_model_preset_panel()
         platforms = generator.get_supported_platforms()
         st.selectbox(
             "模型平台",
@@ -473,7 +860,8 @@ def render_test_case_generator_page() -> None:
             format_func=lambda key: platforms[key],
             key="tcg_platform",
         )
-        api_config = _render_api_config(st.session_state.tcg_platform)
+        api_config = _render_api_config(st.session_state.tcg_platform, active_preset)
+        effective_api_config = _resolve_effective_api_config(st.session_state.tcg_platform, api_config)
 
         option_col1, option_col2, option_col3, option_col4 = st.columns(4)
         with option_col1:
@@ -502,7 +890,7 @@ def render_test_case_generator_page() -> None:
             if not composed_requirement.strip():
                 render_warning_feedback("请先输入需求内容，再开始生成测试用例。")
             else:
-                validation_error = _validate_api_config(st.session_state.tcg_platform, api_config)
+                validation_error = _validate_api_config(st.session_state.tcg_platform, effective_api_config)
                 if validation_error:
                     render_warning_feedback(validation_error, title="配置不完整")
                 else:
@@ -511,7 +899,7 @@ def render_test_case_generator_page() -> None:
                             cases = generator.generate_testcases(
                                 requirement=composed_requirement,
                                 platform=st.session_state.tcg_platform,
-                                api_config=api_config,
+                                api_config=effective_api_config,
                                 id_prefix=st.session_state.tcg_id_prefix.strip() or "TC",
                                 case_style=st.session_state.tcg_case_style,
                                 language=st.session_state.tcg_language,
