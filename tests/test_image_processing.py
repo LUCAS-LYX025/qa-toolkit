@@ -88,3 +88,54 @@ def test_convert_to_multiple_filesizes_returns_all_requested_variants():
     assert [item["target_label"] for item in results] == ["100 KB", "150 KB"]
     assert [item["target_bytes"] for item in results] == [100 * 1024, 150 * 1024]
     assert [item["size_bytes"] for item in results] == [100 * 1024, 150 * 1024]
+
+
+def test_resize_image_returns_requested_dimensions():
+    processor = ImageProcessor()
+    image = build_test_image(320, 180)
+
+    resized = processor.resize_image(image, 160, 90, "BILINEAR")
+
+    assert resized.size == (160, 90)
+
+
+def test_flip_image_supports_horizontal_and_vertical_modes():
+    processor = ImageProcessor()
+    image = Image.new("RGB", (2, 2))
+    image.putdata(
+        [
+            (255, 0, 0),
+            (0, 255, 0),
+            (0, 0, 255),
+            (255, 255, 0),
+        ]
+    )
+
+    horizontal = processor.flip_image(image, "左右翻转")
+    vertical = processor.flip_image(image, "上下翻转")
+
+    assert horizontal.getpixel((0, 0)) == (0, 255, 0)
+    assert horizontal.getpixel((1, 0)) == (255, 0, 0)
+    assert vertical.getpixel((0, 0)) == (0, 0, 255)
+    assert vertical.getpixel((0, 1)) == (255, 0, 0)
+
+
+def test_rotate_image_positive_angle_is_clockwise():
+    processor = ImageProcessor()
+    image = Image.new("RGB", (2, 1))
+    image.putdata([(255, 0, 0), (0, 0, 255)])
+
+    rotated = processor.rotate_image(image, 90)
+
+    assert rotated.size == (1, 2)
+    assert rotated.getpixel((0, 0)) == (255, 0, 0)
+    assert rotated.getpixel((0, 1)) == (0, 0, 255)
+
+
+def test_crop_image_normalizes_out_of_bounds_box():
+    processor = ImageProcessor()
+    image = build_test_image(10, 10)
+
+    cropped = processor.crop_image(image, (-5, -4, 14, 13))
+
+    assert cropped.size == (10, 10)

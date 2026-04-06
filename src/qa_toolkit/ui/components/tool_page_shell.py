@@ -16,27 +16,47 @@ def _inject_styles() -> None:
         .qa-tool-shell-hero {
             position: relative;
             overflow: hidden;
-            border-radius: 22px;
-            padding: 24px 24px 18px;
+            isolation: isolate;
+            border-radius: 24px;
+            padding: 24px 24px 20px;
             margin: 10px 0 18px;
             background:
-                radial-gradient(circle at top right, rgba(255,255,255,0.22), transparent 36%),
-                linear-gradient(135deg, var(--hero-accent) 0%, #0f172a 100%);
+                radial-gradient(circle at top right, rgba(255,255,255,0.24), transparent 34%),
+                linear-gradient(135deg, var(--hero-accent) 0%, #10253a 58%, #0f172a 100%);
             color: #f8fafc;
-            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+        }
+        .qa-tool-shell-hero::before {
+            content: "";
+            position: absolute;
+            inset: 0;
+            background:
+                linear-gradient(135deg, rgba(7, 20, 39, 0.14), rgba(7, 20, 39, 0.34)),
+                radial-gradient(circle at bottom left, rgba(255,255,255,0.08), rgba(255,255,255,0) 42%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        .qa-tool-shell-hero__content {
+            position: relative;
+            z-index: 1;
+            max-width: 920px;
         }
         .qa-tool-shell-hero h3 {
             margin: 0 0 8px;
-            font-size: 1.6rem;
-            font-weight: 700;
+            font-size: 1.72rem;
+            font-weight: 800;
+            letter-spacing: 0.01em;
             color: #ffffff;
+            text-shadow: 0 2px 8px rgba(7, 20, 39, 0.28);
         }
         .qa-tool-shell-hero p {
             margin: 0;
-            font-size: 0.96rem;
-            line-height: 1.65;
-            color: rgba(248, 250, 252, 0.92);
-            max-width: 900px;
+            font-size: 1rem;
+            line-height: 1.72;
+            color: rgba(248, 250, 252, 0.98);
+            font-weight: 600;
+            text-shadow: 0 1px 4px rgba(7, 20, 39, 0.32);
         }
         .qa-tool-shell-tags {
             display: flex;
@@ -45,13 +65,15 @@ def _inject_styles() -> None:
             margin-top: 16px;
         }
         .qa-tool-shell-tag {
-            padding: 6px 10px;
+            padding: 6px 11px;
             border-radius: 999px;
             font-size: 0.82rem;
-            font-weight: 600;
-            background: rgba(255, 255, 255, 0.14);
-            border: 1px solid rgba(255, 255, 255, 0.22);
+            font-weight: 700;
+            background: rgba(255, 255, 255, 0.18);
+            border: 1px solid rgba(255, 255, 255, 0.28);
             color: #ffffff;
+            backdrop-filter: blur(6px);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
         }
         .qa-tool-shell-empty {
             border: 1px dashed rgba(250, 204, 21, 0.28);
@@ -119,9 +141,11 @@ def render_tool_page_hero(
     st.markdown(
         f"""
         <div class="qa-tool-shell-hero" style="--hero-accent: {accent};">
-            <h3>{icon} {title}</h3>
-            <p>{description}</p>
-            <div class="qa-tool-shell-tags">{tag_items}</div>
+            <div class="qa-tool-shell-hero__content">
+                <h3>{icon} {title}</h3>
+                <p>{description}</p>
+                <div class="qa-tool-shell-tags">{tag_items}</div>
+            </div>
         </div>
         """,
         unsafe_allow_html=True,

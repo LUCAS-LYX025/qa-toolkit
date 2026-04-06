@@ -23,6 +23,82 @@ RAW_FORMAT_MAP = {
 }
 
 
+def _build_template_download_items(parser: InterfaceAutoTestCore) -> List[Dict[str, Any]]:
+    return [
+        {
+            "label": "下载 Excel 模板",
+            "data": parser.build_excel_template_bytes(),
+            "file_name": "interface_dev_template.xlsx",
+            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        },
+        {
+            "label": "下载 JSON 模板",
+            "data": parser.build_json_template(),
+            "file_name": "interface_dev_template.json",
+            "mime": "application/json",
+        },
+        {
+            "label": "下载结构化文本",
+            "data": parser.build_text_template(),
+            "file_name": "interface_dev_template.txt",
+            "mime": "text/plain",
+        },
+        {
+            "label": "下载 OpenAPI YAML",
+            "data": parser.build_openapi_yaml_template(),
+            "file_name": "interface_dev_openapi.yaml",
+            "mime": "text/yaml",
+        },
+        {
+            "label": "下载 OpenAPI JSON",
+            "data": parser.build_openapi_template(),
+            "file_name": "interface_dev_openapi.json",
+            "mime": "application/json",
+        },
+        {
+            "label": "下载 Postman 模板",
+            "data": parser.build_postman_template(),
+            "file_name": "interface_dev_postman.json",
+            "mime": "application/json",
+        },
+        {
+            "label": "下载 HAR 模板",
+            "data": parser.build_har_template(),
+            "file_name": "interface_dev.har",
+            "mime": "application/json",
+        },
+        {
+            "label": "下载 Bruno 模板",
+            "data": parser.build_bruno_template(),
+            "file_name": "interface_dev.bru",
+            "mime": "text/plain",
+        },
+        {
+            "label": "下载 Insomnia 模板",
+            "data": parser.build_insomnia_template(),
+            "file_name": "interface_dev_insomnia.json",
+            "mime": "application/json",
+        },
+        {
+            "label": "下载 Apifox 模板",
+            "data": parser.build_apifox_template(),
+            "file_name": "interface_dev_apifox.json",
+            "mime": "application/json",
+        },
+    ]
+
+
+def _render_upload_templates_panel(parser: InterfaceAutoTestCore) -> None:
+    with st.expander("⬇️ 上传模板下载", expanded=False):
+        st.caption("先下载模板补齐接口，再上传到任一功能页，可减少解析失败和字段缺失。")
+        render_download_panel(
+            title="接口文档上传模板",
+            description="覆盖 Excel、JSON、OpenAPI、Postman、HAR、Bruno、Insomnia、Apifox 和结构化文本等常见输入格式。",
+            items=_build_template_download_items(parser),
+            key_prefix="interface_dev_upload_templates",
+        )
+
+
 def _escape_js_string(text: str) -> str:
     return json.dumps(text)
 
@@ -194,6 +270,7 @@ def render_api_dev_tools_page() -> None:
         tips=["先体检再回归", "先变更分析再做影响面判断", "Mock 和代码片段更适合联调阶段"],
         eyebrow="页面向导",
     )
+    _render_upload_templates_panel(dev_parser)
 
     normalize_tab, checklist_tab, diff_tab, quality_tab, assertion_tab, mock_tab, snippet_tab = st.tabs(
         ["标准化导出", "回归清单生成", "接口变更分析", "接口文档体检", "断言模板生成", "Mock 服务生成", "请求代码片段"]

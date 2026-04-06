@@ -15,6 +15,7 @@ from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, rend
 
 DEFAULT_STATE = {
     "ip_lookup_single_input": "",
+    "ip_lookup_single_input_pending": None,
     "ip_lookup_single_result": None,
     "ip_lookup_batch_text": "",
     "ip_lookup_batch_result": None,
@@ -104,6 +105,10 @@ def render_ip_lookup_page() -> None:
     _ensure_defaults()
     tool = IPQueryTool()
 
+    pending_single_input = st.session_state.pop("ip_lookup_single_input_pending", None)
+    if pending_single_input is not None:
+        st.session_state["ip_lookup_single_input"] = pending_single_input
+
     show_doc("ip_domain_query")
     render_tool_page_hero(
         "🌐",
@@ -133,7 +138,7 @@ def render_ip_lookup_page() -> None:
             )
         with input_col2:
             if secondary_action_button("获取当前公网 IP", key="ip_lookup_public_ip"):
-                st.session_state.ip_lookup_single_input = tool.get_public_ip()
+                st.session_state["ip_lookup_single_input_pending"] = tool.get_public_ip()
                 st.rerun()
 
         if primary_action_button("开始单个查询", key="ip_lookup_single_button"):

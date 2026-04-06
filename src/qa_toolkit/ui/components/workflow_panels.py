@@ -18,88 +18,124 @@ def ensure_workflow_panel_styles() -> None:
         .qa-guide-card {
             position: relative;
             overflow: hidden;
+            isolation: isolate;
             background:
-                radial-gradient(circle at top right, rgba(250, 204, 21, 0.12), rgba(250, 204, 21, 0) 34%),
-                linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 56%, rgba(247,239,223,0.98) 100%);
-            border: 1px solid #d5dce8;
-            border-radius: 20px;
-            padding: 1rem 1.1rem;
-            margin: 0.6rem 0 1rem 0;
+                radial-gradient(circle at top right, rgba(250, 204, 21, 0.17), rgba(250, 204, 21, 0) 34%),
+                linear-gradient(145deg, rgba(249, 250, 252, 0.99) 0%, rgba(240, 244, 251, 0.99) 52%, rgba(248, 241, 226, 0.99) 100%);
+            border: 1px solid rgba(193, 204, 219, 0.96);
+            border-radius: 22px;
+            padding: 1.08rem 1.18rem 1.14rem;
+            margin: 0.7rem 0 1.06rem 0;
             box-shadow:
                 inset 0 1px 0 rgba(255,255,255,0.88),
-                0 14px 28px rgba(15, 23, 42, 0.08);
+                0 16px 32px rgba(15, 23, 42, 0.09);
         }
         .qa-guide-card::before {
             content: "";
             position: absolute;
+            inset: 0 auto 0 0;
+            width: 5px;
+            pointer-events: none;
+            background: linear-gradient(180deg, rgba(234, 88, 12, 0.74) 0%, rgba(250, 204, 21, 0.58) 100%);
+        }
+        .qa-guide-card::after {
+            content: "";
+            position: absolute;
             inset: 0;
             pointer-events: none;
-            border-top: 3px solid rgba(250, 204, 21, 0.24);
+            background: linear-gradient(135deg, rgba(255,255,255,0.20), rgba(255,255,255,0));
+            z-index: -1;
         }
         .qa-guide-eyebrow {
-            font-size: 0.78rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.3rem;
+            padding: 0.22rem 0.56rem;
+            border-radius: 999px;
+            font-size: 0.76rem;
             font-weight: 700;
             letter-spacing: 0.04em;
-            color: #b45309;
+            color: #9a3412;
             text-transform: uppercase;
-            margin-bottom: 0.35rem;
+            margin-bottom: 0.46rem;
+            background: rgba(255, 247, 237, 0.92);
+            border: 1px solid rgba(251, 191, 36, 0.24);
+            box-shadow: inset 0 1px 0 rgba(255,255,255,0.82);
         }
         .qa-guide-title {
-            font-size: 1.08rem;
-            font-weight: 700;
-            color: #17324a;
-            margin-bottom: 0.35rem;
+            font-size: 1.16rem;
+            font-weight: 800;
+            color: #10253a;
+            margin-bottom: 0.4rem;
+            letter-spacing: 0.01em;
         }
         .qa-guide-desc {
-            color: #476179;
-            line-height: 1.65;
-            margin-bottom: 0.8rem;
+            color: #314b61;
+            line-height: 1.72;
+            font-size: 0.95rem;
+            font-weight: 600;
+            margin-bottom: 0.92rem;
         }
         .qa-guide-steps {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 0.75rem;
+            gap: 0.82rem;
         }
         .qa-guide-step {
-            background: linear-gradient(145deg, rgba(255,255,255,0.92) 0%, rgba(247,239,223,0.76) 100%);
-            border: 1px solid rgba(213, 220, 232, 0.92);
-            border-radius: 14px;
-            padding: 0.75rem 0.85rem;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.82);
+            position: relative;
+            background: linear-gradient(145deg, rgba(255,255,255,0.96) 0%, rgba(249,243,232,0.86) 100%);
+            border: 1px solid rgba(210, 219, 231, 0.96);
+            border-radius: 16px;
+            padding: 0.8rem 0.9rem 0.86rem;
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.84),
+                0 8px 18px rgba(15, 23, 42, 0.05);
+        }
+        .qa-guide-step::before {
+            content: "";
+            position: absolute;
+            inset: 0 auto auto 0;
+            width: 100%;
+            height: 3px;
+            background: linear-gradient(90deg, rgba(37, 99, 235, 0.60) 0%, rgba(59, 130, 246, 0.18) 100%);
         }
         .qa-guide-step-index {
             display: inline-flex;
             align-items: center;
             justify-content: center;
-            width: 28px;
-            height: 28px;
+            width: 30px;
+            height: 30px;
             border-radius: 999px;
             background: linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);
             color: #f8fafc;
-            font-weight: 700;
-            font-size: 0.86rem;
-            margin-bottom: 0.45rem;
-            border: 1px solid rgba(250, 204, 21, 0.20);
-            box-shadow: 0 8px 14px rgba(7, 20, 39, 0.14);
+            font-weight: 800;
+            font-size: 0.88rem;
+            margin-bottom: 0.52rem;
+            border: 1px solid rgba(250, 204, 21, 0.24);
+            box-shadow: 0 10px 16px rgba(7, 20, 39, 0.16);
         }
         .qa-guide-step-text {
             color: #17324a;
-            line-height: 1.55;
-            font-size: 0.92rem;
+            line-height: 1.62;
+            font-size: 0.93rem;
+            font-weight: 600;
         }
         .qa-guide-tips {
-            margin-top: 0.8rem;
+            margin-top: 0.88rem;
         }
         .qa-guide-tip {
             display: inline-block;
-            background: rgba(255,255,255,0.84);
-            border: 1px solid rgba(250, 204, 21, 0.18);
-            color: #36506a;
+            background: rgba(255,255,255,0.9);
+            border: 1px solid rgba(251, 191, 36, 0.22);
+            color: #28455d;
             border-radius: 999px;
-            padding: 0.22rem 0.62rem;
-            margin: 0 0.42rem 0.42rem 0;
-            font-size: 0.8rem;
-            box-shadow: inset 0 1px 0 rgba(255,255,255,0.84);
+            padding: 0.26rem 0.68rem;
+            margin: 0 0.44rem 0.44rem 0;
+            font-size: 0.81rem;
+            font-weight: 600;
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.84),
+                0 4px 10px rgba(15, 23, 42, 0.04);
         }
         .qa-export-card {
             position: relative;
@@ -146,6 +182,7 @@ def render_workflow_guide(
     steps: Sequence[str],
     tips: Optional[Sequence[str]] = None,
     eyebrow: str = "操作向导",
+    class_name: Optional[str] = None,
 ) -> None:
     """渲染统一的页面引导区。"""
     ensure_workflow_panel_styles()
@@ -167,7 +204,7 @@ def render_workflow_guide(
 
     st.markdown(
         (
-            "<div class='qa-guide-card'>"
+            f"<div class='qa-guide-card{' ' + html.escape(class_name) if class_name else ''}'>"
             f"<div class='qa-guide-eyebrow'>{html.escape(eyebrow)}</div>"
             f"<div class='qa-guide-title'>{html.escape(title)}</div>"
             f"<div class='qa-guide-desc'>{html.escape(description)}</div>"

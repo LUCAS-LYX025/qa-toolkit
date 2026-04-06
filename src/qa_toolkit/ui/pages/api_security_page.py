@@ -10,6 +10,7 @@ import streamlit as st
 from qa_toolkit.core.api_security_tool import SecurityTestTool
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
+from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
 
@@ -264,21 +265,36 @@ def _render_styles():
         """
         <style>
         .security-banner {
-            background: linear-gradient(135deg, #0f172a 0%, #14532d 100%);
-            border-radius: 18px;
-            padding: 1.3rem 1.5rem;
-            color: #f8fafc;
-            margin-bottom: 1rem;
-            box-shadow: 0 18px 32px rgba(15, 23, 42, 0.18);
+            display: none;
         }
-        .security-banner h3 {
-            margin: 0 0 0.35rem 0;
-            font-size: 1.3rem;
+        .qa-guide-card.qa-guide-card--security {
+            background:
+                radial-gradient(circle at top right, rgba(34, 197, 94, 0.12), rgba(34, 197, 94, 0) 34%),
+                linear-gradient(145deg, rgba(250, 252, 250, 0.99) 0%, rgba(241, 248, 244, 0.99) 54%, rgba(247, 244, 232, 0.99) 100%);
+            border-color: rgba(190, 214, 198, 0.96);
+            box-shadow:
+                inset 0 1px 0 rgba(255,255,255,0.90),
+                0 16px 32px rgba(15, 23, 42, 0.08);
         }
-        .security-banner p {
-            margin: 0;
-            color: rgba(248, 250, 252, 0.88);
-            line-height: 1.6;
+        .qa-guide-card.qa-guide-card--security::before {
+            background: linear-gradient(180deg, rgba(22, 163, 74, 0.74) 0%, rgba(250, 204, 21, 0.54) 100%);
+        }
+        .qa-guide-card.qa-guide-card--security .qa-guide-eyebrow {
+            color: #166534;
+            background: rgba(240, 253, 244, 0.94);
+            border-color: rgba(134, 239, 172, 0.34);
+        }
+        .qa-guide-card.qa-guide-card--security .qa-guide-title {
+            color: #123126;
+        }
+        .qa-guide-card.qa-guide-card--security .qa-guide-desc {
+            color: #355448;
+        }
+        .qa-guide-card.qa-guide-card--security .qa-guide-step {
+            background: linear-gradient(145deg, rgba(255,255,255,0.96) 0%, rgba(240, 248, 243, 0.90) 100%);
+        }
+        .qa-guide-card.qa-guide-card--security .qa-guide-step::before {
+            background: linear-gradient(90deg, rgba(22, 163, 74, 0.58) 0%, rgba(34, 197, 94, 0.14) 100%);
         }
         .security-grid {
             display: grid;
@@ -2919,14 +2935,20 @@ def render_api_security_test_page():
     tool = SecurityTestTool()
     app_tool = ApplicationSecurityTool()
 
-    st.markdown(
-        """
-        <div class="security-banner">
-            <h3>🛡️ 应用安全测试</h3>
-            <p>统一的应用安全工作台，覆盖 API 文档安全、移动端 APK/IPA/APPX 静态扫描、MobSF 官方集成和 Web 站点基线扫描。默认坚持安全边界，只做授权范围内的低风险探测和清单化审计。</p>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    render_tool_page_hero(
+        "🛡️",
+        "应用安全测试",
+        "统一的应用安全工作台，覆盖 API 文档安全、移动端 APK/IPA/APPX 静态扫描、MobSF 官方集成和 Web 站点基线扫描。默认坚持安全边界，只做授权范围内的低风险探测和清单化审计。",
+        tags=["API 文档安全", "移动包静态扫描", "MobSF 集成", "Web 基线扫描"],
+        accent="#166534",
+    )
+    render_tool_tips(
+        "安全边界",
+        [
+            "默认聚焦授权环境下的低风险探测、清单化审计和复测导出。",
+            "自动发现结果建议结合人工复核，不把公开接口结果直接当作最终结论。",
+            "移动包静态扫描、MobSF 集成和 Web 基线扫描建议按场景拆开执行，避免一次配置过多变量。",
+        ],
     )
 
     _render_design_cards()
@@ -2940,6 +2962,7 @@ def render_api_security_test_page():
         ],
         tips=["默认坚持低风险探测", "适合授权环境", "自动发现后仍建议人工复核"],
         eyebrow="页面向导",
+        class_name="qa-guide-card--security",
     )
     active_top_tab = st.radio(
         "应用安全视图",

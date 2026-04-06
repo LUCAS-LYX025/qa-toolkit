@@ -20,6 +20,12 @@ class ImageProcessor:
         "BMP": "BMP",
         "WEBP": "WEBP",
     }
+    RESAMPLE_MAP = {
+        "LANCZOS": Image.Resampling.LANCZOS,
+        "BILINEAR": Image.Resampling.BILINEAR,
+        "NEAREST": Image.Resampling.NEAREST,
+        "BICUBIC": Image.Resampling.BICUBIC,
+    }
 
     def __init__(self):
         self.available_fonts = self._detect_fonts()
@@ -83,6 +89,52 @@ class ImageProcessor:
 
         converted_image.save(output_buffer, format=pil_format, **save_kwargs)
         return output_buffer.getvalue()
+
+    def get_resample_filter(self, resample_method="LANCZOS"):
+        """获取缩放算法，默认返回高质量 LANCZOS。"""
+        normalized_method = str(resample_method or "LANCZOS").upper()
+        return self.RESAMPLE_MAP.get(normalized_method, Image.Resampling.LANCZOS)
+
+    def resize_image(self, image, width, height, resample_method="LANCZOS"):
+        """按指定尺寸缩放图片。"""
+        target_width = max(1, int(width))
+        target_height = max(1, int(height))
+        return image.resize((target_width, target_height), self.get_resample_filter(resample_method))
+
+    def flip_image(self, image, direction):
+        """按方向翻转图片。"""
+        normalized_direction = str(direction or "").strip()
+
+        if normalized_direction == "上下翻转":
+            return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+        if normalized_direction == "左右翻转":
+            return image.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if normalized_direction == "同时翻转":
+            return image.transpose(Image.Transpose.FLIP_TOP_BOTTOM).transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        raise ValueError(f"不支持的翻转方向: {direction}")
+
+    def rotate_image(self, image, angle, fill_color=(255, 255, 255), expand=True):
+        """旋转图片，正数为顺时针，负数为逆时针。"""
+        normalized_angle = float(angle)
+        if abs(normalized_angle) < 1e-6:
+            return image.copy()
+
+        effective_fill = self._normalize_fill_color(fill_color, image.mode)
+        return image.rotate(-normalized_angle, expand=bool(expand), fillcolor=effective_fill)
+
+    def normalize_crop_box(self, crop_box, image_width, image_height):
+        """标准化裁剪坐标，确保不越界。"""
+        left, top, right, bottom = crop_box
+        left = max(0, min(int(round(left)), image_width - 1))
+        top = max(0, min(int(round(top)), image_height - 1))
+        right = max(left + 1, min(int(round(right)), image_width))
+        bottom = max(top + 1, min(int(round(bottom)), image_height))
+        return left, top, right, bottom
+
+    def crop_image(self, image, crop_box):
+        """按指定区域裁剪图片。"""
+        normalized_crop_box = self.normalize_crop_box(crop_box, image.width, image.height)
+        return image.crop(normalized_crop_box)
 
     def pad_image_to_size(self, image_data, target_bytes):
         """测试场景下用填充字节补齐体积，保持图片内容不变。"""
@@ -276,6 +328,32 @@ class ImageProcessor:
         if score(new_candidate) < score(current_best):
             return new_candidate
         return current_best
+
+    def _normalize_fill_color(self, fill_color, image_mode):
+        """根据图片模式标准化旋转填充色。"""
+        if image_mode == "1":
+            if isinstance(fill_color, tuple):
+                return 255 if any(component > 0 for component in fill_color[:3]) else 0
+            return 255 if int(fill_color) > 0 else 0
+
+        if image_mode == "L":
+            if isinstance(fill_color, tuple):
+                red, green, blue = fill_color[:3]
+                return int(round((red + green + blue) / 3))
+            return int(fill_color)
+
+        if image_mode in {"LA", "RGBA"}:
+            if isinstance(fill_color, tuple):
+                if len(fill_color) == 4:
+                    return fill_color
+                if len(fill_color) == 2:
+                    return fill_color
+                return fill_color[:3] + (255,)
+            return (int(fill_color), int(fill_color), int(fill_color), 255)
+
+        if isinstance(fill_color, tuple):
+            return fill_color[:3]
+        return (int(fill_color), int(fill_color), int(fill_color))
 
     def add_watermark(self, image, text, position, font_size, color, opacity, rotation, font_file=None):
         """添加水印 - 增强版，支持中文字体"""
