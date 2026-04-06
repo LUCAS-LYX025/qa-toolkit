@@ -755,6 +755,11 @@ class AuthorProfile:
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <style>
             * {{ box-sizing: border-box; }}
+            html, body {{
+                width: 100%;
+                max-width: 100%;
+                overflow-x: hidden;
+            }}
             body {{
                 margin: 0;
                 font-family: "Avenir Next", "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
@@ -789,6 +794,7 @@ class AuthorProfile:
             .author-deck {{
                 position: relative;
                 overflow: hidden;
+                width: 100%;
                 border-radius: 26px;
                 padding: 18px 16px 16px;
                 background:
@@ -1064,6 +1070,7 @@ class AuthorProfile:
             .deck-card__body {{
                 position: relative;
                 z-index: 1;
+                flex: 1 1 auto;
                 min-width: 0;
             }}
             .deck-card__title {{
@@ -1087,6 +1094,91 @@ class AuthorProfile:
             .deck-card:hover .deck-card__cta {{
                 transform: translateX(2px);
                 letter-spacing: .02em;
+            }}
+            @media (max-width: 640px) {{
+                .author-deck {{
+                    border-radius: 22px;
+                    padding: 16px 12px 12px;
+                }}
+                .author-deck::before {{
+                    inset: 8px;
+                    border-radius: 18px;
+                }}
+                .deck-title {{
+                    font-size: 20px;
+                }}
+                .deck-subtitle,
+                .identity-summary,
+                .identity-text {{
+                    max-width: none;
+                }}
+                .hero-shell {{
+                    width: 106px;
+                    height: 106px;
+                    margin-bottom: 14px;
+                }}
+                .hero-ribbon {{
+                    bottom: -8px;
+                    padding: 4px 9px;
+                    font-size: 9px;
+                }}
+                .identity-name {{
+                    font-size: 18px;
+                }}
+                .identity-role {{
+                    padding: 5px 10px;
+                    font-size: 10px;
+                    margin-bottom: 8px;
+                }}
+                .identity-text {{
+                    line-height: 1.72;
+                    margin-bottom: 10px;
+                }}
+                .skill-row {{
+                    gap: 6px;
+                    margin-bottom: 12px;
+                }}
+                .deck-card {{
+                    gap: 10px;
+                    padding: 10px 11px;
+                    border-radius: 16px;
+                }}
+                .deck-card__icon {{
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 14px;
+                    padding: 7px;
+                }}
+                .deck-card__title {{
+                    font-size: 13px;
+                }}
+                .deck-card__desc {{
+                    font-size: 10px;
+                    margin-bottom: 5px;
+                }}
+            }}
+            @media (max-width: 420px) {{
+                .author-deck {{
+                    padding: 14px 10px 10px;
+                }}
+                .deck-subtitle {{
+                    font-size: 11px;
+                    line-height: 1.6;
+                }}
+                .hero-shell {{
+                    width: 96px;
+                    height: 96px;
+                }}
+                .identity-summary {{
+                    font-size: 10.5px;
+                }}
+                .identity-text {{
+                    font-size: 11px;
+                }}
+                .skill-chip {{
+                    padding: 4px 8px;
+                    font-size: 9.5px;
+                }}
             }}
         </style>
         </head>
@@ -1117,6 +1209,72 @@ class AuthorProfile:
                     {cards_html}
                 </div>
             </div>
+            <script>
+                (function() {{
+                    var scheduled = false;
+
+                    function updateFrameHeight() {{
+                        scheduled = false;
+                        var bodyHeight = document.body ? document.body.scrollHeight : 0;
+                        var docHeight = document.documentElement ? document.documentElement.scrollHeight : 0;
+                        var nextHeight = Math.max(bodyHeight, docHeight) + 8;
+                        if (!nextHeight) {{
+                            return;
+                        }}
+
+                        if (window.frameElement) {{
+                            window.frameElement.style.height = nextHeight + "px";
+                        }}
+
+                        try {{
+                            window.parent.postMessage(
+                                {{
+                                    isStreamlitMessage: true,
+                                    type: "streamlit:setFrameHeight",
+                                    height: nextHeight,
+                                }},
+                                "*"
+                            );
+                        }} catch (error) {{
+                            // Ignore parent messaging failures and keep the local iframe resize fallback.
+                        }}
+                    }}
+
+                    function scheduleHeightUpdate() {{
+                        if (scheduled) {{
+                            return;
+                        }}
+                        scheduled = true;
+                        window.requestAnimationFrame(updateFrameHeight);
+                    }}
+
+                    window.addEventListener("load", scheduleHeightUpdate);
+                    window.addEventListener("resize", scheduleHeightUpdate);
+
+                    if (document.fonts && document.fonts.ready) {{
+                        document.fonts.ready.then(scheduleHeightUpdate).catch(function() {{}});
+                    }}
+
+                    Array.prototype.forEach.call(document.images || [], function(image) {{
+                        if (!image.complete) {{
+                            image.addEventListener("load", scheduleHeightUpdate);
+                            image.addEventListener("error", scheduleHeightUpdate);
+                        }}
+                    }});
+
+                    if (window.ResizeObserver) {{
+                        var resizeObserver = new ResizeObserver(scheduleHeightUpdate);
+                        resizeObserver.observe(document.documentElement);
+                        if (document.body) {{
+                            resizeObserver.observe(document.body);
+                        }}
+                    }}
+
+                    scheduleHeightUpdate();
+                    window.setTimeout(scheduleHeightUpdate, 180);
+                    window.setTimeout(scheduleHeightUpdate, 640);
+                }})();
+            </script>
         </body>
         </html>
         """
@@ -1435,7 +1593,7 @@ class AuthorProfile:
         st.markdown(self.styles, unsafe_allow_html=True)
         with st.sidebar:
             st.markdown("---")
-            components.html(self._build_sidebar_compact_component_html(), height=860, scrolling=False)
+            components.html(self._build_sidebar_compact_component_html(), height=920, scrolling=False)
 
             with st.expander("扫码名片 / 更多资源", expanded=False):
                 wechat_image = self.load_image("wechat_qrcode.jpg")
