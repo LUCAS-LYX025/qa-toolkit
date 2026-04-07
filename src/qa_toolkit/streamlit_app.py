@@ -563,7 +563,7 @@ def render_tool_workspace_scroll_handler():
 
 
 def render_tool_card_click_bridge():
-    """将工具卡片点击桥接到隐藏的 Streamlit 按钮。"""
+    """将工具卡片和首页主视觉节点点击桥接到隐藏的 Streamlit 按钮。"""
     components.html(
         """
         <script>
@@ -571,12 +571,12 @@ def render_tool_card_click_bridge():
             function bindCards() {
                 try {
                     const doc = window.parent.document;
-                    const cards = doc.querySelectorAll('.tool-picker-linklike[data-trigger-key]');
-                    cards.forEach((card) => {
-                        if (card.dataset.bound === '1') {
+                    const triggers = doc.querySelectorAll('.tool-picker-linklike[data-trigger-key], .qa-app-hero__node[data-trigger-key]');
+                    triggers.forEach((trigger) => {
+                        if (trigger.dataset.bound === '1') {
                             return;
                         }
-                        const triggerKey = card.getAttribute('data-trigger-key');
+                        const triggerKey = trigger.getAttribute('data-trigger-key');
                         const button = doc.querySelector(`.st-key-${triggerKey} button`);
                         if (!button) {
                             return;
@@ -588,13 +588,13 @@ def render_tool_card_click_bridge():
                             button.click();
                         };
 
-                        card.addEventListener('click', activate);
-                        card.addEventListener('keydown', (event) => {
+                        trigger.addEventListener('click', activate);
+                        trigger.addEventListener('keydown', (event) => {
                             if (event.key === 'Enter' || event.key === ' ') {
                                 activate(event);
                             }
                         });
-                        card.dataset.bound = '1';
+                        trigger.dataset.bound = '1';
                     });
                 } catch (error) {
                     // ignore
@@ -609,6 +609,24 @@ def render_tool_card_click_bridge():
         """,
         height=0,
     )
+
+
+def render_hero_tool_triggers():
+    """渲染首页主视觉节点的隐藏触发按钮。"""
+    hero_tool_actions = [
+        ("hero_tool_trigger_regex", "正则测试工具"),
+        ("hero_tool_trigger_json", "JSON处理工具"),
+        ("hero_tool_trigger_logs", "日志分析工具"),
+        ("hero_tool_trigger_api", "接口自动化测试"),
+    ]
+
+    for trigger_key, tool_name in hero_tool_actions:
+        if st.button(f"切换到{tool_name}", key=trigger_key, use_container_width=True):
+            clear_hero_tool_query()
+            st.session_state.selected_tool = tool_name
+            st.session_state.tool_picker_compact = True
+            st.session_state.scroll_to_tool_workspace = True
+            st.rerun()
 
 
 def render_tool_picker():
@@ -700,7 +718,6 @@ def render_tool_picker():
 
         col_index = (col_index + 1) % 3
 
-    render_tool_card_click_bridge()
     st.markdown("---")
 
 
@@ -781,6 +798,8 @@ apply_tool_query_selection()
 
 # 顶部标题区域
 st.markdown(HEADLINE_STYLES, unsafe_allow_html=True)
+render_hero_tool_triggers()
+render_tool_card_click_bridge()
 st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
 render_back_to_top_button()
 

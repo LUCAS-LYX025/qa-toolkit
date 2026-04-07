@@ -1076,6 +1076,9 @@ CSS_STYLES = """
         animation: qaHeroOrbitFloat 4.8s ease-in-out infinite;
         white-space: nowrap;
         text-decoration: none;
+        font-family: inherit;
+        appearance: none;
+        cursor: pointer;
         transition: transform 0.24s ease, border-color 0.24s ease, background 0.24s ease, box-shadow 0.24s ease;
     }
 
@@ -2858,6 +2861,30 @@ CSS_STYLES = """
         box-shadow: none !important;
     }
 
+    div[data-testid="stElementContainer"][class*="st-key-hero_tool_trigger_"] {
+        margin: 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stElementContainer"][class*="st-key-hero_tool_trigger_"] .stButton {
+        height: 0 !important;
+        min-height: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    div[data-testid="stElementContainer"][class*="st-key-hero_tool_trigger_"] .stButton button {
+        height: 0 !important;
+        min-height: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        box-shadow: none !important;
+    }
+
     .tool-picker-icon {
         font-size: 2rem;
         line-height: 1;
@@ -2943,10 +2970,10 @@ HEADLINE_STYLES = """
             <div class="qa-app-hero__stage-shell">
                 <div class="qa-app-hero__ring"></div>
                 <div class="qa-app-hero__scan"></div>
-                <a class="qa-app-hero__node qa-app-hero__node--1" href="?hero_tool=regex#tool-content-anchor">Regex</a>
-                <a class="qa-app-hero__node qa-app-hero__node--2" href="?hero_tool=json#tool-content-anchor">JSON</a>
-                <a class="qa-app-hero__node qa-app-hero__node--3" href="?hero_tool=logs#tool-content-anchor">Logs</a>
-                <a class="qa-app-hero__node qa-app-hero__node--4" href="?hero_tool=api#tool-content-anchor">API</a>
+                <button type="button" class="qa-app-hero__node qa-app-hero__node--1" data-trigger-key="hero_tool_trigger_regex">Regex</button>
+                <button type="button" class="qa-app-hero__node qa-app-hero__node--2" data-trigger-key="hero_tool_trigger_json">JSON</button>
+                <button type="button" class="qa-app-hero__node qa-app-hero__node--3" data-trigger-key="hero_tool_trigger_logs">Logs</button>
+                <button type="button" class="qa-app-hero__node qa-app-hero__node--4" data-trigger-key="hero_tool_trigger_api">API</button>
                 <div class="qa-app-hero__core">
                     <div class="qa-app-hero__core-inner">
                         <div class="qa-app-hero__core-label">TOOL HUB</div>
