@@ -1,4 +1,5 @@
 import base64
+import html
 import io
 
 import streamlit as st
@@ -207,6 +208,41 @@ class AuthorProfile:
         encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
         mime = "image/png" if image_format == "PNG" else "image/jpeg"
         return f"data:{mime};base64,{encoded}"
+
+    def _build_avatar_placeholder_data_uri(self, label="L"):
+        """构建内联 SVG 占位头像，确保无网络时也能展示。"""
+        safe_label = html.escape(str(label or "L"))[:2]
+        svg = f"""
+        <svg xmlns="http://www.w3.org/2000/svg" width="320" height="320" viewBox="0 0 320 320">
+            <defs>
+                <linearGradient id="avatarBg" x1="0%" x2="100%" y1="0%" y2="100%">
+                    <stop offset="0%" stop-color="#fff7ed" />
+                    <stop offset="100%" stop-color="#ffedd5" />
+                </linearGradient>
+            </defs>
+            <rect width="320" height="320" rx="160" fill="url(#avatarBg)" />
+            <text x="50%" y="54%" text-anchor="middle" font-size="132" font-weight="900"
+                  font-family="Avenir Next, PingFang SC, Microsoft YaHei, sans-serif"
+                  fill="#9a3412">{safe_label}</text>
+        </svg>
+        """.strip()
+        encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return f"data:image/svg+xml;base64,{encoded}"
+
+    def _build_sidebar_hero_visual_html(self, avatar_uri):
+        """优先展示动态头像，加载失败时自动回退到本地头像。"""
+        fallback_uri = avatar_uri or self._build_avatar_placeholder_data_uri(self.author_info.get("name", "L")[:1])
+        hero_gif_url = (self.author_info.get("sidebar_hero_gif_url") or "").strip()
+        if not hero_gif_url:
+            return f'<img src="{fallback_uri}" alt="作者头像" class="hero-avatar" />'
+
+        safe_hero_gif_url = html.escape(hero_gif_url, quote=True)
+        safe_fallback_uri = html.escape(fallback_uri, quote=True)
+        return (
+            f'<img src="{safe_hero_gif_url}" alt="动态头像" class="hero-luffy" loading="eager" '
+            f'referrerpolicy="no-referrer" '
+            f'onerror="this.onerror=null;this.src=\'{safe_fallback_uri}\';this.alt=\'作者头像\';this.className=\'hero-avatar\';" />'
+        )
 
     def _render_sidebar_compact_styles(self):
         st.markdown(
@@ -682,17 +718,7 @@ class AuthorProfile:
 
     def _build_sidebar_compact_component_html(self):
         avatar_uri = self._image_to_data_uri("csdn_profile.jpg")
-        avatar_html = (
-            f'<img src="{avatar_uri}" alt="作者头像" class="hero-avatar" />'
-            if avatar_uri
-            else '<div class="hero-avatar hero-avatar-fallback">L</div>'
-        )
-        hero_gif_url = self.author_info.get("sidebar_hero_gif_url", "").strip()
-        hero_visual_html = (
-            f'<img src="{hero_gif_url}" alt="路飞跳动动图" class="hero-luffy" />'
-            if hero_gif_url
-            else avatar_html
-        )
+        hero_visual_html = self._build_sidebar_hero_visual_html(avatar_uri)
         logo_uris = {
             "CSDN 专栏": self._image_to_data_uri("brand_csdn.ico"),
             "GitHub 仓库": self._image_to_data_uri("brand_github.png"),

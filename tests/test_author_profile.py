@@ -32,3 +32,11 @@ def test_sidebar_compact_author_profile_html_contains_mobile_fallbacks() -> None
     assert "@media (max-width: 420px)" in html
     assert 'type: "streamlit:setFrameHeight"' in html
     assert "window.frameElement.style.height" in html
+
+
+def test_sidebar_compact_author_profile_html_contains_avatar_error_fallback() -> None:
+    html = AuthorProfile()._build_sidebar_compact_component_html()
+
+    assert 'onerror="this.onerror=null;this.src=' in html
+    assert "this.className='hero-avatar'" in html
+    assert "data:image" in html
