@@ -1,8 +1,12 @@
-import streamlit as st
-import pymysql
-import pandas as pd
+from datetime import date, datetime, timedelta
 from string import Template
 from typing import Dict, List, Optional, Tuple
+
+import pandas as pd
+import pymysql
+import streamlit as st
+
+from qa_toolkit.utils.datetime_tools import DateTimeUtils
 
 
 class MysqlDB(object):
@@ -113,8 +117,115 @@ class MysqlDB(object):
 
 class ZenTaoPerformanceExporter:
     def __init__(self, db_config):
-        self.db_config = db_config
+        self.db_config = self._normalize_db_config(db_config)
         self.mysql_db = self.create_mysql_db()
+
+    @staticmethod
+    def _normalize_db_config(db_config: Dict) -> Dict[str, object]:
+        return {
+            "host": str(db_config.get('host', '')).strip(),
+            "port": int(db_config.get('port', 3306)),
+            "user": str(db_config.get('user', '')).strip(),
+            "password": str(db_config.get('password', db_config.get('passwd', ''))),
+            "database": str(db_config.get('database', db_config.get('db', ''))).strip(),
+        }
+
+    @staticmethod
+    def _parse_date(value) -> date:
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+    @staticmethod
+    def _sql_literal(value) -> str:
+        return f"'{pymysql.converters.escape_string(str(value))}'"
+
+    def _sql_in_list(self, values: List[str]) -> str:
+        if not values:
+            return self._sql_literal("__EMPTY__")
+        return ", ".join(self._sql_literal(value) for value in values)
+
+    def _get_holiday_blocks(self, start_date, end_date, country: Optional[str]) -> List[Tuple[date, date]]:
+        if not country:
+            return []
+
+        ordered_start = min(self._parse_date(start_date), self._parse_date(end_date))
+        ordered_end = max(self._parse_date(start_date), self._parse_date(end_date))
+        window_start = ordered_start - timedelta(days=366)
+        window_end = max(ordered_end, date.today()) + timedelta(days=366)
+
+        try:
+            holiday_dates = sorted(
+                current_date
+                for current_date in DateTimeUtils._get_country_holidays(
+                    country,
+                    years=range(window_start.year, window_end.year + 1),
+                )
+                if window_start <= current_date <= window_end
+            )
+        except Exception:
+            return []
+
+        if not holiday_dates:
+            return []
+
+        blocks: List[Tuple[date, date]] = []
+        block_start = holiday_dates[0]
+        block_end = holiday_dates[0]
+
+        for current_date in holiday_dates[1:]:
+            if current_date == block_end + timedelta(days=1):
+                block_end = current_date
+                continue
+            blocks.append((block_start, block_end))
+            block_start = current_date
+            block_end = current_date
+
+        blocks.append((block_start, block_end))
+        return blocks
+
+    def _build_holiday_case_sql(self, start_column: str, start_date, end_date, country: Optional[str]) -> Tuple[str, str]:
+        blocks = self._get_holiday_blocks(start_date, end_date, country)
+        if not blocks:
+            return "0 = 1", "0"
+
+        conditions = []
+        cases = []
+        for block_start, block_end in blocks:
+            condition = f"DATE({start_column}) BETWEEN '{block_start.isoformat()}' AND '{block_end.isoformat()}'"
+            block_end_datetime = f"{(block_end + timedelta(days=1)).isoformat()} 00:00:00"
+            conditions.append(condition)
+            cases.append(
+                f"WHEN {condition} THEN GREATEST(0, TIMESTAMPDIFF(HOUR, {start_column}, '{block_end_datetime}'))"
+            )
+
+        return " OR ".join(f"({condition})" for condition in conditions), "CASE " + " ".join(cases) + " ELSE 0 END"
+
+    def _build_timeout_threshold_sql(
+        self,
+        start_column: str,
+        start_date,
+        end_date,
+        normal_hours: int,
+        weekend_hours: int,
+        holiday_country: Optional[str],
+    ) -> str:
+        holiday_condition, holiday_extra_hours = self._build_holiday_case_sql(
+            start_column=start_column,
+            start_date=start_date,
+            end_date=end_date,
+            country=holiday_country,
+        )
+        weekend_condition = f"DAYOFWEEK({start_column}) IN (1, 7)"
+        return (
+            "CASE "
+            f"WHEN {holiday_condition} THEN {normal_hours} + ({holiday_extra_hours}) "
+            f"WHEN {weekend_condition} THEN {weekend_hours} "
+            f"ELSE {normal_hours} "
+            "END"
+        )
 
     def create_mysql_db(self):
         """创建 MysqlDB 实例"""
@@ -243,14 +354,31 @@ class ZenTaoPerformanceExporter:
 
     def build_qa_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建测试人员SQL查询语句"""
-        exclude_types_str = ", ".join(f"'{t}'" for t in config['exclude_types'])
-        roles_str = ", ".join(f"'{r}'" for r in config['roles'])
+        exclude_types_str = self._sql_in_list(config['exclude_types'])
+        roles_str = self._sql_in_list(config['roles'])
+        holiday_country = config.get('holiday_country')
 
         # 使用配置的超时参数
         high_priority_normal_hours = config['high_priority_normal_hours']
         high_priority_weekend_hours = config['high_priority_weekend_hours']
         normal_priority_normal_hours = config['normal_priority_normal_hours']
         normal_priority_weekend_hours = config['normal_priority_weekend_hours']
+        high_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="resolvedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=high_priority_normal_hours,
+            weekend_hours=high_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
+        normal_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="resolvedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=normal_priority_normal_hours,
+            weekend_hours=normal_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
 
         return f"""
         SELECT 
@@ -285,24 +413,17 @@ class ZenTaoPerformanceExporter:
                 AND deleted = '0'
                 AND closedBy IS NOT NULL
                 AND closedBy = openedBy
+                AND resolvedDate IS NOT NULL
                 AND openedDate BETWEEN '{start_date}' AND '{end_date}'
                 AND type NOT IN ({exclude_types_str})
                 AND (
-                    -- 高优先级：考虑周末顺延
+                    -- 高优先级：考虑周末与法定节假日顺延
                     ((severity = 1 OR pri = 1) AND 
-                        CASE 
-                            WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                            THEN TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > {high_priority_weekend_hours}
-                            ELSE TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > {high_priority_normal_hours}
-                        END)
+                        TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > ({high_priority_threshold}))
                     OR
-                    -- 普通优先级：考虑周末顺延
+                    -- 普通优先级：考虑周末与法定节假日顺延
                     ((severity != 1 AND pri != 1) AND 
-                        CASE 
-                            WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                            THEN TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > {normal_priority_weekend_hours}
-                            ELSE TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > {normal_priority_normal_hours}
-                        END)
+                        TIMESTAMPDIFF(HOUR, resolvedDate, closedDate) > ({normal_priority_threshold}))
                 )
             GROUP BY 
                 closedBy, is_high_priority
@@ -322,24 +443,17 @@ class ZenTaoPerformanceExporter:
                 AND status = 'resolved'
                 AND deleted = '0'
                 AND assignedTo IS NOT NULL
+                AND resolvedDate IS NOT NULL
                 AND openedDate BETWEEN '{start_date}' AND '{end_date}'
                 AND type NOT IN ({exclude_types_str})
                 AND (
-                    -- 高优先级：考虑周末顺延
+                    -- 高优先级：考虑周末与法定节假日顺延
                     ((severity = 1 OR pri = 1) AND 
-                        CASE 
-                            WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                            THEN DATE_ADD(resolvedDate, INTERVAL {high_priority_weekend_hours} HOUR) < NOW()
-                            ELSE DATE_ADD(resolvedDate, INTERVAL {high_priority_normal_hours} HOUR) < NOW()
-                        END)
+                        DATE_ADD(resolvedDate, INTERVAL ({high_priority_threshold}) HOUR) < NOW())
                     OR
-                    -- 普通优先级：考虑周末顺延
+                    -- 普通优先级：考虑周末与法定节假日顺延
                     ((severity != 1 AND pri != 1) AND 
-                        CASE 
-                            WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                            THEN DATE_ADD(resolvedDate, INTERVAL {normal_priority_weekend_hours} HOUR) < NOW()
-                            ELSE DATE_ADD(resolvedDate, INTERVAL {normal_priority_normal_hours} HOUR) < NOW()
-                        END)
+                        DATE_ADD(resolvedDate, INTERVAL ({normal_priority_threshold}) HOUR) < NOW())
                 )
             GROUP BY 
                 assignedTo, is_high_priority
@@ -363,7 +477,7 @@ class ZenTaoPerformanceExporter:
         ) AS combined_data
         LEFT JOIN zt_user u ON combined_data.tester = u.account
         LEFT JOIN zt_lang l ON l.module = 'user' 
-            AND l.section = 'role' 
+            AND l.section = 'roleList' 
             AND l.`key` = u.role 
             AND l.lang = 'zh-cn'
         WHERE 
@@ -379,14 +493,31 @@ class ZenTaoPerformanceExporter:
 
     def build_dev_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建开发人员SQL查询语句"""
-        exclude_types_str = ", ".join(f"'{t}'" for t in config['exclude_types'])
-        roles_str = ", ".join(f"'{r}'" for r in config['roles'])
+        exclude_types_str = self._sql_in_list(config['exclude_types'])
+        roles_str = self._sql_in_list(config['roles'])
+        holiday_country = config.get('holiday_country')
 
         # 使用配置的超时参数
         high_priority_normal_hours = config['high_priority_normal_hours']
         high_priority_weekend_hours = config['high_priority_weekend_hours']
         normal_priority_normal_hours = config['normal_priority_normal_hours']
         normal_priority_weekend_hours = config['normal_priority_weekend_hours']
+        high_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="openedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=high_priority_normal_hours,
+            weekend_hours=high_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
+        normal_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="openedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=normal_priority_normal_hours,
+            weekend_hours=normal_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
 
         return f"""
          SELECT 
@@ -408,7 +539,7 @@ class ZenTaoPerformanceExporter:
          FROM 
              zt_user u
          LEFT JOIN zt_lang l ON l.module = 'user' 
-             AND l.section = 'role' 
+             AND l.section = 'roleList' 
              AND l.`key` = u.role 
              AND l.lang = 'zh-cn'
          LEFT JOIN (
@@ -426,21 +557,13 @@ class ZenTaoPerformanceExporter:
                  AND deleted = '0'
                  AND type NOT IN ({exclude_types_str})
                  AND (
-                     -- 高优先级：考虑周末顺延
+                     -- 高优先级：考虑周末与法定节假日顺延
                      ((severity = 1 OR pri = 1) AND 
-                         CASE 
-                             WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                             THEN TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > {high_priority_weekend_hours}
-                             ELSE TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > {high_priority_normal_hours}
-                         END)
+                         TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > ({high_priority_threshold}))
                      OR
-                     -- 普通优先级：考虑周末顺延
+                     -- 普通优先级：考虑周末与法定节假日顺延
                      ((severity != 1 AND pri != 1) AND 
-                         CASE 
-                             WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                             THEN TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > {normal_priority_weekend_hours}
-                             ELSE TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > {normal_priority_normal_hours}
-                         END)
+                         TIMESTAMPDIFF(HOUR, openedDate, resolvedDate) > ({normal_priority_threshold}))
                  )
              GROUP BY 
                  resolvedBy, is_high_priority
@@ -461,21 +584,13 @@ class ZenTaoPerformanceExporter:
                  AND deleted = '0'
                  AND type NOT IN ({exclude_types_str})
                  AND (
-                     -- 高优先级：考虑周末顺延
+                     -- 高优先级：考虑周末与法定节假日顺延
                      ((severity = 1 OR pri = 1) AND 
-                         CASE 
-                             WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                             THEN DATE_ADD(openedDate, INTERVAL {high_priority_weekend_hours} HOUR) < NOW()
-                             ELSE DATE_ADD(openedDate, INTERVAL {high_priority_normal_hours} HOUR) < NOW()
-                         END)
+                         DATE_ADD(openedDate, INTERVAL ({high_priority_threshold}) HOUR) < NOW())
                      OR
-                     -- 普通优先级：考虑周末顺延
+                     -- 普通优先级：考虑周末与法定节假日顺延
                      ((severity != 1 AND pri != 1) AND 
-                         CASE 
-                             WHEN DAYOFWEEK(openedDate) IN (1, 6, 7) 
-                             THEN DATE_ADD(openedDate, INTERVAL {normal_priority_weekend_hours} HOUR) < NOW()
-                             ELSE DATE_ADD(openedDate, INTERVAL {normal_priority_normal_hours} HOUR) < NOW()
-                         END)
+                         DATE_ADD(openedDate, INTERVAL ({normal_priority_threshold}) HOUR) < NOW())
                  )
              GROUP BY 
                  assignedTo, is_high_priority
@@ -530,14 +645,31 @@ class ZenTaoPerformanceExporter:
 
     def build_qa_detail_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建测试人员绩效明细查询语句"""
-        exclude_types_str = ", ".join(f"'{t}'" for t in config['exclude_types'])
-        roles_str = ", ".join(f"'{r}'" for r in config['roles'])
+        exclude_types_str = self._sql_in_list(config['exclude_types'])
+        roles_str = self._sql_in_list(config['roles'])
+        holiday_country = config.get('holiday_country')
 
         # 使用配置的超时参数
         high_priority_normal_hours = config['high_priority_normal_hours']
         high_priority_weekend_hours = config['high_priority_weekend_hours']
         normal_priority_normal_hours = config['normal_priority_normal_hours']
         normal_priority_weekend_hours = config['normal_priority_weekend_hours']
+        high_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="b.resolvedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=high_priority_normal_hours,
+            weekend_hours=high_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
+        normal_priority_threshold = self._build_timeout_threshold_sql(
+            start_column="b.resolvedDate",
+            start_date=start_date,
+            end_date=end_date,
+            normal_hours=normal_priority_normal_hours,
+            weekend_hours=normal_priority_weekend_hours,
+            holiday_country=holiday_country,
+        )
 
         return f"""
         SELECT 
@@ -551,21 +683,19 @@ class ZenTaoPerformanceExporter:
                 WHEN (b.severity = 1 OR b.pri = 1) THEN '一级超时'
                 ELSE '普通超时'
             END AS 超时类型,
-            b.openedDate AS 创建时间,
+            b.resolvedDate AS 指派开始时间,
             b.resolvedDate AS 解决时间,
             b.closedDate AS 关闭时间,
-            TIMESTAMPDIFF(HOUR, b.openedDate, COALESCE(b.resolvedDate, NOW())) AS 处理时长_小时,
+            CASE
+                WHEN b.status = 'closed' AND b.closedBy = b.openedBy THEN TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate)
+                WHEN b.status = 'resolved' THEN TIMESTAMPDIFF(HOUR, b.resolvedDate, NOW())
+                ELSE NULL
+            END AS 处理时长_小时,
             CASE 
                 WHEN (b.severity = 1 OR b.pri = 1) THEN
-                    CASE 
-                        WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {high_priority_weekend_hours}
-                        ELSE {high_priority_normal_hours}
-                    END
+                    ({high_priority_threshold})
                 ELSE
-                    CASE 
-                        WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {normal_priority_weekend_hours}
-                        ELSE {normal_priority_normal_hours}
-                    END
+                    ({normal_priority_threshold})
             END AS 超时阈值_小时,
             b.status AS 状态,
             b.type AS Bug类型,
@@ -573,17 +703,18 @@ class ZenTaoPerformanceExporter:
         FROM 
             zt_user u
         JOIN 
-            zt_bug b ON u.account = b.openedBy
+            zt_bug b ON (u.account = b.closedBy OR u.account = b.assignedTo)
         JOIN 
             zt_product p ON b.product = p.id
         LEFT JOIN zt_lang l ON l.module = 'user' 
-            AND l.section = 'role' 
+            AND l.section = 'roleList' 
             AND l.`key` = u.role 
             AND l.lang = 'zh-cn'
         WHERE 
             b.product = {product_id}
             AND b.openedDate BETWEEN '{start_date}' AND '{end_date}'
             AND b.deleted = '0'
+            AND b.resolvedDate IS NOT NULL
             AND u.role IN ({roles_str})
             AND b.type NOT IN ({exclude_types_str})
         ORDER BY 
@@ -702,6 +833,23 @@ class ZenTaoPerformanceExporter:
             high_priority_weekend_hours = config['high_priority_weekend_hours']
             normal_priority_normal_hours = config['normal_priority_normal_hours']
             normal_priority_weekend_hours = config['normal_priority_weekend_hours']
+            holiday_country = config.get('holiday_country')
+            high_priority_threshold = self._build_timeout_threshold_sql(
+                start_column="b.openedDate",
+                start_date=start_date,
+                end_date=end_date,
+                normal_hours=high_priority_normal_hours,
+                weekend_hours=high_priority_weekend_hours,
+                holiday_country=holiday_country,
+            )
+            normal_priority_threshold = self._build_timeout_threshold_sql(
+                start_column="b.openedDate",
+                start_date=start_date,
+                end_date=end_date,
+                normal_hours=normal_priority_normal_hours,
+                weekend_hours=normal_priority_weekend_hours,
+                holiday_country=holiday_country,
+            )
 
             # SQL查询语句
             sql_query = f"""
@@ -720,15 +868,9 @@ class ZenTaoPerformanceExporter:
                 TIMESTAMPDIFF(HOUR, b.openedDate, COALESCE(b.resolvedDate, NOW())) AS 处理时长_小时,
                 CASE
                     WHEN (b.severity = 1 OR b.pri = 1) THEN
-                        CASE
-                            WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {high_priority_weekend_hours}
-                            ELSE {high_priority_normal_hours}
-                        END
+                        ({high_priority_threshold})
                     ELSE
-                        CASE
-                            WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {normal_priority_weekend_hours}
-                            ELSE {normal_priority_normal_hours}
-                        END
+                        ({normal_priority_threshold})
                 END AS 超时阈值_小时,
                 CASE
                     WHEN b.resolvedDate IS NOT NULL THEN '已解决'
@@ -754,19 +896,11 @@ class ZenTaoPerformanceExporter:
                         (
                             -- 已解决的一级超时bug
                             (b.resolvedDate IS NOT NULL AND
-                             TIMESTAMPDIFF(HOUR, b.openedDate, b.resolvedDate) >
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {high_priority_weekend_hours}
-                                    ELSE {high_priority_normal_hours}
-                                END)
+                             TIMESTAMPDIFF(HOUR, b.openedDate, b.resolvedDate) > ({high_priority_threshold}))
                             OR
                             -- 未解决的一级超时bug
                             (b.status = 'active' AND
-                             NOW() >
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN DATE_ADD(b.openedDate, INTERVAL {high_priority_weekend_hours} HOUR)
-                                    ELSE DATE_ADD(b.openedDate, INTERVAL {high_priority_normal_hours} HOUR)
-                                END)
+                             DATE_ADD(b.openedDate, INTERVAL ({high_priority_threshold}) HOUR) < NOW())
                         ))
                     OR
                     -- 普通优先级超时条件
@@ -774,19 +908,11 @@ class ZenTaoPerformanceExporter:
                         (
                             -- 已解决的普通超时bug
                             (b.resolvedDate IS NOT NULL AND
-                             TIMESTAMPDIFF(HOUR, b.openedDate, b.resolvedDate) >
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {normal_priority_weekend_hours}
-                                    ELSE {normal_priority_normal_hours}
-                                END)
+                             TIMESTAMPDIFF(HOUR, b.openedDate, b.resolvedDate) > ({normal_priority_threshold}))
                             OR
                             -- 未解决的普通超时bug
                             (b.status = 'active' AND
-                             NOW() >
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN DATE_ADD(b.openedDate, INTERVAL {normal_priority_weekend_hours} HOUR)
-                                    ELSE DATE_ADD(b.openedDate, INTERVAL {normal_priority_normal_hours} HOUR)
-                                END)
+                             DATE_ADD(b.openedDate, INTERVAL ({normal_priority_threshold}) HOUR) < NOW())
                         ))
                 )
             ORDER BY
@@ -820,8 +946,24 @@ class ZenTaoPerformanceExporter:
             high_priority_weekend_hours = config['high_priority_weekend_hours']
             normal_priority_normal_hours = config['normal_priority_normal_hours']
             normal_priority_weekend_hours = config['normal_priority_weekend_hours']
-
-            exclude_types_str = ", ".join(f"'{t}'" for t in config['exclude_types'])
+            holiday_country = config.get('holiday_country')
+            exclude_types_str = self._sql_in_list(config['exclude_types'])
+            high_priority_threshold = self._build_timeout_threshold_sql(
+                start_column="b.resolvedDate",
+                start_date=start_date,
+                end_date=end_date,
+                normal_hours=high_priority_normal_hours,
+                weekend_hours=high_priority_weekend_hours,
+                holiday_country=holiday_country,
+            )
+            normal_priority_threshold = self._build_timeout_threshold_sql(
+                start_column="b.resolvedDate",
+                start_date=start_date,
+                end_date=end_date,
+                normal_hours=normal_priority_normal_hours,
+                weekend_hours=normal_priority_weekend_hours,
+                holiday_country=holiday_country,
+            )
 
             # 基于你提供的测试绩效明细查询SQL
             sql_query = f"""
@@ -856,15 +998,9 @@ class ZenTaoPerformanceExporter:
                 -- 精确的超时阈值计算（与统计逻辑完全一致）
                 CASE
                     WHEN (b.severity = 1 OR b.pri = 1) THEN
-                        CASE
-                            WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {high_priority_weekend_hours}
-                            ELSE {high_priority_normal_hours}
-                        END
+                        ({high_priority_threshold})
                     ELSE
-                        CASE
-                            WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN {normal_priority_weekend_hours}
-                            ELSE {normal_priority_normal_hours}
-                        END
+                        ({normal_priority_threshold})
                 END AS 超时阈值_小时,
 
                 -- 精确的超时判断（与统计逻辑完全一致）
@@ -873,49 +1009,17 @@ class ZenTaoPerformanceExporter:
                     WHEN b.status = 'closed' AND b.closedBy = b.openedBy THEN
                         CASE
                             WHEN (b.severity = 1 OR b.pri = 1) THEN
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) AND 
-                                         TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {high_priority_weekend_hours} 
-                                        THEN 1
-                                    WHEN DAYOFWEEK(b.openedDate) NOT IN (1, 6, 7) AND 
-                                         TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {high_priority_normal_hours} 
-                                        THEN 1
-                                    ELSE 0
-                                END
+                                CASE WHEN TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > ({high_priority_threshold}) THEN 1 ELSE 0 END
                             ELSE
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) AND 
-                                         TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {normal_priority_weekend_hours} 
-                                        THEN 1
-                                    WHEN DAYOFWEEK(b.openedDate) NOT IN (1, 6, 7) AND 
-                                         TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {normal_priority_normal_hours} 
-                                        THEN 1
-                                    ELSE 0
-                                END
+                                CASE WHEN TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > ({normal_priority_threshold}) THEN 1 ELSE 0 END
                         END
                     -- 已解决但未关闭的Bug超时判断
                     WHEN b.status = 'resolved' THEN
                         CASE
                             WHEN (b.severity = 1 OR b.pri = 1) THEN
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) AND 
-                                         DATE_ADD(b.resolvedDate, INTERVAL {high_priority_weekend_hours} HOUR) < NOW()
-                                        THEN 1
-                                    WHEN DAYOFWEEK(b.openedDate) NOT IN (1, 6, 7) AND 
-                                         DATE_ADD(b.resolvedDate, INTERVAL {high_priority_normal_hours} HOUR) < NOW()
-                                        THEN 1
-                                    ELSE 0
-                                END
+                                CASE WHEN DATE_ADD(b.resolvedDate, INTERVAL ({high_priority_threshold}) HOUR) < NOW() THEN 1 ELSE 0 END
                             ELSE
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) AND 
-                                         DATE_ADD(b.resolvedDate, INTERVAL {normal_priority_weekend_hours} HOUR) < NOW()
-                                        THEN 1
-                                    WHEN DAYOFWEEK(b.openedDate) NOT IN (1, 6, 7) AND 
-                                         DATE_ADD(b.resolvedDate, INTERVAL {normal_priority_normal_hours} HOUR) < NOW()
-                                        THEN 1
-                                    ELSE 0
-                                END
+                                CASE WHEN DATE_ADD(b.resolvedDate, INTERVAL ({normal_priority_threshold}) HOUR) < NOW() THEN 1 ELSE 0 END
                         END
                     ELSE 0
                 END AS 是否超时,
@@ -936,46 +1040,27 @@ class ZenTaoPerformanceExporter:
                 AND b.product = %s
                 AND b.openedDate BETWEEN %s AND %s
                 AND b.deleted = '0'
+                AND b.resolvedDate IS NOT NULL
                 AND b.type NOT IN ({exclude_types_str})
                 AND (
                     -- 已关闭的bug超时条件
                     (b.status = 'closed' AND b.closedBy = b.openedBy AND
                         (
                             ((b.severity = 1 OR b.pri = 1) AND
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN 
-                                        TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {high_priority_weekend_hours}
-                                    ELSE 
-                                        TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {high_priority_normal_hours}
-                                END)
+                                TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > ({high_priority_threshold}))
                             OR
                             ((b.severity != 1 AND b.pri != 1) AND
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN 
-                                        TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {normal_priority_weekend_hours}
-                                    ELSE 
-                                        TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > {normal_priority_normal_hours}
-                                END)
+                                TIMESTAMPDIFF(HOUR, b.resolvedDate, b.closedDate) > ({normal_priority_threshold}))
                         ))
                     OR
                     -- 已解决但未关闭的bug超时条件
                     (b.status = 'resolved' AND
                         (
                             ((b.severity = 1 OR b.pri = 1) AND
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN 
-                                        DATE_ADD(b.resolvedDate, INTERVAL {high_priority_weekend_hours} HOUR) < NOW()
-                                    ELSE 
-                                        DATE_ADD(b.resolvedDate, INTERVAL {high_priority_normal_hours} HOUR) < NOW()
-                                END)
+                                DATE_ADD(b.resolvedDate, INTERVAL ({high_priority_threshold}) HOUR) < NOW())
                             OR
                             ((b.severity != 1 AND b.pri != 1) AND
-                                CASE
-                                    WHEN DAYOFWEEK(b.openedDate) IN (1, 6, 7) THEN 
-                                        DATE_ADD(b.resolvedDate, INTERVAL {normal_priority_weekend_hours} HOUR) < NOW()
-                                    ELSE 
-                                        DATE_ADD(b.resolvedDate, INTERVAL {normal_priority_normal_hours} HOUR) < NOW()
-                                END)
+                                DATE_ADD(b.resolvedDate, INTERVAL ({normal_priority_threshold}) HOUR) < NOW())
                         ))
                 )
             ORDER BY
