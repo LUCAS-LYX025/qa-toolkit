@@ -1,33 +1,39 @@
 import streamlit as st
-import datetime
 import html
 import re
 from qa_toolkit.config.constants import TOOL_CATEGORIES
+from qa_toolkit.support.feedback_store import FeedbackStore
 
 # === 留言反馈区域 ===
 class FeedbackSection:
     def __init__(self):
+        self.feedback_store = FeedbackStore()
         self.initialize_feedback_data()
 
     def initialize_feedback_data(self):
         """初始化反馈数据"""
-        if 'user_feedbacks' not in st.session_state:
-            st.session_state.user_feedbacks = []
-        if 'feedback_count' not in st.session_state:
-            st.session_state.feedback_count = 0
+        self._sync_feedback_cache()
 
-    def render_tool_feedback_bar(self, tool_name):
-        """渲染贴近当前工具的轻量反馈入口。"""
-        st.markdown('<div id="tool-feedback-anchor"></div>', unsafe_allow_html=True)
-        st.markdown("---")
+    def _sync_feedback_cache(self):
+        feedbacks = self.feedback_store.list_feedbacks()
+        st.session_state.user_feedbacks = feedbacks
+        st.session_state.feedback_count = len(feedbacks)
+        return feedbacks
 
-        tool_feedback_count = len(
-            [fb for fb in st.session_state.user_feedbacks if fb.get("tool_name") == tool_name]
-        )
-        total_feedback_count = len(st.session_state.user_feedbacks)
-        tool_key = self._tool_key(tool_name)
+    def _persist_feedback(self, feedback_record):
+        stored_record = self.feedback_store.add_feedback(feedback_record)
+        self._sync_feedback_cache()
+        return stored_record
 
-        st.markdown(
+    def _get_feedbacks(self):
+        return st.session_state.get("user_feedbacks", [])
+
+    def _render_tool_feedback_summary(self, tool_name, target):
+        feedbacks = self._get_feedbacks()
+        tool_feedback_count = len([fb for fb in feedbacks if fb.get("tool_name") == tool_name])
+        total_feedback_count = len(feedbacks)
+
+        target.markdown(
             f"""
             <div style="
                 background:
@@ -54,6 +60,32 @@ class FeedbackSection:
             """,
             unsafe_allow_html=True,
         )
+
+    def _render_feedback_stats(self, target=None):
+        """渲染反馈统计信息"""
+        feedbacks = self._get_feedbacks()
+        host = target.container() if target is not None else st.container()
+
+        with host:
+            col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+            with col_stat1:
+                st.metric("总反馈数", len(feedbacks))
+            with col_stat2:
+                suggestion_count = len([fb for fb in feedbacks if fb.get('type') == '功能建议'])
+                st.metric("功能建议", suggestion_count)
+            with col_stat3:
+                issue_count = len([fb for fb in feedbacks if fb.get('type') == '问题反馈'])
+                st.metric("问题反馈", issue_count)
+            with col_stat4:
+                avg_rating = sum([fb.get('rating', 0) for fb in feedbacks]) / len(feedbacks) if feedbacks else 0
+                st.metric("平均评分", f"{avg_rating:.1f}/5")
+
+    def render_tool_feedback_bar(self, tool_name):
+        """渲染贴近当前工具的轻量反馈入口。"""
+        st.markdown('<div id="tool-feedback-anchor"></div>', unsafe_allow_html=True)
+        st.markdown("---")
+        summary_placeholder = st.empty()
+        tool_key = self._tool_key(tool_name)
 
         action_col1, action_col2, action_col3, action_col4 = st.columns(4)
         with action_col1:
@@ -85,38 +117,25 @@ class FeedbackSection:
                 else:
                     st.caption("当前工具还没有反馈记录。")
 
+        self._render_tool_feedback_summary(tool_name, summary_placeholder)
+
     def render_feedback_section(self):
         """渲染完整的留言反馈区域"""
         st.markdown("---")
         st.markdown("### 💬 用户体验反馈区")
-
-        # 显示反馈统计
-        self._render_feedback_stats()
+        stats_placeholder = st.empty()
 
         # 反馈提交区域
         self._render_feedback_form()
+
+        # 显示反馈统计
+        self._render_feedback_stats(stats_placeholder)
 
         # 显示历史反馈
         self._render_feedback_history()
 
         # 页脚信息
         self._render_footer()
-
-    def _render_feedback_stats(self):
-        """渲染反馈统计信息"""
-        col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
-        with col_stat1:
-            st.metric("总反馈数", len(st.session_state.user_feedbacks))
-        with col_stat2:
-            suggestion_count = len([fb for fb in st.session_state.user_feedbacks if fb.get('type') == '功能建议'])
-            st.metric("功能建议", suggestion_count)
-        with col_stat3:
-            issue_count = len([fb for fb in st.session_state.user_feedbacks if fb.get('type') == '问题反馈'])
-            st.metric("问题反馈", issue_count)
-        with col_stat4:
-            avg_rating = sum([fb.get('rating', 0) for fb in st.session_state.user_feedbacks]) / len \
-                (st.session_state.user_feedbacks) if st.session_state.user_feedbacks else 0
-            st.metric("平均评分", f"{avg_rating:.1f}/5")
 
     def _render_feedback_form(self):
         """渲染反馈提交表单"""
@@ -241,9 +260,7 @@ class FeedbackSection:
         return re.sub(r"\W+", "_", tool_name).strip("_").lower() or "tool"
 
     def _record_quick_feedback(self, tool_name, reaction):
-        feedback_record = {
-            'id': st.session_state.feedback_count + 1,
-            'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        self._persist_feedback({
             'type': "快速反馈",
             'urgency': "一般",
             'rating': 5 if reaction == "有帮助" else 2,
@@ -252,9 +269,7 @@ class FeedbackSection:
             'tool_name': tool_name,
             'source': "quick_action",
             'reaction': reaction,
-        }
-        st.session_state.user_feedbacks.append(feedback_record)
-        st.session_state.feedback_count += 1
+        })
         st.success(f"已记录：{reaction}。后续会优先优化「{tool_name}」相关体验。")
 
     def _handle_feedback_submission(self, feedback_type, urgency, rating, content, nickname, tool_name=None, source="full_page"):
@@ -268,9 +283,7 @@ class FeedbackSection:
             return False
 
         # 创建反馈记录
-        feedback_record = {
-            'id': st.session_state.feedback_count + 1,
-            'timestamp': datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        feedback_record = self._persist_feedback({
             'type': feedback_type,
             'urgency': urgency,
             'rating': rating,
@@ -278,11 +291,7 @@ class FeedbackSection:
             'nickname': nickname or "匿名用户",
             'tool_name': tool_name,
             'source': source,
-        }
-
-        # 添加到反馈列表
-        st.session_state.user_feedbacks.append(feedback_record)
-        st.session_state.feedback_count += 1
+        })
 
         st.success("""
         ✅ 感谢您的反馈！

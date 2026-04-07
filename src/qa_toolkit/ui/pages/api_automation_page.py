@@ -80,6 +80,10 @@ def _check_interface_dependencies(selected_mode: str, for_execution: bool = Fals
         except ImportError:
             missing_packages.append(package_name)
 
+    if for_execution and selected_mode == "pytest" and missing_packages == ["pytest"]:
+        st.info("当前环境未安装 `pytest`，执行时会自动降级为 `requests脚本`，不影响本次运行。")
+        return True
+
     if not missing_packages:
         return True
 
@@ -309,6 +313,7 @@ def _ensure_generated_file(execution_mode: str) -> bool:
 
 
 def _build_result_markdown(test_results: Dict[str, Any], execution_mode: str) -> str:
+    actual_mode = test_results.get("executed_mode") or execution_mode
     total = int(test_results.get("total", 0) or 0)
     passed = int(test_results.get("passed", 0) or 0)
     failed = int(test_results.get("failed", 0) or 0)
@@ -317,7 +322,7 @@ def _build_result_markdown(test_results: Dict[str, Any], execution_mode: str) ->
     lines = [
         "# 接口自动化测试结果",
         "",
-        f"- 执行模式: {execution_mode}",
+        f"- 执行模式: {actual_mode}",
         f"- 总用例数: {total}",
         f"- 通过: {passed}",
         f"- 失败: {failed}",
@@ -326,6 +331,8 @@ def _build_result_markdown(test_results: Dict[str, Any], execution_mode: str) ->
         "",
         "## 失败与错误摘要",
     ]
+    if test_results.get("runner_note"):
+        lines.insert(2, f"- 执行说明: {test_results['runner_note']}")
     details = list(test_results.get("test_details") or [])
     failed_items = [detail for detail in details if detail.get("status") in {"failed", "error"}]
     if not failed_items:
@@ -342,11 +349,15 @@ def _build_result_markdown(test_results: Dict[str, Any], execution_mode: str) ->
 
 def _render_test_results(test_results: Dict[str, Any], execution_mode: str, interfaces: List[Dict[str, Any]]) -> None:
     st.markdown("### Step 4. 查看执行结果")
+    actual_mode = test_results.get("executed_mode") or execution_mode
     total = test_results.get("total", 0)
     passed = test_results.get("passed", 0)
     failed = test_results.get("failed", 0)
     errors = test_results.get("errors", 0)
     success_rate = (passed / total * 100) if total > 0 else 0
+
+    if test_results.get("runner_note"):
+        st.info(test_results["runner_note"])
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
@@ -379,7 +390,7 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
                 {
                     "label": "📥 下载 HTML 报告",
                     "data": report_data,
-                    "file_name": f"api_automation_report_{execution_mode}.html",
+                    "file_name": f"api_automation_report_{actual_mode}.html",
                     "mime": "text/html",
                     "caption": "适合直接归档或在浏览器中查看。",
                 }
@@ -432,7 +443,7 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
             {
                 "label": "🧾 下载 JSON 结果",
                 "data": json.dumps(test_results, ensure_ascii=False, indent=2),
-                "file_name": f"api_automation_result_{execution_mode}.json",
+                "file_name": f"api_automation_result_{actual_mode}.json",
                 "mime": "application/json",
                 "caption": "适合后续二次分析或排查执行细节。",
             },
@@ -441,14 +452,14 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
                 "data": pd.DataFrame(summary_rows).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
                 if summary_rows
                 else None,
-                "file_name": f"api_automation_summary_{execution_mode}.csv",
+                "file_name": f"api_automation_summary_{actual_mode}.csv",
                 "mime": "text/csv",
                 "caption": "适合给测试日报或结果汇总直接引用。",
             },
             {
                 "label": "📝 下载 Markdown 摘要",
                 "data": _build_result_markdown(test_results, execution_mode),
-                "file_name": f"api_automation_summary_{execution_mode}.md",
+                "file_name": f"api_automation_summary_{actual_mode}.md",
                 "mime": "text/markdown",
                 "caption": "适合发评审记录或同步到文档系统。",
             },
@@ -459,7 +470,7 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
         title="统一导出区",
         description="自动化结果统一保留 HTML、Markdown、JSON、CSV，便于和性能、安全模块保持一致。",
         items=download_items,
-        key_prefix=f"api_auto_results_{execution_mode}",
+        key_prefix=f"api_auto_results_{actual_mode}",
         metrics=[
             {"label": "通过率", "value": f"{success_rate:.1f}%"},
             {"label": "失败/错误", "value": f"{failed + errors}"},

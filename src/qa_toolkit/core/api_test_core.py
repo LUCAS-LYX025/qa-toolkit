@@ -1,4 +1,5 @@
 import io
+import importlib.util
 import json
 import os
 import re
@@ -552,17 +553,57 @@ class InterfaceAutoTestCore:
     def run_tests(self, framework: str) -> Dict[str, Any]:
         """运行测试用例"""
         mode = self._normalize_execution_mode(framework)
+        requested_mode = mode
+        runner_note = ""
 
         if mode == "unittest":
             command = [sys.executable, "-m", "unittest", "test_interfaces", "-v"]
         elif mode == "pytest":
-            command = [sys.executable, "-m", "pytest", "test_interfaces.py", "-q", "-s"]
+            if self._is_runtime_module_available("pytest"):
+                command = [sys.executable, "-m", "pytest", "test_interfaces.py", "-q", "-s"]
+            else:
+                fallback_error = self._prepare_requests_script_fallback()
+                if fallback_error:
+                    return self._build_runner_error(fallback_error)
+                mode = "requests_script"
+                runner_note = "当前环境缺少 pytest，已自动降级为 requests脚本 执行。"
+                command = [sys.executable, "run_interfaces.py"]
         elif mode == "requests_script":
             command = [sys.executable, "run_interfaces.py"]
         else:
             return self._build_runner_error(f"不支持的执行模式: {framework}")
 
-        return self._run_command(command, mode)
+        results = self._run_command(command, mode)
+        results["requested_mode"] = requested_mode
+        results["executed_mode"] = mode
+        if runner_note:
+            results["runner_note"] = runner_note
+            output = results.get("output") or ""
+            results["output"] = f"{runner_note}\n{output}".strip()
+        return results
+
+    @staticmethod
+    def _is_runtime_module_available(module_name: str) -> bool:
+        """检查运行环境是否存在指定模块。"""
+        return importlib.util.find_spec(module_name) is not None
+
+    def _prepare_requests_script_fallback(self) -> str:
+        """在缺少 pytest 时，基于 manifest 补生成 requests 脚本用于执行。"""
+        manifest = self._load_manifest()
+        cases = manifest.get("cases")
+        config = manifest.get("config")
+        if not isinstance(cases, list) or not cases:
+            return "当前环境缺少 pytest，且未找到可降级执行的用例清单，请先重新生成测试用例。"
+        if not isinstance(config, dict):
+            return "当前环境缺少 pytest，且未找到可降级执行的配置清单，请先重新生成测试用例。"
+
+        fallback_path = os.path.join(self.test_dir, "run_interfaces.py")
+        try:
+            with open(fallback_path, "w", encoding="utf-8") as file:
+                file.write(self._render_requests_script(cases, config))
+        except Exception as exc:
+            return f"当前环境缺少 pytest，生成降级执行脚本失败: {exc}"
+        return ""
 
     def generate_html_report(self, test_results: Dict[str, Any], framework: str) -> str:
         """生成简单 HTML 测试报告"""
@@ -1704,8 +1745,8 @@ def execute_case(session, case):
 
     def _parse_curl_block(self, block: str) -> Dict[str, Any]:
         """解析 curl 命令"""
-        normalized = re.sub(r"\\\s*\n", " ", block).strip()
-        parts = shlex.split(normalized)
+        normalized = self._normalize_curl_command(block)
+        parts = [self._clean_curl_token(token) for token in shlex.split(normalized) if token != "^"]
         if not parts or parts[0].lower() != "curl":
             raise ValueError("curl 文本格式不正确")
 
@@ -1719,18 +1760,22 @@ def execute_case(session, case):
         while index < len(parts):
             token = parts[index]
             if token in {"-X", "--request"} and index + 1 < len(parts):
-                method = parts[index + 1].upper()
+                method = self._clean_curl_token(parts[index + 1]).upper()
                 index += 2
                 continue
             if token in {"-H", "--header"} and index + 1 < len(parts):
-                header = parts[index + 1]
+                header = self._clean_curl_token(parts[index + 1])
                 if ":" in header:
                     key, value = header.split(":", 1)
                     headers[key.strip()] = value.strip()
                 index += 2
                 continue
+            if token in {"-b", "--cookie"} and index + 1 < len(parts):
+                headers["Cookie"] = self._clean_curl_token(parts[index + 1]).strip()
+                index += 2
+                continue
             if token in {"-d", "--data", "--data-raw", "--data-binary", "--form", "-F"} and index + 1 < len(parts):
-                raw_value = parts[index + 1]
+                raw_value = self._clean_curl_token(parts[index + 1])
                 if token in {"--form", "-F"}:
                     request_format = "form"
                 else:
@@ -1746,6 +1791,8 @@ def execute_case(session, case):
             raise ValueError("curl 命令中缺少 URL")
 
         parsed_url = urlparse(url)
+        if parsed_url.scheme and parsed_url.netloc and not self.last_parse_meta.get("detected_base_url"):
+            self.last_parse_meta["detected_base_url"] = f"{parsed_url.scheme}://{parsed_url.netloc}"
         query_params = dict(parse_qsl(parsed_url.query, keep_blank_values=True))
         if isinstance(body, str):
             content_type = str(headers.get("Content-Type") or headers.get("content-type") or "").lower()
@@ -1772,6 +1819,20 @@ def execute_case(session, case):
                 "source": "text",
             }
         )
+
+    def _normalize_curl_command(self, block: str) -> str:
+        """标准化 curl 命令，兼容 Unix 和 Windows CMD 的换行/转义风格。"""
+        normalized = (block or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        normalized = re.sub(r"\\\s*\n\s*", " ", normalized)
+        normalized = re.sub(r"\^\s*\n\s*", " ", normalized)
+        normalized = normalized.replace('^"', '"').replace("^'", "'")
+        normalized = normalized.replace(r"\^\"", r"\"").replace(r"\^'", r"\'")
+        return normalized
+
+    @staticmethod
+    def _clean_curl_token(token: str) -> str:
+        """清理 curl token 里残留的 Windows CMD 转义符。"""
+        return (token or "").replace('^"', '"').replace("^'", "'")
 
     def _parse_structured_text_block(self, block: str) -> Dict[str, Any]:
         """解析结构化文本块"""

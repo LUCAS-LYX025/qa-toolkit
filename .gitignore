@@ -10,6 +10,8 @@ workspace/api_cases/*
 !workspace/api_cases/.gitkeep
 workspace/reports/*
 !workspace/reports/.gitkeep
+workspace/feedback/*
+!workspace/feedback/.gitkeep
 workspace/uploads/*
 !workspace/uploads/.gitkeep
 workspace/mobsf_profile.local.json

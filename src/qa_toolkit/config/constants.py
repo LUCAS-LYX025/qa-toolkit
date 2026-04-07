@@ -2747,8 +2747,9 @@ CSS_STYLES = """
             inset 0 1px 0 rgba(255,255,255,0.12);
         padding: 1.25rem;
         min-height: 188px;
-        margin-bottom: 0.75rem;
+        margin-bottom: 0;
         transition: all 0.25s ease;
+        cursor: pointer;
     }
 
     .tool-picker-card.selected {
@@ -2758,6 +2759,103 @@ CSS_STYLES = """
             inset 1px 1px 0 rgba(255,255,255,0.82),
             0 16px 28px rgba(250, 204, 21, 0.18);
         transform: translateY(-1px);
+    }
+
+    .tool-picker-linklike {
+        display: block;
+        color: inherit !important;
+        text-decoration: none !important;
+        cursor: pointer;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+    }
+
+    .tool-picker-linklike:hover,
+    .tool-picker-linklike:focus,
+    .tool-picker-linklike:active,
+    .tool-picker-linklike:visited {
+        color: inherit !important;
+        text-decoration: none !important;
+        outline: none !important;
+    }
+
+    .tool-picker-linklike:hover .tool-picker-card,
+    .tool-picker-linklike:focus .tool-picker-card {
+        transform: translateY(-4px);
+        box-shadow:
+            0 18px 32px rgba(7, 20, 39, 0.28),
+            inset 0 1px 0 rgba(255,255,255,0.14);
+    }
+
+    .tool-picker-linklike:focus-visible .tool-picker-card {
+        transform: translateY(-4px);
+        border-color: rgba(250, 204, 21, 0.42);
+        box-shadow:
+            0 0 0 3px rgba(250, 204, 21, 0.16),
+            0 18px 32px rgba(7, 20, 39, 0.28),
+            inset 0 1px 0 rgba(255,255,255,0.14);
+    }
+
+    .tool-picker-linklike:hover .tool-picker-card.selected,
+    .tool-picker-linklike:focus .tool-picker-card.selected {
+        background: var(--qa-btn-primary-light);
+        border-color: var(--qa-btn-primary-light-border);
+        box-shadow:
+            inset 1px 1px 0 rgba(255,255,255,0.82),
+            0 20px 34px rgba(250, 204, 21, 0.20);
+    }
+
+    .tool-picker-linklike:focus-visible .tool-picker-card.selected {
+        background: var(--qa-btn-primary-light);
+        border-color: rgba(250, 204, 21, 0.46);
+        box-shadow:
+            0 0 0 3px rgba(250, 204, 21, 0.16),
+            inset 1px 1px 0 rgba(255,255,255,0.82),
+            0 20px 34px rgba(250, 204, 21, 0.20);
+    }
+
+    .tool-picker-linklike:active .tool-picker-card {
+        transform: translateY(-1px) scale(0.992);
+        box-shadow:
+            0 10px 20px rgba(7, 20, 39, 0.20),
+            inset 0 1px 0 rgba(255,255,255,0.12);
+    }
+
+    .tool-picker-linklike:active .tool-picker-card.selected {
+        background: var(--qa-btn-primary-light);
+        border-color: var(--qa-btn-primary-light-border);
+        box-shadow:
+            inset 1px 1px 0 rgba(255,255,255,0.82),
+            0 12px 22px rgba(250, 204, 21, 0.16);
+    }
+
+    .tool-picker-linklike:hover + .tool-picker-status,
+    .tool-picker-linklike:focus-visible + .tool-picker-status {
+        color: #17324a;
+    }
+
+    div[data-testid="stElementContainer"][class*="st-key-tool_picker_card_trigger_"] {
+        margin: 0 !important;
+        height: 0 !important;
+        min-height: 0 !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stElementContainer"][class*="st-key-tool_picker_card_trigger_"] .stButton {
+        height: 0 !important;
+        min-height: 0 !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
+
+    div[data-testid="stElementContainer"][class*="st-key-tool_picker_card_trigger_"] .stButton button {
+        height: 0 !important;
+        min-height: 0 !important;
+        padding: 0 !important;
+        border: 0 !important;
+        margin: 0 !important;
+        opacity: 0 !important;
+        box-shadow: none !important;
     }
 
     .tool-picker-icon {
@@ -2795,39 +2893,17 @@ CSS_STYLES = """
         text-shadow: none;
     }
 
-    .tool-picker-active-button {
-        background: var(--qa-btn-primary-light);
-        color: #17324a;
-        border: 1px solid var(--qa-btn-primary-light-border);
-        border-radius: 12px;
-        font-weight: 700;
-        padding: 0.8rem 1rem;
-        text-align: center;
-        width: 100%;
-        min-height: 48px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        box-shadow:
-            inset 0 1px 0 rgba(255,255,255,0.82),
-            0 12px 22px rgba(250, 204, 21, 0.16);
-    }
-
-    .tool-picker-active-button,
-    .tool-picker-active-button * {
-        color: #17324a !important;
-        fill: currentColor !important;
-        stroke: currentColor !important;
-        -webkit-text-fill-color: currentColor !important;
-        text-shadow: none !important;
-    }
-
     .tool-picker-status {
         color: #64748b;
         font-size: 0.85rem;
         margin-top: 0.45rem;
+        margin-bottom: 0.75rem;
         text-align: center;
         font-weight: 600;
+    }
+
+    .tool-picker-status.selected {
+        color: #17324a;
     }
 </style>
 """

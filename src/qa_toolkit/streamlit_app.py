@@ -157,6 +157,32 @@ def apply_hero_tool_query_selection():
     st.session_state.tool_picker_compact = True
 
 
+def apply_tool_query_selection():
+    """读取工具卡片的查询参数，并切换到对应工具。"""
+    try:
+        tool_name = st.query_params.get("tool", "")
+    except Exception:
+        return
+
+    if isinstance(tool_name, list):
+        tool_name = tool_name[0] if tool_name else ""
+
+    tool_name = urllib.parse.unquote_plus(str(tool_name).strip())
+    if not tool_name:
+        return
+
+    if st.session_state.get("_last_tool_query") == tool_name:
+        return
+
+    st.session_state["_last_tool_query"] = tool_name
+    if tool_name not in TOOL_CATEGORIES:
+        return
+
+    st.session_state.selected_tool = tool_name
+    st.session_state.tool_picker_compact = True
+    st.session_state.scroll_to_tool_workspace = True
+
+
 def escape_js_string(text):
     """安全转义 JavaScript 字符串"""
     return json.dumps(text)
@@ -501,6 +527,90 @@ def render_back_to_top_button():
     )
 
 
+def render_tool_workspace_scroll_handler():
+    """切换工具后自动滚动到功能区。"""
+    if not st.session_state.get("scroll_to_tool_workspace"):
+        return
+
+    components.html(
+        """
+        <script>
+        (function() {
+            const targetId = "tool-workspace-anchor";
+
+            function scrollToTarget() {
+                try {
+                    const parentWindow = window.parent;
+                    const target = parentWindow.document.getElementById(targetId);
+                    if (!target) {
+                        return;
+                    }
+
+                    target.scrollIntoView({ behavior: "smooth", block: "start" });
+                } catch (error) {
+                    // ignore
+                }
+            }
+
+            setTimeout(scrollToTarget, 60);
+            setTimeout(scrollToTarget, 240);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+    st.session_state.scroll_to_tool_workspace = False
+
+
+def render_tool_card_click_bridge():
+    """将工具卡片点击桥接到隐藏的 Streamlit 按钮。"""
+    components.html(
+        """
+        <script>
+        (function() {
+            function bindCards() {
+                try {
+                    const doc = window.parent.document;
+                    const cards = doc.querySelectorAll('.tool-picker-linklike[data-trigger-key]');
+                    cards.forEach((card) => {
+                        if (card.dataset.bound === '1') {
+                            return;
+                        }
+                        const triggerKey = card.getAttribute('data-trigger-key');
+                        const button = doc.querySelector(`.st-key-${triggerKey} button`);
+                        if (!button) {
+                            return;
+                        }
+
+                        const activate = (event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            button.click();
+                        };
+
+                        card.addEventListener('click', activate);
+                        card.addEventListener('keydown', (event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                                activate(event);
+                            }
+                        });
+                        card.dataset.bound = '1';
+                    });
+                } catch (error) {
+                    // ignore
+                }
+            }
+
+            bindCards();
+            setTimeout(bindCards, 80);
+            setTimeout(bindCards, 320);
+        })();
+        </script>
+        """,
+        height=0,
+    )
+
+
 def render_tool_picker():
     """渲染工具切换器。收起时优先展示功能区，展开时展示完整工具列表。"""
     current_tool = st.session_state.selected_tool
@@ -565,36 +675,32 @@ def render_tool_picker():
             is_selected = current_tool == category
             card_class = "tool-picker-card selected" if is_selected else "tool-picker-card"
             accent_color = info.get("color", "#667eea")
+            trigger_key = f"tool_picker_card_trigger_{col_index}_{abs(hash(category))}"
+            status_class = "tool-picker-status selected" if is_selected else "tool-picker-status"
+            status_text = "当前已选中，点击卡片定位到功能区" if is_selected else "点击卡片进入功能区"
             st.markdown(
                 f"""
-                <div class="{card_class}">
-                    <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
-                    <div class="tool-picker-title">{category}</div>
-                    <div class="tool-picker-desc">{info['description']}</div>
+                <div class="tool-picker-linklike" data-trigger-key="{trigger_key}" role="button" tabindex="0" aria-label="切换到{category}">
+                    <div class="{card_class}">
+                        <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
+                        <div class="tool-picker-title">{category}</div>
+                        <div class="tool-picker-desc">{info['description']}</div>
+                    </div>
                 </div>
+                <div class="{status_class}">{status_text}</div>
                 """,
                 unsafe_allow_html=True,
             )
-
-            if is_selected:
-                st.markdown(
-                    f'<div class="tool-picker-active-button">{info["icon"]} {category}</div>'
-                    '<div class="tool-picker-status">当前已选中，可直接进入功能区</div>',
-                    unsafe_allow_html=True,
-                )
-
-            button_label = "进入当前工具" if is_selected else f"{info['icon']} {category}"
-            if st.button(button_label, key=f"select_{category}", use_container_width=True):
+            if st.button(f"{info['icon']} {category}", key=trigger_key, use_container_width=True):
                 clear_hero_tool_query()
                 st.session_state.selected_tool = category
                 st.session_state.tool_picker_compact = True
+                st.session_state.scroll_to_tool_workspace = True
                 st.rerun()
-
-            if not is_selected:
-                st.markdown('<div class="tool-picker-status">单击进入工具</div>', unsafe_allow_html=True)
 
         col_index = (col_index + 1) % 3
 
+    render_tool_card_click_bridge()
     st.markdown("---")
 
 
@@ -665,10 +771,13 @@ if 'selected_tool' not in st.session_state:
     st.session_state.selected_tool = "数据生成工具"
 if 'tool_picker_compact' not in st.session_state:
     st.session_state.tool_picker_compact = False
+if 'scroll_to_tool_workspace' not in st.session_state:
+    st.session_state.scroll_to_tool_workspace = False
 if st.session_state.selected_tool not in TOOL_CATEGORIES:
     st.session_state.selected_tool = "数据生成工具"
     st.session_state.tool_picker_compact = False
 apply_hero_tool_query_selection()
+apply_tool_query_selection()
 
 # 顶部标题区域
 st.markdown(HEADLINE_STYLES, unsafe_allow_html=True)
@@ -682,6 +791,8 @@ render_tool_picker()
 author = AuthorProfile()
 author.render_sidebar_compact_profile()
 feedback_section = FeedbackSection()
+st.markdown('<div id="tool-workspace-anchor"></div>', unsafe_allow_html=True)
+render_tool_workspace_scroll_handler()
 
 # === 工具功能实现 ===
 if tool_category == "数据生成工具":
