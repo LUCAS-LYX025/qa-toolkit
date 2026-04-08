@@ -568,42 +568,62 @@ def render_tool_card_click_bridge():
         """
         <script>
         (function() {
-            function bindCards() {
-                try {
-                    const doc = window.parent.document;
-                    const triggers = doc.querySelectorAll('.tool-picker-linklike[data-trigger-key], .qa-app-hero__node[data-trigger-key]');
-                    triggers.forEach((trigger) => {
-                        if (trigger.dataset.bound === '1') {
-                            return;
-                        }
-                        const triggerKey = trigger.getAttribute('data-trigger-key');
-                        const button = doc.querySelector(`.st-key-${triggerKey} button`);
-                        if (!button) {
-                            return;
-                        }
-
-                        const activate = (event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            button.click();
-                        };
-
-                        trigger.addEventListener('click', activate);
-                        trigger.addEventListener('keydown', (event) => {
-                            if (event.key === 'Enter' || event.key === ' ') {
-                                activate(event);
-                            }
-                        });
-                        trigger.dataset.bound = '1';
-                    });
-                } catch (error) {
-                    // ignore
+            try {
+                const hostWindow = window.parent;
+                const doc = hostWindow.document;
+                if (hostWindow.__qaToolkitToolCardBridgeInstalled) {
+                    return;
                 }
-            }
+                hostWindow.__qaToolkitToolCardBridgeInstalled = true;
 
-            bindCards();
-            setTimeout(bindCards, 80);
-            setTimeout(bindCards, 320);
+                const selector = '.tool-picker-linklike[data-trigger-key], .qa-app-hero__node[data-trigger-key]';
+                const findTrigger = (target) => {
+                    if (!(target instanceof hostWindow.Element)) {
+                        return null;
+                    }
+                    return target.closest(selector);
+                };
+                const resolveTriggerButton = (trigger) => {
+                    if (!trigger) {
+                        return null;
+                    }
+                    const triggerKey = trigger.getAttribute('data-trigger-key');
+                    if (!triggerKey) {
+                        return null;
+                    }
+                    return doc.querySelector(`.st-key-${triggerKey} button`);
+                };
+                const activateTrigger = (event, trigger) => {
+                    const button = resolveTriggerButton(trigger);
+                    if (!button) {
+                        return;
+                    }
+                    event.preventDefault();
+                    event.stopPropagation();
+                    button.click();
+                };
+
+                doc.addEventListener('click', (event) => {
+                    const trigger = findTrigger(event.target);
+                    if (!trigger) {
+                        return;
+                    }
+                    activateTrigger(event, trigger);
+                });
+
+                doc.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') {
+                        return;
+                    }
+                    const trigger = findTrigger(event.target);
+                    if (!trigger) {
+                        return;
+                    }
+                    activateTrigger(event, trigger);
+                });
+            } catch (error) {
+                // ignore
+            }
         })();
         </script>
         """,
