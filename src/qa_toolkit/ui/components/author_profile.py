@@ -1,6 +1,7 @@
 import base64
 import html
 import io
+import mimetypes
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -172,6 +173,7 @@ class AuthorProfile:
             "wechat_url": "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=Mzg5Mzk3MTcwOQ==&action=getalbum&album_id=3163113351812644865#wechat_redirect",
             "gitcode_url": "https://gitcode.net/LYX_WIN",
             "github_url": "https://github.com/LUCAS-LYX025",
+            "sidebar_hero_gif_asset": "luffy_jump.gif",
             "sidebar_hero_gif_url": "https://media1.tenor.com/m/Adp4Bl8kqaAAAAAC/luffy-jump.gif",
             "skills": ["AI应用师", "接口测试", "自动化测试", "性能测试","安全测试",  "测试工具开发"]
         }
@@ -229,19 +231,43 @@ class AuthorProfile:
         encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
         return f"data:image/svg+xml;base64,{encoded}"
 
+    def _asset_file_to_data_uri(self, asset_name):
+        """将本地静态资源转成 data URI，适合 GIF / PNG / JPG 等原始文件。"""
+        if not asset_name:
+            return ""
+
+        asset_path = IMAGES_DIR / asset_name
+        if not asset_path.exists() or not asset_path.is_file():
+            return ""
+
+        mime_type, _ = mimetypes.guess_type(str(asset_path))
+        if not mime_type:
+            mime_type = "application/octet-stream"
+
+        try:
+            encoded = base64.b64encode(asset_path.read_bytes()).decode("ascii")
+        except Exception:
+            return ""
+
+        return f"data:{mime_type};base64,{encoded}"
+
     def _build_sidebar_hero_visual_html(self, avatar_uri):
         """优先展示动态头像，加载失败时自动回退到本地头像。"""
         fallback_uri = avatar_uri or self._build_avatar_placeholder_data_uri(self.author_info.get("name", "L")[:1])
-        hero_gif_url = (self.author_info.get("sidebar_hero_gif_url") or "").strip()
+        local_hero_gif_uri = self._asset_file_to_data_uri(self.author_info.get("sidebar_hero_gif_asset", ""))
+        hero_gif_url = local_hero_gif_uri or (self.author_info.get("sidebar_hero_gif_url") or "").strip()
+        safe_fallback_uri = html.escape(fallback_uri, quote=True)
         if not hero_gif_url:
-            return f'<img src="{fallback_uri}" alt="作者头像" class="hero-avatar" />'
+            return f'<img src="{safe_fallback_uri}" alt="作者头像" class="hero-avatar" />'
 
         safe_hero_gif_url = html.escape(hero_gif_url, quote=True)
-        safe_fallback_uri = html.escape(fallback_uri, quote=True)
         return (
-            f'<img src="{safe_hero_gif_url}" alt="动态头像" class="hero-luffy" loading="eager" '
+            '<div class="hero-visual-stack">'
+            f'<img src="{safe_fallback_uri}" alt="作者头像" class="hero-avatar hero-avatar--base" />'
+            f'<img src="{safe_hero_gif_url}" alt="动态头像" class="hero-luffy hero-luffy--overlay" loading="eager" '
             f'referrerpolicy="no-referrer" '
-            f'onerror="this.onerror=null;this.src=\'{safe_fallback_uri}\';this.alt=\'作者头像\';this.className=\'hero-avatar\';" />'
+            f'onerror="this.onerror=null;this.style.display=\'none\';" />'
+            '</div>'
         )
 
     def _render_sidebar_compact_styles(self):
@@ -915,7 +941,7 @@ class AuthorProfile:
                 z-index: 3;
                 width: 126px;
                 height: 126px;
-                margin: 0 auto 16px;
+                margin: 0 auto 28px;
                 padding: 3px;
                 border-radius: 999px;
                 background: linear-gradient(135deg, #facc15 0%, #fb7185 100%);
@@ -923,7 +949,16 @@ class AuthorProfile:
                 animation: captainPop 1.08s .35s both, heroFloat 4.6s 1.2s ease-in-out infinite;
                 overflow: visible;
             }}
+            .hero-visual-stack {{
+                position: relative;
+                width: 100%;
+                height: 100%;
+                border-radius: 999px;
+                overflow: hidden;
+            }}
             .hero-avatar {{
+                position: absolute;
+                inset: 0;
                 width: 100%;
                 height: 100%;
                 border-radius: 999px;
@@ -942,6 +977,8 @@ class AuthorProfile:
                 background: linear-gradient(135deg, #fff7ed 0%, #ffedd5 100%);
             }}
             .hero-luffy {{
+                position: absolute;
+                inset: 0;
                 width: 100%;
                 height: 100%;
                 border-radius: 999px;
@@ -951,10 +988,17 @@ class AuthorProfile:
                 background: radial-gradient(circle at 50% 40%, #fff7ed 0%, #ffedd5 58%, #fdba74 100%);
                 box-shadow: inset 0 0 18px rgba(255,255,255,.18);
             }}
+            .hero-avatar--base {{
+                z-index: 1;
+            }}
+            .hero-luffy--overlay {{
+                z-index: 2;
+            }}
             .hero-ribbon {{
                 position: absolute;
                 left: 50%;
                 bottom: -10px;
+                z-index: 4;
                 transform: translateX(-50%);
                 white-space: nowrap;
                 padding: 4px 10px;
@@ -1141,7 +1185,7 @@ class AuthorProfile:
                 .hero-shell {{
                     width: 106px;
                     height: 106px;
-                    margin-bottom: 14px;
+                    margin-bottom: 24px;
                 }}
                 .hero-ribbon {{
                     bottom: -8px;
@@ -1194,6 +1238,7 @@ class AuthorProfile:
                 .hero-shell {{
                     width: 96px;
                     height: 96px;
+                    margin-bottom: 20px;
                 }}
                 .identity-summary {{
                     font-size: 10.5px;

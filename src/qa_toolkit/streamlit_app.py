@@ -35,6 +35,7 @@ from qa_toolkit.config.constants import PLATFORM_MAPPING
 from qa_toolkit.config.constants import STYLE_PREVIEWS
 from qa_toolkit.config.constants import LANGUAGE_DESCRIPTIONS
 from qa_toolkit.config.constants import SIMPLE_EXAMPLE, MEDIUM_EXAMPLE, COMPLEX_EXAMPLE
+from qa_toolkit.config.tool_icon_assets import build_tool_icon_badge
 from qa_toolkit.config.tool_routes import INLINE_TOOL_CATEGORIES, PAGE_TOOL_CONFIG, PLACEHOLDER_DOC_MAPPING
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
 from qa_toolkit.support.documentation import show_doc
@@ -654,19 +655,20 @@ def render_tool_picker():
     current_tool = st.session_state.selected_tool
     current_info = TOOL_CATEGORIES[current_tool]
     accent_color = current_info.get("color", "#667eea")
+    current_tool_icon = build_tool_icon_badge(current_tool, accent_color, variant="banner")
     banner_background = f"linear-gradient(135deg, {accent_color} 0%, #0f172a 100%)"
     st.markdown(
         f"""
         <div style="
             background: {banner_background};
             border-radius: 18px;
-            padding: 18px 20px;
+            padding: 16px 18px;
             color: #ffffff;
             box-shadow: 0 14px 32px rgba(15, 23, 42, 0.14);
-            margin-bottom: 12px;
+            margin-bottom: 8px;
         ">
-            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-                <div style="font-size:26px;line-height:1;">{current_info['icon']}</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+                {current_tool_icon}
                 <div style="font-size:20px;font-weight:800;">{current_tool}</div>
                 <div style="
                     margin-left:auto;
@@ -716,11 +718,12 @@ def render_tool_picker():
             trigger_key = f"tool_picker_card_trigger_{col_index}_{abs(hash(category))}"
             status_class = "tool-picker-status selected" if is_selected else "tool-picker-status"
             status_text = "当前已选中，点击卡片定位到功能区" if is_selected else "点击卡片进入功能区"
+            tool_icon_markup = build_tool_icon_badge(category, accent_color)
             st.markdown(
                 f"""
                 <div class="tool-picker-linklike" data-trigger-key="{trigger_key}" role="button" tabindex="0" aria-label="切换到{category}">
                     <div class="{card_class}">
-                        <div class="tool-picker-icon" style="color: {accent_color};">{info['icon']}</div>
+                        <div class="tool-picker-icon">{tool_icon_markup}</div>
                         <div class="tool-picker-title">{category}</div>
                         <div class="tool-picker-desc">{info['description']}</div>
                     </div>
@@ -729,7 +732,7 @@ def render_tool_picker():
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button(f"{info['icon']} {category}", key=trigger_key, use_container_width=True):
+            if st.button(f"切换到{category}", key=trigger_key, use_container_width=True):
                 clear_hero_tool_query()
                 st.session_state.selected_tool = category
                 st.session_state.tool_picker_compact = True

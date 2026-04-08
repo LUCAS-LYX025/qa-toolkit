@@ -34,9 +34,12 @@ def test_sidebar_compact_author_profile_html_contains_mobile_fallbacks() -> None
     assert "window.frameElement.style.height" in html
 
 
-def test_sidebar_compact_author_profile_html_contains_avatar_error_fallback() -> None:
+def test_sidebar_compact_author_profile_html_contains_avatar_overlay_fallback() -> None:
     html = AuthorProfile()._build_sidebar_compact_component_html()
 
-    assert 'onerror="this.onerror=null;this.src=' in html
-    assert "this.className='hero-avatar'" in html
+    assert 'onerror="this.onerror=null;this.style.display=' in html
+    assert "hero-visual-stack" in html
+    assert "hero-avatar--base" in html
+    assert "hero-luffy--overlay" in html
+    assert "data:image/gif;base64" in html
     assert "data:image" in html

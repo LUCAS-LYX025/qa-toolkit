@@ -1118,15 +1118,15 @@ CSS_STYLES = """
     .sub-header {
         position: relative;
         overflow: hidden;
-        margin: 1.15rem 0 1rem;
-        padding: 0.95rem 1.15rem 0.95rem 1.35rem;
+        margin: 0.8rem 0 0.72rem;
+        padding: 0.78rem 1rem 0.78rem 1.24rem;
         border-radius: 18px;
         background:
             radial-gradient(circle at top right, rgba(250, 204, 21, 0.14), rgba(250, 204, 21, 0) 36%),
             linear-gradient(145deg, rgba(247,249,253,0.98) 0%, rgba(238,243,250,0.98) 58%, rgba(247,239,223,0.98) 100%);
         border: 1px solid rgba(199, 164, 79, 0.20);
         color: #17324a;
-        font-size: 1.18rem;
+        font-size: 1.08rem;
         font-weight: 800;
         letter-spacing: 0.01em;
         box-shadow:
@@ -1138,8 +1138,8 @@ CSS_STYLES = """
         content: "";
         position: absolute;
         left: 0.88rem;
-        top: 0.72rem;
-        bottom: 0.72rem;
+        top: 0.6rem;
+        bottom: 0.6rem;
         width: 4px;
         border-radius: 999px;
         background: linear-gradient(180deg, #facc15 0%, #f59e0b 100%);
@@ -2851,6 +2851,14 @@ CSS_STYLES = """
         color: #17324a;
     }
 
+    .tool-picker-linklike:hover .tool-picker-icon-badge,
+    .tool-picker-linklike:focus .tool-picker-icon-badge {
+        transform: translateY(-1px) scale(1.03);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.26),
+            0 16px 26px rgba(7, 20, 39, 0.2);
+    }
+
     div[data-testid="stElementContainer"][class*="st-key-tool_picker_card_trigger_"] {
         margin: 0 !important;
         height: 0 !important;
@@ -2900,9 +2908,76 @@ CSS_STYLES = """
     }
 
     .tool-picker-icon {
-        font-size: 2rem;
+        display: flex;
+        align-items: center;
         line-height: 1;
         margin-bottom: 0.75rem;
+    }
+
+    .tool-picker-icon-badge,
+    .tool-picker-banner-icon {
+        display: inline-flex;
+        position: relative;
+        align-items: center;
+        justify-content: center;
+        width: var(--tool-icon-size, 54px);
+        height: var(--tool-icon-size, 54px);
+        border-radius: 16px;
+        flex: 0 0 auto;
+        overflow: hidden;
+        transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+    }
+
+    .tool-picker-icon-badge::before,
+    .tool-picker-banner-icon::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background:
+            linear-gradient(135deg, rgba(255,255,255,0.18), rgba(255,255,255,0)),
+            radial-gradient(circle at 76% 78%, rgba(255,255,255,0.10), transparent 60%);
+        pointer-events: none;
+    }
+
+    .tool-picker-icon-badge {
+        color: var(--tool-icon-accent, #60a5fa);
+        background:
+            radial-gradient(circle at 28% 24%, rgba(255,255,255,0.28), rgba(255,255,255,0)),
+            linear-gradient(180deg, rgba(255,255,255,0.12), rgba(255,255,255,0.04));
+        border: 1px solid rgba(255,255,255,0.14);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.22),
+            0 12px 22px rgba(7, 20, 39, 0.18);
+    }
+
+    .tool-picker-card.selected .tool-picker-icon-badge {
+        background:
+            radial-gradient(circle at 28% 24%, rgba(255,255,255,0.72), rgba(255,255,255,0)),
+            linear-gradient(180deg, rgba(255,255,255,0.92), rgba(255,255,255,0.72));
+        border-color: rgba(23, 50, 74, 0.08);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.96),
+            0 10px 18px rgba(15, 23, 42, 0.08);
+    }
+
+    .tool-picker-banner-icon {
+        color: #ffffff;
+        background:
+            radial-gradient(circle at 28% 24%, rgba(255,255,255,0.24), rgba(255,255,255,0)),
+            linear-gradient(180deg, rgba(255,255,255,0.14), rgba(255,255,255,0.07));
+        border: 1px solid rgba(255,255,255,0.2);
+        box-shadow:
+            inset 0 1px 0 rgba(255,255,255,0.18),
+            0 10px 20px rgba(7, 20, 39, 0.18);
+    }
+
+    .tool-picker-icon-badge svg,
+    .tool-picker-banner-icon svg {
+        position: relative;
+        z-index: 1;
+        width: calc(var(--tool-icon-size, 54px) * 0.58);
+        height: calc(var(--tool-icon-size, 54px) * 0.58);
+        overflow: visible;
     }
 
     .tool-picker-title {

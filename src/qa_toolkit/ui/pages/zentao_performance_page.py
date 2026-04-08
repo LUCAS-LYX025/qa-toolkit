@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import os
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -8,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
+from qa_toolkit.integrations.zentao_proxy_client import ZenTaoProxyClient
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.action_controls import (
     primary_action_button,
@@ -27,11 +29,16 @@ from qa_toolkit.utils.datetime_tools import DateTimeUtils
 HOLIDAY_CALENDAR_OPTIONS = {"仅周末": None, **DateTimeUtils.get_supported_holiday_countries()}
 
 DEFAULT_STATE = {
+    "zentao_connection_mode": "直连数据库",
     "zentao_db_host": "127.0.0.1",
     "zentao_db_port": 3306,
     "zentao_db_user": "",
     "zentao_db_password": "",
     "zentao_db_name": "zentao",
+    "zentao_proxy_url": "",
+    "zentao_proxy_token": "",
+    "zentao_proxy_timeout_seconds": 30.0,
+    "zentao_profile_bootstrapped": False,
     "zentao_products": [],
     "zentao_roles": [],
     "zentao_bug_types": [],
@@ -57,6 +64,66 @@ DEFAULT_STATE = {
 }
 
 
+def _normalize_streamlit_secret_mapping(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if value is None:
+        return {}
+    try:
+        return value.to_dict()
+    except Exception:
+        pass
+    try:
+        return {key: value[key] for key in value.keys()}
+    except Exception:
+        return {}
+
+
+def _read_streamlit_zentao_connection_defaults() -> Dict[str, Any]:
+    try:
+        root_secrets = _normalize_streamlit_secret_mapping(st.secrets)
+    except Exception:
+        root_secrets = {}
+
+    proxy_section = _normalize_streamlit_secret_mapping(root_secrets.get("zentao_proxy"))
+    db_section = _normalize_streamlit_secret_mapping(root_secrets.get("zentao_db"))
+
+    def pick(section: Dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            if key in section and section.get(key) not in (None, ""):
+                return section.get(key)
+            if key in root_secrets and root_secrets.get(key) not in (None, ""):
+                return root_secrets.get(key)
+            env_value = os.getenv(key, "").strip()
+            if env_value:
+                return env_value
+        return None
+
+    resolved: Dict[str, Any] = {
+        "zentao_db_host": pick(db_section, "host", "ZENTAO_DB_HOST"),
+        "zentao_db_port": pick(db_section, "port", "ZENTAO_DB_PORT"),
+        "zentao_db_user": pick(db_section, "user", "ZENTAO_DB_USER"),
+        "zentao_db_password": pick(db_section, "password", "ZENTAO_DB_PASSWORD"),
+        "zentao_db_name": pick(db_section, "database", "db", "ZENTAO_DB_NAME"),
+        "zentao_proxy_url": pick(proxy_section, "base_url", "proxy_url", "ZENTAO_PROXY_URL"),
+        "zentao_proxy_token": pick(proxy_section, "token", "api_token", "ZENTAO_PROXY_TOKEN"),
+        "zentao_proxy_timeout_seconds": pick(proxy_section, "timeout_seconds", "ZENTAO_PROXY_TIMEOUT"),
+        "zentao_connection_mode": pick(proxy_section, "connection_mode", "ZENTAO_CONNECTION_MODE"),
+    }
+
+    if not resolved.get("zentao_connection_mode") and resolved.get("zentao_proxy_url"):
+        resolved["zentao_connection_mode"] = "HTTP代理"
+
+    return {key: value for key, value in resolved.items() if value not in (None, "")}
+
+
+def _normalize_connection_mode(value: Any) -> str:
+    normalized = str(value or "").strip().lower()
+    if normalized in ("http代理", "http_proxy", "proxy", "http-proxy"):
+        return "HTTP代理"
+    return "直连数据库"
+
+
 def _ensure_defaults() -> None:
     for key, value in DEFAULT_STATE.items():
         if key not in st.session_state:
@@ -66,6 +133,23 @@ def _ensure_defaults() -> None:
                 st.session_state[key] = dict(value)
             else:
                 st.session_state[key] = value
+
+    if not st.session_state.zentao_profile_bootstrapped:
+        defaults = _read_streamlit_zentao_connection_defaults()
+        for key, value in defaults.items():
+            if key not in st.session_state:
+                continue
+            current_value = st.session_state.get(key)
+            if current_value in ("", None) or key == "zentao_connection_mode":
+                if key == "zentao_db_port":
+                    st.session_state[key] = int(value)
+                elif key == "zentao_proxy_timeout_seconds":
+                    st.session_state[key] = float(value)
+                elif key == "zentao_connection_mode":
+                    st.session_state[key] = _normalize_connection_mode(value)
+                else:
+                    st.session_state[key] = value
+        st.session_state.zentao_profile_bootstrapped = True
 
 
 def _get_db_config() -> Dict[str, Any]:
@@ -78,11 +162,30 @@ def _get_db_config() -> Dict[str, Any]:
     }
 
 
+def _get_proxy_config() -> Dict[str, Any]:
+    return {
+        "base_url": st.session_state.zentao_proxy_url.strip(),
+        "token": st.session_state.zentao_proxy_token,
+        "timeout_seconds": float(st.session_state.zentao_proxy_timeout_seconds),
+    }
+
+
 def _selected_holiday_country() -> Optional[str]:
     return HOLIDAY_CALENDAR_OPTIONS.get(st.session_state.zentao_holiday_calendar)
 
 
-def _create_exporter() -> Optional[ZenTaoPerformanceExporter]:
+def _create_data_source() -> Optional[Any]:
+    if st.session_state.zentao_connection_mode == "HTTP代理":
+        proxy_config = _get_proxy_config()
+        if not proxy_config["base_url"]:
+            render_warning_feedback("请先填写禅道 HTTP 代理地址。")
+            return None
+        return ZenTaoProxyClient(
+            base_url=proxy_config["base_url"],
+            token=proxy_config["token"],
+            timeout_seconds=proxy_config["timeout_seconds"],
+        )
+
     db_config = _get_db_config()
     if not all([db_config["host"], db_config["user"], db_config["database"]]):
         render_warning_feedback("请先填写完整的数据库连接信息。")
@@ -95,17 +198,17 @@ def _create_exporter() -> Optional[ZenTaoPerformanceExporter]:
 
 
 def _load_metadata() -> None:
-    exporter = _create_exporter()
-    if exporter is None:
+    data_source = _create_data_source()
+    if data_source is None:
         st.session_state.zentao_connection_ready = False
         return
 
     try:
-        products = exporter.get_products()
-        roles = exporter.get_user_roles()
-        bug_types = exporter.get_bug_types()
+        products = data_source.get_products()
+        roles = data_source.get_user_roles()
+        bug_types = data_source.get_bug_types()
     finally:
-        exporter.close_connection()
+        data_source.close_connection()
 
     st.session_state.zentao_products = products
     st.session_state.zentao_roles = roles
@@ -116,6 +219,16 @@ def _load_metadata() -> None:
         st.session_state.zentao_selected_product_id = products[0][0]
     if roles and not st.session_state.zentao_selected_roles:
         st.session_state.zentao_selected_roles = [role_key for role_key, _ in roles]
+
+
+def _build_zentao_proxy_secrets_toml_example() -> str:
+    return (
+        "[zentao_proxy]\n"
+        'base_url = "https://your-zentao-proxy.example.com"\n'
+        'token = "replace-with-your-proxy-token"\n'
+        "timeout_seconds = 30\n"
+        'connection_mode = "HTTP代理"\n'
+    )
 
 
 def _build_query_config() -> Dict[str, Any]:
@@ -373,42 +486,84 @@ def render_zentao_performance_page() -> None:
             "导出结果会附带“统计说明”Sheet，方便复盘时还原本次统计口径。",
         ],
     )
+    render_info_feedback(
+        "如果当前应用部署在 Streamlit Community Cloud 或其他公网环境，请切到“HTTP代理”模式。应用服务端不会借用你电脑当前连着的内网 Wi-Fi。",
+        title="云上连接提示",
+    )
 
-    with st.expander("数据库连接配置", expanded=True):
-        col1, col2, col3 = st.columns([1.5, 1, 1.2])
-        with col1:
-            st.text_input("数据库主机", key="zentao_db_host")
-        with col2:
-            st.number_input("端口", min_value=1, max_value=65535, key="zentao_db_port")
-        with col3:
-            st.text_input("数据库名", key="zentao_db_name")
+    with st.expander("数据源连接配置", expanded=True):
+        st.radio(
+            "连接方式",
+            ["直连数据库", "HTTP代理"],
+            horizontal=True,
+            key="zentao_connection_mode",
+            help="内网部署建议直连数据库；Cloud 部署建议走 HTTP 代理。",
+        )
 
-        col4, col5 = st.columns(2)
-        with col4:
-            st.text_input("用户名", key="zentao_db_user")
-        with col5:
-            st.text_input("密码", key="zentao_db_password", type="password")
+        if st.session_state.zentao_connection_mode == "HTTP代理":
+            proxy_col1, proxy_col2 = st.columns([2.2, 1])
+            with proxy_col1:
+                st.text_input(
+                    "代理地址",
+                    key="zentao_proxy_url",
+                    placeholder="https://your-zentao-proxy.example.com",
+                )
+            with proxy_col2:
+                st.number_input(
+                    "请求超时(秒)",
+                    min_value=1.0,
+                    max_value=300.0,
+                    step=1.0,
+                    key="zentao_proxy_timeout_seconds",
+                )
+
+            st.text_input(
+                "代理访问令牌",
+                key="zentao_proxy_token",
+                type="password",
+                help="如果你的内网代理配置了 Bearer Token，这里填入对应令牌。",
+            )
+            st.caption("代理服务需要部署在公司内网或可访问禅道数据库的专网环境中，并对当前 Streamlit 部署提供可访问的 HTTPS 入口。")
+            with st.expander("Streamlit Cloud secrets 示例", expanded=False):
+                st.code(_build_zentao_proxy_secrets_toml_example(), language="toml")
+        else:
+            col1, col2, col3 = st.columns([1.5, 1, 1.2])
+            with col1:
+                st.text_input("数据库主机", key="zentao_db_host")
+            with col2:
+                st.number_input("端口", min_value=1, max_value=65535, key="zentao_db_port")
+            with col3:
+                st.text_input("数据库名", key="zentao_db_name")
+
+            col4, col5 = st.columns(2)
+            with col4:
+                st.text_input("用户名", key="zentao_db_user")
+            with col5:
+                st.text_input("密码", key="zentao_db_password", type="password")
 
         action_col1, action_col2, action_col3 = st.columns(3)
         with action_col1:
             if primary_action_button("连接并加载数据", key="zentao_connect_button"):
                 _load_metadata()
                 if st.session_state.zentao_connection_ready:
-                    render_success_feedback("数据库连接成功，产品、角色和缺陷类型已加载。")
+                    render_success_feedback("连接成功，产品、角色和缺陷类型已加载。")
         with action_col2:
             if secondary_action_button("清空统计结果", key="zentao_clear_results"):
                 _clear_result_state()
                 render_info_feedback("已清空汇总结果、明细结果和筛选条件。", title="结果已重置")
         with action_col3:
             if st.session_state.zentao_connection_ready:
-                render_success_feedback("当前连接状态正常，可继续执行统计分析。", title="连接状态")
+                render_success_feedback(
+                    f"当前{st.session_state.zentao_connection_mode}状态正常，可继续执行统计分析。",
+                    title="连接状态",
+                )
             else:
                 st.caption("当前状态: 未连接")
 
     if not st.session_state.zentao_connection_ready:
         render_tool_empty_state(
-            "等待数据库连接",
-            "先完成数据库连接并加载基础数据，再继续配置统计周期、角色范围和超时阈值。",
+            "等待数据源连接",
+            "先完成数据库直连或 HTTP 代理连接并加载基础数据，再继续配置统计周期、角色范围和超时阈值。",
         )
         return
 
@@ -521,14 +676,14 @@ def render_zentao_performance_page() -> None:
 
         if primary_action_button("开始汇总统计", key="zentao_run_summary"):
             if _validate_query_inputs():
-                exporter = _create_exporter()
-                if exporter is not None:
+                data_source = _create_data_source()
+                if data_source is not None:
                     try:
                         query_config = _build_query_config()
                         if st.session_state.zentao_stat_type == "测试绩效统计":
-                            summary_df = exporter.query_qa_stats(st.session_state.zentao_selected_product_id, query_config)
+                            summary_df = data_source.query_qa_stats(st.session_state.zentao_selected_product_id, query_config)
                         else:
-                            summary_df = exporter.query_dev_stats(st.session_state.zentao_selected_product_id, query_config)
+                            summary_df = data_source.query_dev_stats(st.session_state.zentao_selected_product_id, query_config)
                         st.session_state.zentao_summary_df = summary_df
                         st.session_state.zentao_detail_df = None
                         st.session_state.zentao_detail_status_filter = []
@@ -539,7 +694,7 @@ def render_zentao_performance_page() -> None:
                         else:
                             render_info_feedback("当前条件下没有查询到统计结果。", title="汇总结果为空")
                     finally:
-                        exporter.close_connection()
+                        data_source.close_connection()
 
     with summary_tab:
         summary_df = st.session_state.zentao_summary_df
@@ -628,12 +783,12 @@ def render_zentao_performance_page() -> None:
         with detail_col2:
             if primary_action_button("查询超时明细", key="zentao_run_detail"):
                 if _validate_query_inputs():
-                    exporter = _create_exporter()
-                    if exporter is not None:
+                    data_source = _create_data_source()
+                    if data_source is not None:
                         try:
                             query_config = _build_query_config()
                             if st.session_state.zentao_stat_type == "测试绩效统计":
-                                detail_df = exporter.query_qa_timeout_bugs_detail(
+                                detail_df = data_source.query_qa_timeout_bugs_detail(
                                     st.session_state.zentao_selected_person,
                                     st.session_state.zentao_selected_product_id,
                                     str(st.session_state.zentao_start_date),
@@ -641,7 +796,7 @@ def render_zentao_performance_page() -> None:
                                     query_config,
                                 )
                             else:
-                                detail_df = exporter.query_timeout_bugs_detail(
+                                detail_df = data_source.query_timeout_bugs_detail(
                                     st.session_state.zentao_selected_person,
                                     st.session_state.zentao_selected_product_id,
                                     str(st.session_state.zentao_start_date),
@@ -655,7 +810,7 @@ def render_zentao_performance_page() -> None:
                             else:
                                 render_info_feedback("当前人员在该时间范围内没有超时明细。", title="明细结果为空")
                         finally:
-                            exporter.close_connection()
+                            data_source.close_connection()
 
         detail_df = st.session_state.zentao_detail_df
         if isinstance(detail_df, pd.DataFrame) and not detail_df.empty:
