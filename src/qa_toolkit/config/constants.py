@@ -572,12 +572,12 @@ UPPERCASE = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 # 工具类别定义
 TOOL_CATEGORIES = {
     "数据生成工具": {
-        "icon": "🎲",
+        "icon": "🧬",
         "description": "生成测试数据、随机内容、模拟用户信息",
         "color": "#667eea"
     },
     "测试用例生成器": {
-        "icon": "🧪",
+        "icon": "📑",
         "description": "AI生成测试用例，支持导出用例",
         "color": "#ed64a6"
     },
@@ -587,7 +587,7 @@ TOOL_CATEGORIES = {
         "color": "#4CAF50"
     },
     "日志分析工具": {
-        "icon": "📋",
+        "icon": "📜",
         "description": "日志解析、级别统计、模式识别",
         "color": "#4299e1"
     },
@@ -596,17 +596,17 @@ TOOL_CATEGORIES = {
         "description": "商业智能数据分析"
     },
     "文本对比工具": {
-        "icon": "🔍",
+        "icon": "🆚",
         "description": "文本差异比较、规范化对比、Diff 导出",
         "color": "#ed8936"
     },
     "字数统计工具": {
-        "icon": "📝",
+        "icon": "🔢",
         "description": "文本分析、字符统计、频率分析",
         "color": "#48bb78"
     },
     "正则测试工具": {
-        "icon": "⚡",
+        "icon": "🔣",
         "description": "正则测试、模式匹配、替换操作",
         "color": "#9f7aea"
     },
@@ -616,12 +616,12 @@ TOOL_CATEGORIES = {
         "color": "#ed64a6"
     },
     "JSON处理工具": {
-        "icon": "👨‍💻",
+        "icon": "🧩",
         "description": "JSON格式验证、差异比较、数据解析",
         "color": "#f56565"
     },
     "时间处理工具": {
-        "icon": "⏰",
+        "icon": "🕒",
         "description": "时间转换、日期计算、时间分析",
         "color": "#38b2ac"
     },
@@ -646,7 +646,7 @@ TOOL_CATEGORIES = {
         "color": "#15803d"
     },
     "接口研发辅助": {
-        "icon": "🛠️",
+        "icon": "🔧",
         "description": "接口变更分析、Mock服务、调试代码生成",
         "color": "#3182ce"
     },
@@ -839,6 +839,11 @@ CSS_STYLES = """
         align-items: center;
     }
 
+    .qa-app-hero__copy {
+        position: relative;
+        z-index: 4;
+    }
+
     .qa-app-hero__kicker {
         display: inline-flex;
         align-items: center;
@@ -917,12 +922,21 @@ CSS_STYLES = """
     }
 
     .qa-app-hero__desc {
+        position: relative;
+        z-index: 1;
+        display: inline-block;
         margin: 0 0 1rem 0;
+        padding: 0.78rem 1rem;
         max-width: 44rem;
-        color: #ffffff;
+        border-radius: 18px;
+        border: 1px solid rgba(255,255,255,0.12);
+        background: linear-gradient(135deg, rgba(7, 20, 39, 0.72), rgba(19, 41, 75, 0.48));
+        backdrop-filter: blur(10px);
+        color: #f8fafc;
         font-size: 1.05rem;
         font-weight: 800;
         line-height: 1.8;
+        box-shadow: 0 14px 28px rgba(7, 20, 39, 0.18);
         text-shadow:
             0 1px 4px rgba(7, 20, 39, 0.42),
             0 0 16px rgba(15, 23, 42, 0.22);
