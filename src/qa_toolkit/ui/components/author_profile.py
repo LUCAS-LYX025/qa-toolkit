@@ -1664,7 +1664,7 @@ class AuthorProfile:
         st.markdown(self.styles, unsafe_allow_html=True)
         with st.sidebar:
             st.markdown("---")
-            components.html(self._build_sidebar_compact_component_html(), height=920, scrolling=False)
+            components.html(self._build_sidebar_compact_component_html(), height=760, scrolling=False)
 
             with st.expander("扫码名片 / 更多资源", expanded=False):
                 wechat_image = self.load_image("wechat_qrcode.jpg")
