@@ -116,6 +116,74 @@ def test_convert_ip_address_rejects_decimal_out_of_ipv4_range():
     assert "超出 IPv4 范围" in result["error"]
 
 
+def test_ip_data_sources_are_https_only():
+    tool = IPQueryTool()
+
+    assert tool.ip_apis
+    assert all(str(url).startswith("https://") for url in tool.ip_apis.values())
+
+
+def test_get_detailed_location_includes_source_and_fallback_notes():
+    tool = IPQueryTool()
+    tool._source_last_error["ipapi"] = "timeout"
+    tool._source_failures["ipapi"] = 1
+
+    with patch.object(
+        IPQueryTool,
+        "_query_ip_api",
+        side_effect=[
+            None,
+            {
+                "country": "美国",
+                "province": "California",
+                "city": "Los Angeles",
+                "isp": "Example ISP",
+                "location": "美国 California Los Angeles",
+                "asn": "AS15169",
+                "timezone": "America/Los_Angeles",
+            },
+        ],
+    ):
+        result = tool.get_detailed_location("8.8.8.8")
+
+    assert result["_source"] == tool.SOURCE_LABELS["ipinfo"]
+    assert "ipapi.co" in result.get("_fallback_notes", "")
+
+
+def test_get_ip_domain_info_exposes_geo_source_and_downgrade_note():
+    tool = IPQueryTool()
+    parsed = tool.parse_target_input("8.8.8.8")
+
+    with patch.object(
+        IPQueryTool,
+        "get_detailed_location",
+        return_value={
+            "country": "美国",
+            "province": "California",
+            "city": "Los Angeles",
+            "isp": "Example ISP",
+            "location": "美国 California Los Angeles",
+            "asn": "AS15169",
+            "timezone": "America/Los_Angeles",
+            "_source": "ipinfo.io (HTTPS)",
+            "_fallback_notes": "ipapi.co (HTTPS) 失败: timeout",
+        },
+    ), patch.object(IPQueryTool, "get_rdns_info", return_value={"success": False, "error": "mock"}), patch(
+        "qa_toolkit.tools.ip_lookup.socket.getfqdn",
+        return_value="dns.google",
+    ):
+        result = tool.get_ip_domain_info(
+            parsed["data"]["normalized_target"],
+            parsed["data"]["is_ip"],
+            parsed_target=parsed["data"],
+        )
+
+    assert result["success"] is True
+    data = result["data"]
+    assert data["地理数据来源"] == "ipinfo.io (HTTPS)"
+    assert "timeout" in data["来源降级说明"]
+
+
 def test_query_subdomains_merges_crtsh_and_hostsearch_results():
     tool = IPQueryTool()
 

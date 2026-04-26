@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 from datetime import date, datetime
@@ -10,6 +11,22 @@ from typing import Any, Callable, Dict, Optional
 import pandas as pd
 
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
+
+MAX_JSON_BODY_BYTES = 1024 * 1024
+
+
+class PayloadTooLargeError(ValueError):
+    """请求体超过代理允许上限。"""
+
+
+def _is_local_listen_host(host: str) -> bool:
+    candidate = str(host or "").strip().lower()
+    if candidate in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def _serialize_scalar(value: Any) -> Any:
@@ -53,13 +70,17 @@ def _json_response(handler: BaseHTTPRequestHandler, status_code: int, payload: D
     handler.wfile.write(body)
 
 
-def _read_json_body(handler: BaseHTTPRequestHandler) -> Dict[str, Any]:
+def _read_json_body(handler: BaseHTTPRequestHandler, max_body_bytes: int = MAX_JSON_BODY_BYTES) -> Dict[str, Any]:
     content_length = int(handler.headers.get("Content-Length", "0") or "0")
     if content_length <= 0:
         return {}
+    if content_length > max(int(max_body_bytes), 0):
+        raise PayloadTooLargeError(f"请求体过大，最大允许 {max_body_bytes} 字节。")
     raw_body = handler.rfile.read(content_length)
     if not raw_body:
         return {}
+    if len(raw_body) > max(int(max_body_bytes), 0):
+        raise PayloadTooLargeError(f"请求体过大，最大允许 {max_body_bytes} 字节。")
     payload = json.loads(raw_body.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象。")
@@ -92,10 +113,16 @@ def _build_server_config(args: argparse.Namespace) -> Dict[str, Any]:
     if not db_host or not db_user or not db_name:
         raise ValueError("请提供完整的数据库连接信息：db-host、db-user、db-name。")
 
+    listen_host = str(args.host or os.getenv("ZENTAO_PROXY_LISTEN_HOST", "127.0.0.1")).strip()
+    listen_port = int(args.port or os.getenv("ZENTAO_PROXY_LISTEN_PORT", "18080"))
+    token = str(args.token if args.token is not None else os.getenv("ZENTAO_PROXY_TOKEN", "")).strip()
+    if not _is_local_listen_host(listen_host) and not token:
+        raise ValueError("监听非本机地址时必须设置代理访问令牌（--token 或 ZENTAO_PROXY_TOKEN）。")
+
     return {
-        "listen_host": args.host or os.getenv("ZENTAO_PROXY_LISTEN_HOST", "0.0.0.0"),
-        "listen_port": int(args.port or os.getenv("ZENTAO_PROXY_LISTEN_PORT", "18080")),
-        "token": args.token if args.token is not None else os.getenv("ZENTAO_PROXY_TOKEN", ""),
+        "listen_host": listen_host,
+        "listen_port": listen_port,
+        "token": token,
         "db_config": {
             "host": db_host,
             "port": db_port,
@@ -141,6 +168,8 @@ def _make_handler(server_config: Dict[str, Any]):
                 payload = _read_json_body(self)
                 response_payload = self._dispatch(self.path, payload)
                 _json_response(self, 200, {"success": True, **response_payload})
+            except PayloadTooLargeError as exc:
+                _json_response(self, 413, {"success": False, "error": str(exc)})
             except ValueError as exc:
                 _json_response(self, 400, {"success": False, "error": str(exc)})
             except Exception as exc:
@@ -222,7 +251,7 @@ def _make_handler(server_config: Dict[str, Any]):
 
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="在内网环境启动禅道统计 HTTP 代理服务。")
-    parser.add_argument("--host", default="", help="监听地址，默认读取 ZENTAO_PROXY_LISTEN_HOST 或 0.0.0.0")
+    parser.add_argument("--host", default="", help="监听地址，默认读取 ZENTAO_PROXY_LISTEN_HOST 或 127.0.0.1")
     parser.add_argument("--port", type=int, default=0, help="监听端口，默认读取 ZENTAO_PROXY_LISTEN_PORT 或 18080")
     parser.add_argument("--db-host", default="", help="禅道数据库主机")
     parser.add_argument("--db-port", type=int, default=0, help="禅道数据库端口")

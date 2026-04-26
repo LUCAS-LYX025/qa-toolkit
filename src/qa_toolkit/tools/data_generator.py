@@ -1,5 +1,7 @@
-import random
+import ast
 import datetime
+import json
+import random
 from typing import Any, Dict, List, Optional, Union
 import streamlit as st
 
@@ -162,6 +164,24 @@ class DataGenerator:
             st.error(f"生成过程中发生错误：{e}")
             return None
 
+    def _safe_parse_profile_dict(self, profile_dict: Union[Dict, str]) -> Dict[str, Any]:
+        """将个人信息输入安全解析为字典，拒绝执行任意代码。"""
+        if isinstance(profile_dict, dict):
+            return profile_dict
+
+        raw = str(profile_dict or "").strip()
+        if not raw:
+            raise ValueError("个人信息为空。")
+
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = ast.literal_eval(raw)
+
+        if not isinstance(parsed, dict):
+            raise ValueError("个人信息格式无效，应为字典结构。")
+        return parsed
+
     def format_profile_data(self, profile_dict: Union[Dict, str]) -> str:
         """格式化完整个人信息显示
 
@@ -172,13 +192,7 @@ class DataGenerator:
             格式化后的个人信息字符串
         """
         try:
-            # 如果传入的是字符串，尝试转换为字典
-            if isinstance(profile_dict, str):
-                try:
-                    import ast
-                    profile_dict = ast.literal_eval(profile_dict)
-                except:
-                    profile_dict = eval(profile_dict)
+            profile_dict = self._safe_parse_profile_dict(profile_dict)
 
             # 提取基本信息
             name = profile_dict.get('name', '未知')

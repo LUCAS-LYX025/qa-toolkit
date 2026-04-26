@@ -120,3 +120,27 @@ def test_generate_test_dataset_rejects_unknown_scenario():
 
     with pytest.raises(ValueError):
         generator.generate_test_dataset("未知场景", count=1)
+
+
+def test_format_profile_data_rejects_unsafe_expression_string():
+    generator = DataGenerator()
+
+    result = generator.format_profile_data("__import__('os').system('echo hacked')")
+
+    assert result.startswith("格式化数据时出错:")
+    assert "hacked" in result
+
+
+def test_format_profile_data_accepts_json_object_string():
+    generator = DataGenerator()
+    raw = (
+        '{"name":"张三","sex":"F","birthdate":"1990-01-02",'
+        '"mail":"zhangsan@example.com","job":"测试工程师","address":"浙江省杭州市 西湖区",'
+        '"company":"示例科技","website":["https://example.com"],"username":"zhangsan"}'
+    )
+
+    result = generator.format_profile_data(raw)
+
+    assert "姓名： 张三" in result
+    assert "性别： 女" in result
+    assert "电子邮箱： zhangsan@example.com" in result

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 import tempfile
@@ -10,6 +11,10 @@ import streamlit as st
 from qa_toolkit.core.api_security_tool import SecurityTestTool
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
+from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
+from qa_toolkit.core.task_runner import get_session_task_runner
+from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
+from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
@@ -522,6 +527,109 @@ def _get_quick_pick_indexes(interfaces: List[Dict[str, Any]], mode: str) -> List
     return picks
 
 
+def _normalize_security_headers(headers: Dict[str, Any]) -> Dict[str, str]:
+    normalized: Dict[str, str] = {}
+    for key, value in (headers or {}).items():
+        normalized_key = str(key or "").strip()
+        if not normalized_key:
+            continue
+        normalized[normalized_key] = "" if value is None else str(value)
+    return normalized
+
+
+def _get_header_case_insensitive(headers: Dict[str, str], header_name: str) -> str:
+    for key, value in headers.items():
+        if str(key).lower() == header_name.lower():
+            return str(value or "")
+    return ""
+
+
+def _infer_security_auth_from_headers(headers: Dict[str, str]) -> Dict[str, Any]:
+    normalized_headers = _normalize_security_headers(headers)
+    if not normalized_headers:
+        return {"mode": "none"}
+
+    authorization = _get_header_case_insensitive(normalized_headers, "Authorization").strip()
+    if authorization.lower().startswith("bearer "):
+        return {"mode": "bearer", "token": authorization[7:].strip()}
+
+    if authorization.lower().startswith("basic "):
+        encoded = authorization[6:].strip()
+        try:
+            decoded = base64.b64decode(encoded).decode("utf-8", errors="ignore")
+            username, _, password = decoded.partition(":")
+            return {"mode": "basic", "username": username, "password": password}
+        except Exception:
+            return {"mode": "headers_json", "headers": normalized_headers}
+
+    for key, value in normalized_headers.items():
+        if str(key).lower() == "x-api-key":
+            return {"mode": "api_key", "header_name": key, "api_key_value": str(value)}
+
+    if len(normalized_headers) == 1:
+        header_name, header_value = next(iter(normalized_headers.items()))
+        return {"mode": "custom_header", "header_name": header_name, "header_value": header_value}
+
+    return {"mode": "headers_json", "headers": normalized_headers}
+
+
+def _build_security_headers_from_profile(profile: Dict[str, Any]) -> Dict[str, str]:
+    headers = _normalize_security_headers(profile.get("headers") if isinstance(profile.get("headers"), dict) else {})
+    auth = profile.get("auth") if isinstance(profile.get("auth"), dict) else {}
+    mode = str(auth.get("mode") or "none").strip().lower()
+
+    if mode == "bearer":
+        token = str(auth.get("token") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+    elif mode == "api_key":
+        header_name = str(auth.get("header_name") or "X-API-Key").strip() or "X-API-Key"
+        header_value = str(auth.get("api_key_value") or "").strip()
+        if header_value:
+            headers[header_name] = header_value
+    elif mode == "basic":
+        username = str(auth.get("username") or "").strip()
+        password = str(auth.get("password") or "").strip()
+        credential = f"{username}:{password}".encode("utf-8")
+        if username or password:
+            headers["Authorization"] = "Basic " + base64.b64encode(credential).decode("ascii")
+    elif mode == "custom_header":
+        header_name = str(auth.get("header_name") or "X-Custom-Auth").strip() or "X-Custom-Auth"
+        header_value = str(auth.get("header_value") or "").strip()
+        if header_value:
+            headers[header_name] = header_value
+    elif mode == "headers_json":
+        headers.update(
+            _normalize_security_headers(
+                auth.get("headers") if isinstance(auth.get("headers"), dict) else {},
+            )
+        )
+
+    return headers
+
+
+def _capture_security_env_profile() -> Dict[str, Any]:
+    auth_headers = _parse_auth_headers(st.session_state.get("api_sec_auth_headers_text", "{}"))
+    normalized_headers = _normalize_security_headers(auth_headers)
+    auth = _infer_security_auth_from_headers(normalized_headers)
+    return {
+        "base_url": str(st.session_state.get("api_sec_base_url", "") or "").strip(),
+        "timeout_seconds": float(st.session_state.get("api_sec_timeout", 15.0) or 15.0),
+        "retry_times": 0,
+        "verify_ssl": bool(st.session_state.get("api_sec_verify_ssl", True)),
+        "auth": auth,
+        "headers": normalized_headers,
+    }
+
+
+def _apply_security_env_profile(profile: Dict[str, Any]) -> None:
+    st.session_state.api_sec_base_url = str(profile.get("base_url") or "").strip()
+    st.session_state.api_sec_timeout = float(profile.get("timeout_seconds") or 15.0)
+    st.session_state.api_sec_verify_ssl = bool(profile.get("verify_ssl", True))
+    headers = _build_security_headers_from_profile(profile)
+    st.session_state.api_sec_auth_headers_text = json.dumps(headers, ensure_ascii=False, indent=2)
+
+
 def _render_source_section(core: InterfaceAutoTestCore):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">1. 导入接口文档</div>', unsafe_allow_html=True)
@@ -624,7 +732,7 @@ def _render_source_section(core: InterfaceAutoTestCore):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, source_type: str):
+def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, source_type: str, env_profile_manager):
     labels = _build_interface_labels(interfaces)
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">2. 范围与鉴权配置</div>', unsafe_allow_html=True)
@@ -633,6 +741,16 @@ def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, so
     meta_col2.metric("当前选择", len(st.session_state.get("api_sec_selected_indexes", [])))
     meta_col3.metric("来源", source_type or "auto")
     meta_col4.metric("文档名", source_name or "inline")
+
+    render_env_profile_panel(
+        manager=env_profile_manager,
+        namespace="api_security",
+        panel_key="api_security_env_profile_panel",
+        capture_state=_capture_security_env_profile,
+        apply_profile=_apply_security_env_profile,
+        description="保存并复用 API 安全测试的 Base URL、超时、SSL 与鉴权头配置。",
+        suggested_name="api-security-staging",
+    )
 
     pick_col1, pick_col2, pick_col3, pick_col4 = st.columns(4)
     with pick_col1:
@@ -1832,7 +1950,7 @@ def _render_mobsf_prefill_candidates(
                 st.error(f"拉取 iOS 真机动态报告失败: {exc}")
 
 
-def _render_local_mobile_security_tab(app_tool: ApplicationSecurityTool):
+def _render_local_mobile_security_tab(app_tool: ApplicationSecurityTool, run_center):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">移动包安全扫描</div>', unsafe_allow_html=True)
     st.caption("支持直接上传 .apk / .ipa / .appx 包，适合先做本地静态预检；更重的静态/动态能力可切到 MobSF 集成页。")
@@ -1852,13 +1970,40 @@ def _render_local_mobile_security_tab(app_tool: ApplicationSecurityTool):
                     st.warning("请先上传 .apk、.ipa 或 .appx 文件。")
                 else:
                     keywords = _parse_keyword_lines(st.session_state.get("app_sec_mobile_keywords_text", ""))
-                    with st.spinner("正在分析应用包结构、权限、组件和外联线索..."):
-                        st.session_state.app_sec_mobile_report = app_tool.scan_mobile_package(
-                            uploaded_package.name,
-                            uploaded_package.getvalue(),
-                            custom_keywords=keywords,
+                    try:
+                        def _scan_mobile_package_task(logger):
+                            logger(f"开始扫描文件: {uploaded_package.name}")
+                            with st.spinner("正在分析应用包结构、权限、组件和外联线索..."):
+                                report = app_tool.scan_mobile_package(
+                                    uploaded_package.name,
+                                    uploaded_package.getvalue(),
+                                    custom_keywords=keywords,
+                                )
+                            st.session_state.app_sec_mobile_report = report
+                            summary = report.get("summary", {}) if isinstance(report, dict) else {}
+                            logger(
+                                "扫描完成，"
+                                f"finding_count={summary.get('finding_count', 0)}, "
+                                f"high={summary.get('high', 0)}, "
+                                f"medium={summary.get('medium', 0)}。"
+                            )
+                            return {
+                                "platform": report.get("platform", ""),
+                                "finding_count": summary.get("finding_count", 0),
+                            }
+
+                        run_info = run_center.submit(
+                            tool="接口安全测试",
+                            action="移动包静态扫描",
+                            payload={
+                                "file_name": uploaded_package.name,
+                                "keyword_count": len(keywords),
+                            },
+                            executor=_scan_mobile_package_task,
                         )
-                    st.success("移动包扫描已完成。")
+                        st.success(f"移动包扫描已完成（Run ID: `{run_info['run_id']}`）。")
+                    except Exception as exc:
+                        st.error(f"移动包扫描失败: {exc}")
         with action_col2:
             if st.button("🧹 清空包结果", key="app_sec_mobile_clear", use_container_width=True):
                 st.session_state.pop("app_sec_mobile_report", None)
@@ -2771,7 +2916,7 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
+def _render_mobile_security_tab(app_tool: ApplicationSecurityTool, run_center):
     active_mobile_tab = st.radio(
         "移动安全视图",
         ["本地静态扫描", "MobSF 集成"],
@@ -2780,12 +2925,12 @@ def _render_mobile_security_tab(app_tool: ApplicationSecurityTool):
         label_visibility="collapsed",
     )
     if active_mobile_tab == "本地静态扫描":
-        _render_local_mobile_security_tab(app_tool)
+        _render_local_mobile_security_tab(app_tool, run_center)
     else:
         _render_mobsf_mobile_security_tab(app_tool)
 
 
-def _render_web_security_tab(app_tool: ApplicationSecurityTool):
+def _render_web_security_tab(app_tool: ApplicationSecurityTool, run_center):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">Web 站点安全扫描</div>', unsafe_allow_html=True)
     st.caption("支持直接粘贴网站链接，做轻量爬取、头部/Cookie/CORS/表单/常见敏感路径暴露检查，风格接近 Web 端安全扫描工具。")
@@ -2831,16 +2976,44 @@ def _render_web_security_tab(app_tool: ApplicationSecurityTool):
                 if not target_url:
                     st.warning("请先输入需要扫描的站点 URL。")
                 else:
-                    with st.spinner("正在执行轻量爬取、基线头部检查和暴露面梳理..."):
-                        st.session_state.app_sec_web_report = app_tool.scan_web_target(
-                            url=target_url,
-                            headers=request_headers,
-                            timeout_seconds=float(st.session_state.get("app_sec_web_timeout", 12.0) or 12.0),
-                            verify_ssl=bool(st.session_state.get("app_sec_web_verify_ssl", True)),
-                            max_pages=int(st.session_state.get("app_sec_web_max_pages", 8) or 8),
-                            include_common_paths=bool(st.session_state.get("app_sec_web_include_common_paths", True)),
+                    try:
+                        def _scan_web_task(logger):
+                            logger(f"开始扫描站点: {target_url}")
+                            with st.spinner("正在执行轻量爬取、基线头部检查和暴露面梳理..."):
+                                report = app_tool.scan_web_target(
+                                    url=target_url,
+                                    headers=request_headers,
+                                    timeout_seconds=float(st.session_state.get("app_sec_web_timeout", 12.0) or 12.0),
+                                    verify_ssl=bool(st.session_state.get("app_sec_web_verify_ssl", True)),
+                                    max_pages=int(st.session_state.get("app_sec_web_max_pages", 8) or 8),
+                                    include_common_paths=bool(st.session_state.get("app_sec_web_include_common_paths", True)),
+                                )
+                            st.session_state.app_sec_web_report = report
+                            summary = report.get("summary", {}) if isinstance(report, dict) else {}
+                            crawl = report.get("crawl", {}) if isinstance(report, dict) else {}
+                            logger(
+                                "站点扫描完成，"
+                                f"finding_count={summary.get('finding_count', 0)}, "
+                                f"pages_scanned={crawl.get('pages_scanned', 0)}。"
+                            )
+                            return {
+                                "finding_count": summary.get("finding_count", 0),
+                                "pages_scanned": crawl.get("pages_scanned", 0),
+                            }
+
+                        run_info = run_center.submit(
+                            tool="接口安全测试",
+                            action="Web站点扫描",
+                            payload={
+                                "target_url": target_url,
+                                "max_pages": int(st.session_state.get("app_sec_web_max_pages", 8) or 8),
+                                "verify_ssl": bool(st.session_state.get("app_sec_web_verify_ssl", True)),
+                            },
+                            executor=_scan_web_task,
                         )
-                    st.success("站点扫描已完成。")
+                        st.success(f"站点扫描已完成（Run ID: `{run_info['run_id']}`）。")
+                    except Exception as exc:
+                        st.error(f"站点扫描失败: {exc}")
     with action_col2:
         if st.button("🧹 清空站点结果", key="app_sec_web_clear", use_container_width=True):
             st.session_state.pop("app_sec_web_report", None)
@@ -2931,6 +3104,8 @@ def _render_web_security_tab(app_tool: ApplicationSecurityTool):
 def render_api_security_test_page():
     _ensure_security_defaults()
     _render_styles()
+    run_center = get_session_task_runner("api_security")
+    env_profile_manager = get_session_env_profile_manager()
     core = InterfaceAutoTestCore()
     tool = SecurityTestTool()
     app_tool = ApplicationSecurityTool()
@@ -2982,11 +3157,19 @@ def render_api_security_test_page():
                 interfaces=interfaces,
                 source_name=st.session_state.get("api_sec_source_name", ""),
                 source_type=st.session_state.get("api_sec_source_type", ""),
+                env_profile_manager=env_profile_manager,
             )
             _render_action_bar(tool, interfaces)
             _render_results(tool)
 
     elif active_top_tab == "移动包 / MobSF":
-        _render_mobile_security_tab(app_tool)
+        _render_mobile_security_tab(app_tool, run_center)
     else:
-        _render_web_security_tab(app_tool)
+        _render_web_security_tab(app_tool, run_center)
+
+    render_task_run_panel(
+        run_center=run_center,
+        tool_name="接口安全测试",
+        panel_key="api_security_run_panel",
+        limit=10,
+    )

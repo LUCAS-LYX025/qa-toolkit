@@ -207,6 +207,13 @@ def _load_metadata() -> None:
         products = data_source.get_products()
         roles = data_source.get_user_roles()
         bug_types = data_source.get_bug_types()
+    except Exception as exc:
+        st.session_state.zentao_products = []
+        st.session_state.zentao_roles = []
+        st.session_state.zentao_bug_types = []
+        st.session_state.zentao_connection_ready = False
+        render_error_feedback(f"加载禅道基础数据失败: {exc}", title="连接失败")
+        return
     finally:
         data_source.close_connection()
 
@@ -342,6 +349,18 @@ def _safe_labels(selected_values: List[str], label_map: Dict[str, str], empty_te
     if not selected_values:
         return empty_text
     return "、".join(label_map.get(value, value) for value in selected_values)
+
+
+def _unique_preserving_order(values: List[str]) -> List[str]:
+    result: List[str] = []
+    seen = set()
+    for item in values:
+        value = str(item)
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
 
 
 def _range_summary() -> Dict[str, Any]:
@@ -693,6 +712,10 @@ def render_zentao_performance_page() -> None:
                             render_success_feedback(f"汇总统计完成，本次共生成 {len(summary_df)} 行报表。")
                         else:
                             render_info_feedback("当前条件下没有查询到统计结果。", title="汇总结果为空")
+                    except Exception as exc:
+                        st.session_state.zentao_summary_df = None
+                        st.session_state.zentao_detail_df = None
+                        render_error_feedback(f"汇总统计失败: {exc}", title="执行失败")
                     finally:
                         data_source.close_connection()
 
@@ -770,7 +793,7 @@ def render_zentao_performance_page() -> None:
             return
 
         person_column = _pick_person_column(summary_df)
-        person_options = summary_df[person_column].dropna().astype(str).tolist()
+        person_options = _unique_preserving_order(summary_df[person_column].dropna().astype(str).tolist())
         if not person_options:
             render_info_feedback("当前汇总结果缺少可回查的人员字段。", title="无法查询明细")
             return
@@ -809,6 +832,9 @@ def render_zentao_performance_page() -> None:
                                 render_success_feedback(f"超时明细查询完成，本次共返回 {len(detail_df)} 条记录。")
                             else:
                                 render_info_feedback("当前人员在该时间范围内没有超时明细。", title="明细结果为空")
+                        except Exception as exc:
+                            st.session_state.zentao_detail_df = None
+                            render_error_feedback(f"查询超时明细失败: {exc}", title="执行失败")
                         finally:
                             data_source.close_connection()
 

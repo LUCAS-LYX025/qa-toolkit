@@ -8,9 +8,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
+from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.reporting.report_generator import EnhancedReportGenerator
 from qa_toolkit.reporting.test_runner import EnhancedTestRunner
+from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
+from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
@@ -28,6 +32,20 @@ MIRROR_URLS = {
     "阿里云镜像": "https://mirrors.aliyun.com/pypi/simple/",
     "豆瓣镜像": "https://pypi.douban.com/simple/",
     "中科大镜像": "https://pypi.mirrors.ustc.edu.cn/simple/",
+}
+AUTOMATION_AUTH_LABEL_TO_MODE = {
+    "无": "none",
+    "Bearer Token": "bearer",
+    "API Key": "api_key",
+    "Basic Auth": "basic",
+    "自定义Header": "custom_header",
+}
+AUTOMATION_AUTH_MODE_TO_LABEL = {
+    "none": "无",
+    "bearer": "Bearer Token",
+    "api_key": "API Key",
+    "basic": "Basic Auth",
+    "custom_header": "自定义Header",
 }
 
 
@@ -265,6 +283,61 @@ def _build_env_template_with_base_url(base_url: str) -> str:
     if normalized_base_url:
         template["environments"]["dev"]["base_url"] = normalized_base_url
     return json.dumps(template, ensure_ascii=False, indent=2)
+
+
+def _capture_interface_env_profile() -> Dict[str, Any]:
+    auth_mode_label = str(st.session_state.get("interface_auth_mode", "无") or "无")
+    auth_mode = AUTOMATION_AUTH_LABEL_TO_MODE.get(auth_mode_label, "none")
+    auth: Dict[str, Any] = {"mode": auth_mode}
+
+    if auth_mode == "bearer":
+        auth["token"] = str(st.session_state.get("interface_bearer_token", "") or "").strip()
+    elif auth_mode == "api_key":
+        auth["header_name"] = str(st.session_state.get("interface_api_key_name", "X-API-Key") or "X-API-Key").strip() or "X-API-Key"
+        auth["api_key_value"] = str(st.session_state.get("interface_api_key_value", "") or "").strip()
+    elif auth_mode == "basic":
+        auth["username"] = str(st.session_state.get("interface_basic_username", "") or "").strip()
+        auth["password"] = str(st.session_state.get("interface_basic_password", "") or "").strip()
+    elif auth_mode == "custom_header":
+        auth["header_name"] = str(st.session_state.get("interface_custom_header_name", "X-Custom-Auth") or "X-Custom-Auth").strip() or "X-Custom-Auth"
+        auth["header_value"] = str(st.session_state.get("interface_custom_header_value", "") or "").strip()
+
+    base_url = str(
+        st.session_state.get(
+            "interface_base_url_input_v2",
+            st.session_state.get("interface_loaded_base_url", ""),
+        )
+        or ""
+    ).strip()
+    return {
+        "base_url": base_url,
+        "timeout_seconds": int(st.session_state.get("interface_timeout_v2", 30) or 30),
+        "retry_times": int(st.session_state.get("interface_retry_times_v2", 0) or 0),
+        "verify_ssl": bool(st.session_state.get("interface_verify_ssl_v2", False)),
+        "auth": auth,
+        "headers": {},
+    }
+
+
+def _apply_interface_env_profile(profile: Dict[str, Any]) -> None:
+    base_url = str(profile.get("base_url") or "").strip()
+    st.session_state.interface_base_url_input_v2 = base_url
+    st.session_state.interface_loaded_base_url = base_url
+    st.session_state.interface_timeout_v2 = max(1, int(profile.get("timeout_seconds") or 30))
+    st.session_state.interface_retry_times_v2 = max(0, int(profile.get("retry_times") or 0))
+    st.session_state.interface_verify_ssl_v2 = bool(profile.get("verify_ssl", False))
+
+    auth = profile.get("auth") if isinstance(profile.get("auth"), dict) else {}
+    auth_mode = str(auth.get("mode") or "none").strip().lower()
+    st.session_state.interface_auth_mode = AUTOMATION_AUTH_MODE_TO_LABEL.get(auth_mode, "无")
+
+    st.session_state.interface_bearer_token = str(auth.get("token") or "").strip()
+    st.session_state.interface_api_key_name = str(auth.get("header_name") or "X-API-Key").strip() or "X-API-Key"
+    st.session_state.interface_api_key_value = str(auth.get("api_key_value") or "").strip()
+    st.session_state.interface_basic_username = str(auth.get("username") or "").strip()
+    st.session_state.interface_basic_password = str(auth.get("password") or "").strip()
+    st.session_state.interface_custom_header_name = str(auth.get("header_name") or "X-Custom-Auth").strip() or "X-Custom-Auth"
+    st.session_state.interface_custom_header_value = str(auth.get("header_value") or "").strip()
 
 
 def _generate_artifacts(
@@ -635,6 +708,7 @@ def _load_uploaded_document(uploaded_file) -> None:
 
 def render_api_automation_test_page() -> None:
     show_doc("interface_auto_test")
+    run_center = get_session_task_runner("api_automation")
 
     if "auto_test_tool" not in st.session_state:
         st.session_state.auto_test_tool = InterfaceAutoTestCore()
@@ -813,6 +887,16 @@ def render_api_automation_test_page() -> None:
         st.metric("执行模式", execution_mode)
 
     _render_interface_preview(interfaces)
+    env_profile_manager = get_session_env_profile_manager()
+    render_env_profile_panel(
+        manager=env_profile_manager,
+        namespace="api_automation",
+        panel_key="api_automation_env_profile_panel",
+        capture_state=_capture_interface_env_profile,
+        apply_profile=_apply_interface_env_profile,
+        description="保存并复用基础 URL、超时、重试、SSL 和统一鉴权参数。",
+        suggested_name="api-auto-dev",
+    )
 
     st.markdown("### Step 3. 测试配置")
     config_col1, config_col2 = st.columns(2)
@@ -942,19 +1026,35 @@ def render_api_automation_test_page() -> None:
             try:
                 if env_mode == "多环境(JSON模板)" and environment_config is None:
                     raise RuntimeError("多环境配置无效，请先修正环境配置 JSON")
-                _generate_artifacts(
-                    interfaces,
-                    execution_mode,
-                    base_url,
-                    timeout,
-                    retry_times,
-                    verify_ssl,
-                    request_format,
-                    template_style,
-                    environment_config,
-                    auth_config,
+
+                def _generate_task(logger):
+                    logger(f"开始生成测试文件，接口数量={len(interfaces)}。")
+                    generated = _generate_artifacts(
+                        interfaces,
+                        execution_mode,
+                        base_url,
+                        timeout,
+                        retry_times,
+                        verify_ssl,
+                        request_format,
+                        template_style,
+                        environment_config,
+                        auth_config,
+                    )
+                    logger(f"测试文件生成完成，文件数量={len(generated)}。")
+                    return {"file_count": len(generated)}
+
+                run_info = run_center.submit(
+                    tool="接口自动化测试",
+                    action="生成测试用例",
+                    payload={
+                        "execution_mode": execution_mode,
+                        "interface_count": len(interfaces),
+                        "template_style": template_style,
+                    },
+                    executor=_generate_task,
                 )
-                st.success("✅ 测试文件已生成")
+                st.success(f"✅ 测试文件已生成（Run ID: `{run_info['run_id']}`）")
             except Exception as exc:
                 st.error(f"❌ 生成测试用例失败: {exc}")
 
@@ -963,32 +1063,88 @@ def render_api_automation_test_page() -> None:
             if not _ensure_generated_file(execution_mode):
                 st.error("❌ 请先生成当前执行模式对应的测试文件")
             elif _check_interface_dependencies(execution_mode, for_execution=True):
-                with st.spinner("正在执行测试并收集结果..."):
-                    test_results = st.session_state.enhanced_runner.run_tests_with_details(execution_mode, interfaces)
-                    st.session_state.interface_last_test_results = test_results
+                try:
+                    def _run_task(logger):
+                        logger(f"开始执行测试，模式={execution_mode}。")
+                        with st.spinner("正在执行测试并收集结果..."):
+                            test_results = st.session_state.enhanced_runner.run_tests_with_details(execution_mode, interfaces)
+                        st.session_state.interface_last_test_results = test_results
+                        logger(
+                            "执行完成，"
+                            f"total={test_results.get('total', 0)}, "
+                            f"passed={test_results.get('passed', 0)}, "
+                            f"failed={test_results.get('failed', 0)}。"
+                        )
+                        return {
+                            "total": test_results.get("total", 0),
+                            "passed": test_results.get("passed", 0),
+                            "failed": test_results.get("failed", 0),
+                            "errors": test_results.get("errors", 0),
+                        }
+
+                    run_info = run_center.submit(
+                        tool="接口自动化测试",
+                        action="执行测试",
+                        payload={
+                            "execution_mode": execution_mode,
+                            "interface_count": len(interfaces),
+                        },
+                        executor=_run_task,
+                    )
+                    st.success(f"✅ 测试执行完成（Run ID: `{run_info['run_id']}`）")
+                except Exception as exc:
+                    st.error(f"❌ 执行测试失败: {exc}")
 
     with action_col3:
         if st.button("⚡ 生成并执行", use_container_width=True, key="generate_and_run_tests_v2"):
             try:
                 if env_mode == "多环境(JSON模板)" and environment_config is None:
                     raise RuntimeError("多环境配置无效，请先修正环境配置 JSON")
-                _generate_artifacts(
-                    interfaces,
-                    execution_mode,
-                    base_url,
-                    timeout,
-                    retry_times,
-                    verify_ssl,
-                    request_format,
-                    template_style,
-                    environment_config,
-                    auth_config,
-                )
-                if not _check_interface_dependencies(execution_mode, for_execution=True):
-                    raise RuntimeError("当前执行模式缺少运行依赖，请先安装后再执行")
-                with st.spinner("正在执行测试并收集结果..."):
-                    test_results = st.session_state.enhanced_runner.run_tests_with_details(execution_mode, interfaces)
+
+                def _generate_and_run_task(logger):
+                    logger("开始生成测试文件。")
+                    _generate_artifacts(
+                        interfaces,
+                        execution_mode,
+                        base_url,
+                        timeout,
+                        retry_times,
+                        verify_ssl,
+                        request_format,
+                        template_style,
+                        environment_config,
+                        auth_config,
+                    )
+                    logger("测试文件生成完成，准备执行。")
+                    if not _check_interface_dependencies(execution_mode, for_execution=True):
+                        raise RuntimeError("当前执行模式缺少运行依赖，请先安装后再执行")
+                    with st.spinner("正在执行测试并收集结果..."):
+                        test_results = st.session_state.enhanced_runner.run_tests_with_details(execution_mode, interfaces)
                     st.session_state.interface_last_test_results = test_results
+                    logger(
+                        "生成并执行完成，"
+                        f"total={test_results.get('total', 0)}, "
+                        f"passed={test_results.get('passed', 0)}, "
+                        f"failed={test_results.get('failed', 0)}。"
+                    )
+                    return {
+                        "total": test_results.get("total", 0),
+                        "passed": test_results.get("passed", 0),
+                        "failed": test_results.get("failed", 0),
+                        "errors": test_results.get("errors", 0),
+                    }
+
+                run_info = run_center.submit(
+                    tool="接口自动化测试",
+                    action="生成并执行",
+                    payload={
+                        "execution_mode": execution_mode,
+                        "interface_count": len(interfaces),
+                        "template_style": template_style,
+                    },
+                    executor=_generate_and_run_task,
+                )
+                st.success(f"✅ 生成并执行完成（Run ID: `{run_info['run_id']}`）")
             except Exception as exc:
                 st.error(f"❌ 生成并执行失败: {exc}")
 
@@ -1013,3 +1169,10 @@ def render_api_automation_test_page() -> None:
                 st.success("✅ 生成文件已清理")
             except Exception as exc:
                 st.error(f"❌ 清理失败: {exc}")
+
+    render_task_run_panel(
+        run_center=run_center,
+        tool_name="接口自动化测试",
+        panel_key="api_automation_run_panel",
+        limit=10,
+    )

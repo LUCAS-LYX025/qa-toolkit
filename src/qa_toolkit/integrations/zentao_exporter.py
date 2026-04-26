@@ -1,6 +1,6 @@
 from datetime import date, datetime, timedelta
 from string import Template
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import pymysql
@@ -137,6 +137,90 @@ class ZenTaoPerformanceExporter:
         if isinstance(value, date):
             return value
         return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+    @classmethod
+    def _normalize_date_string(cls, value: Any, field_name: str = "date") -> str:
+        try:
+            return cls._parse_date(value).isoformat()
+        except Exception as exc:
+            raise ValueError(f"{field_name} 不是有效日期，要求格式为 YYYY-MM-DD。") from exc
+
+    @staticmethod
+    def _normalize_product_id(value: Any) -> int:
+        try:
+            product_id = int(value)
+        except Exception as exc:
+            raise ValueError("product_id 必须是整数。") from exc
+        if product_id <= 0:
+            raise ValueError("product_id 必须大于 0。")
+        return product_id
+
+    @staticmethod
+    def _normalize_hour(value: Any, field_name: str) -> int:
+        try:
+            hour = int(value)
+        except Exception as exc:
+            raise ValueError(f"{field_name} 必须是整数小时。") from exc
+        if hour <= 0 or hour > 24 * 31:
+            raise ValueError(f"{field_name} 取值范围应在 1 到 {24 * 31} 小时。")
+        return hour
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if not isinstance(value, (list, tuple, set)):
+            raise ValueError("配置项必须是数组。")
+        cleaned = []
+        for item in value:
+            text = str(item).strip()
+            if text:
+                cleaned.append(text)
+        return cleaned
+
+    def _normalize_query_config(self, config: Dict, require_dates: bool = False) -> Dict[str, Any]:
+        if not isinstance(config, dict):
+            raise ValueError("config 必须是对象。")
+
+        normalized = dict(config)
+        normalized["high_priority_normal_hours"] = self._normalize_hour(
+            normalized.get("high_priority_normal_hours"),
+            "high_priority_normal_hours",
+        )
+        normalized["high_priority_weekend_hours"] = self._normalize_hour(
+            normalized.get("high_priority_weekend_hours"),
+            "high_priority_weekend_hours",
+        )
+        normalized["normal_priority_normal_hours"] = self._normalize_hour(
+            normalized.get("normal_priority_normal_hours"),
+            "normal_priority_normal_hours",
+        )
+        normalized["normal_priority_weekend_hours"] = self._normalize_hour(
+            normalized.get("normal_priority_weekend_hours"),
+            "normal_priority_weekend_hours",
+        )
+        normalized["exclude_types"] = self._normalize_string_list(normalized.get("exclude_types"))
+        normalized["roles"] = self._normalize_string_list(normalized.get("roles"))
+        normalized["holiday_country"] = (
+            str(normalized.get("holiday_country")).strip()
+            if normalized.get("holiday_country") not in (None, "")
+            else None
+        )
+
+        if require_dates or "start_date" in normalized:
+            normalized["start_date"] = self._normalize_date_string(normalized.get("start_date"), "start_date")
+        if require_dates or "end_date" in normalized:
+            normalized["end_date"] = self._normalize_date_string(normalized.get("end_date"), "end_date")
+        if normalized.get("start_date") and normalized.get("end_date"):
+            self._ensure_date_range(normalized["start_date"], normalized["end_date"])
+        return normalized
+
+    @classmethod
+    def _ensure_date_range(cls, start_date: Any, end_date: Any) -> None:
+        start = cls._parse_date(start_date)
+        end = cls._parse_date(end_date)
+        if start > end:
+            raise ValueError("start_date 不能晚于 end_date。")
 
     @staticmethod
     def _sql_literal(value) -> str:
@@ -354,6 +438,12 @@ class ZenTaoPerformanceExporter:
 
     def build_qa_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建测试人员SQL查询语句"""
+        product_id = self._normalize_product_id(product_id)
+        start_date = self._normalize_date_string(start_date, "start_date")
+        end_date = self._normalize_date_string(end_date, "end_date")
+        self._ensure_date_range(start_date, end_date)
+        config = self._normalize_query_config(config, require_dates=False)
+
         exclude_types_str = self._sql_in_list(config['exclude_types'])
         roles_str = self._sql_in_list(config['roles'])
         holiday_country = config.get('holiday_country')
@@ -493,6 +583,12 @@ class ZenTaoPerformanceExporter:
 
     def build_dev_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建开发人员SQL查询语句"""
+        product_id = self._normalize_product_id(product_id)
+        start_date = self._normalize_date_string(start_date, "start_date")
+        end_date = self._normalize_date_string(end_date, "end_date")
+        self._ensure_date_range(start_date, end_date)
+        config = self._normalize_query_config(config, require_dates=False)
+
         exclude_types_str = self._sql_in_list(config['exclude_types'])
         roles_str = self._sql_in_list(config['roles'])
         holiday_country = config.get('holiday_country')
@@ -645,6 +741,12 @@ class ZenTaoPerformanceExporter:
 
     def build_qa_detail_query(self, product_id: int, start_date: str, end_date: str, config: Dict) -> str:
         """构建测试人员绩效明细查询语句"""
+        product_id = self._normalize_product_id(product_id)
+        start_date = self._normalize_date_string(start_date, "start_date")
+        end_date = self._normalize_date_string(end_date, "end_date")
+        self._ensure_date_range(start_date, end_date)
+        config = self._normalize_query_config(config, require_dates=False)
+
         exclude_types_str = self._sql_in_list(config['exclude_types'])
         roles_str = self._sql_in_list(config['roles'])
         holiday_country = config.get('holiday_country')
@@ -724,6 +826,8 @@ class ZenTaoPerformanceExporter:
     def query_qa_stats(self, product_id: int, config: Dict) -> Optional[pd.DataFrame]:
         """查询测试人员统计数据"""
         try:
+            product_id = self._normalize_product_id(product_id)
+            config = self._normalize_query_config(config, require_dates=True)
             query = self.build_qa_query(
                 product_id=product_id,
                 start_date=config['start_date'],
@@ -731,6 +835,8 @@ class ZenTaoPerformanceExporter:
                 config=config
             )
             return self.mysql_db.execute_query_to_dataframe(query)
+        except ValueError:
+            raise
         except Exception as e:
             st.error(f"查询测试统计数据时出错: {str(e)}")
             return None
@@ -738,6 +844,8 @@ class ZenTaoPerformanceExporter:
     def query_dev_stats(self, product_id: int, config: Dict) -> Optional[pd.DataFrame]:
         """查询开发人员统计数据"""
         try:
+            product_id = self._normalize_product_id(product_id)
+            config = self._normalize_query_config(config, require_dates=True)
             query = self.build_dev_query(
                 product_id=product_id,
                 start_date=config['start_date'],
@@ -745,6 +853,8 @@ class ZenTaoPerformanceExporter:
                 config=config
             )
             return self.mysql_db.execute_query_to_dataframe(query)
+        except ValueError:
+            raise
         except Exception as e:
             st.error(f"查询开发统计数据时出错: {str(e)}")
             return None
@@ -752,6 +862,8 @@ class ZenTaoPerformanceExporter:
     def query_qa_detail_stats(self, product_id: int, config: Dict) -> Optional[pd.DataFrame]:
         """查询测试人员绩效明细数据"""
         try:
+            product_id = self._normalize_product_id(product_id)
+            config = self._normalize_query_config(config, require_dates=True)
             query = self.build_qa_detail_query(
                 product_id=product_id,
                 start_date=config['start_date'],
@@ -759,6 +871,8 @@ class ZenTaoPerformanceExporter:
                 config=config
             )
             return self.mysql_db.execute_query_to_dataframe(query)
+        except ValueError:
+            raise
         except Exception as e:
             st.error(f"查询测试绩效明细时出错: {str(e)}")
             return None
@@ -828,6 +942,12 @@ class ZenTaoPerformanceExporter:
         查询指定开发人员在指定产品和时间范围内的超时Bug明细
         """
         try:
+            product_id = self._normalize_product_id(product_id)
+            start_date = self._normalize_date_string(start_date, "start_date")
+            end_date = self._normalize_date_string(end_date, "end_date")
+            self._ensure_date_range(start_date, end_date)
+            config = self._normalize_query_config(config, require_dates=False)
+
             # 使用配置的超时参数
             high_priority_normal_hours = config['high_priority_normal_hours']
             high_priority_weekend_hours = config['high_priority_weekend_hours']
@@ -886,7 +1006,7 @@ class ZenTaoPerformanceExporter:
             JOIN
                 zt_product p ON b.product = p.id
             WHERE
-                u.realname = %s
+                (u.realname = %s OR u.account = %s)
                 AND b.product = %s
                 AND b.openedDate BETWEEN %s AND %s
                 AND b.deleted = '0'
@@ -921,7 +1041,7 @@ class ZenTaoPerformanceExporter:
             """
 
             # 正确的方式：使用 execute 方法并传递参数
-            self.mysql_db.cur.execute(sql_query, (developer_name, product_id, start_date, end_date))
+            self.mysql_db.cur.execute(sql_query, (developer_name, developer_name, product_id, start_date, end_date))
             results = self.mysql_db.fetchall_to_dict()
 
             # 转换为DataFrame
@@ -931,6 +1051,8 @@ class ZenTaoPerformanceExporter:
             else:
                 return pd.DataFrame()
 
+        except ValueError:
+            raise
         except Exception as e:
             st.error(f"查询开发超时明细失败: {str(e)}")
             return None
@@ -941,6 +1063,12 @@ class ZenTaoPerformanceExporter:
         基于你提供的测试绩效明细查询逻辑
         """
         try:
+            product_id = self._normalize_product_id(product_id)
+            start_date = self._normalize_date_string(start_date, "start_date")
+            end_date = self._normalize_date_string(end_date, "end_date")
+            self._ensure_date_range(start_date, end_date)
+            config = self._normalize_query_config(config, require_dates=False)
+
             # 使用配置的超时参数
             high_priority_normal_hours = config['high_priority_normal_hours']
             high_priority_weekend_hours = config['high_priority_weekend_hours']
@@ -1036,7 +1164,7 @@ class ZenTaoPerformanceExporter:
             JOIN
                 zt_bug b ON (u.account = b.closedBy OR u.account = b.assignedTo)
             WHERE
-                u.realname = %s
+                (u.realname = %s OR u.account = %s)
                 AND b.product = %s
                 AND b.openedDate BETWEEN %s AND %s
                 AND b.deleted = '0'
@@ -1068,7 +1196,7 @@ class ZenTaoPerformanceExporter:
             """
 
             # 执行查询
-            self.mysql_db.cur.execute(sql_query, (tester_name, product_id, start_date, end_date))
+            self.mysql_db.cur.execute(sql_query, (tester_name, tester_name, product_id, start_date, end_date))
             results = self.mysql_db.fetchall_to_dict()
 
             # 转换为DataFrame
@@ -1078,6 +1206,8 @@ class ZenTaoPerformanceExporter:
             else:
                 return pd.DataFrame()
 
+        except ValueError:
+            raise
         except Exception as e:
             st.error(f"查询测试超时明细失败: {str(e)}")
             return None

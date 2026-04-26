@@ -6,9 +6,11 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.ip_lookup import IPQueryTool
 from qa_toolkit.ui.components.action_controls import action_download_button, primary_action_button, secondary_action_button
+from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.status_feedback import render_error_feedback, render_info_feedback, render_warning_feedback
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
 
@@ -39,6 +41,13 @@ def _render_single_result(result: dict) -> None:
         return
 
     data = result["data"]
+    source_text = str(data.get("地理数据来源", "") or "").strip()
+    downgrade_note = str(data.get("来源降级说明", "") or "").strip()
+    if source_text:
+        render_info_feedback(f"本次地理数据来源: {source_text}", title="来源状态")
+    if downgrade_note:
+        render_warning_feedback(downgrade_note, title="降级说明")
+
     display_df = pd.DataFrame({"字段": list(data.keys()), "值": [str(value) for value in data.values()]})
     st.dataframe(display_df, use_container_width=True, hide_index=True)
     action_download_button(
@@ -65,6 +74,8 @@ def _build_batch_row(target: str, result: dict) -> dict:
         "运营商": data.get("运营商", ""),
         "ASN": data.get("ASN信息", ""),
         "首选IP": data.get("解析IP", data.get("IP地址", "")),
+        "地理源": data.get("地理数据来源", ""),
+        "降级说明": data.get("来源降级说明", ""),
     }
 
 
@@ -104,6 +115,7 @@ def _render_asset_result(result: dict, label: str) -> None:
 def render_ip_lookup_page() -> None:
     _ensure_defaults()
     tool = IPQueryTool()
+    run_center = get_session_task_runner("ip_lookup")
 
     pending_single_input = st.session_state.pop("ip_lookup_single_input_pending", None)
     if pending_single_input is not None:
@@ -142,7 +154,28 @@ def render_ip_lookup_page() -> None:
                 st.rerun()
 
         if primary_action_button("开始单个查询", key="ip_lookup_single_button"):
-            st.session_state.ip_lookup_single_result = tool.get_ip_domain_info(st.session_state.ip_lookup_single_input)
+            single_target = str(st.session_state.ip_lookup_single_input or "").strip()
+            try:
+                def _single_query_task(logger):
+                    logger(f"开始单个查询: {single_target}")
+                    result = tool.get_ip_domain_info(single_target)
+                    st.session_state.ip_lookup_single_result = result
+                    if result.get("success"):
+                        logger("单个查询成功。")
+                    else:
+                        logger(f"单个查询失败: {result.get('error', '未知错误')}")
+                        raise RuntimeError(result.get("error", "查询失败"))
+                    return {"success": True, "target": single_target}
+
+                run_info = run_center.submit(
+                    tool="IP/域名查询工具",
+                    action="单个查询",
+                    payload={"target": single_target},
+                    executor=_single_query_task,
+                )
+                st.caption(f"Run ID: `{run_info['run_id']}`")
+            except Exception as exc:
+                render_error_feedback(str(exc), title="单个查询异常")
 
         _render_single_result(st.session_state.ip_lookup_single_result)
 
@@ -158,13 +191,31 @@ def render_ip_lookup_page() -> None:
             unique_targets = list(dict.fromkeys(raw_lines))
             if len(unique_targets) > 50:
                 render_warning_feedback("批量查询建议控制在 50 条以内，本次只会处理前 50 条。", title="批量查询提醒")
-            rows = []
-            progress = st.progress(0)
-            for index, target in enumerate(unique_targets[:50], start=1):
-                result = tool.get_ip_domain_info(target)
-                rows.append(_build_batch_row(target, result))
-                progress.progress(index / max(len(unique_targets[:50]), 1))
-            st.session_state.ip_lookup_batch_result = rows
+            limited_targets = unique_targets[:50]
+            try:
+                def _batch_query_task(logger):
+                    logger(f"开始批量查询，目标数量={len(limited_targets)}。")
+                    rows = []
+                    progress = st.progress(0)
+                    total = max(len(limited_targets), 1)
+                    for index, target in enumerate(limited_targets, start=1):
+                        result = tool.get_ip_domain_info(target)
+                        rows.append(_build_batch_row(target, result))
+                        progress.progress(index / total)
+                    st.session_state.ip_lookup_batch_result = rows
+                    success_count = sum(1 for row in rows if row.get("状态") == "成功")
+                    logger(f"批量查询完成，成功={success_count}，失败={len(rows) - success_count}。")
+                    return {"total": len(rows), "success": success_count, "failed": len(rows) - success_count}
+
+                run_info = run_center.submit(
+                    tool="IP/域名查询工具",
+                    action="批量查询",
+                    payload={"target_count": len(limited_targets)},
+                    executor=_batch_query_task,
+                )
+                st.caption(f"Run ID: `{run_info['run_id']}`")
+            except Exception as exc:
+                render_error_feedback(str(exc), title="批量查询异常")
 
         if st.session_state.ip_lookup_batch_result:
             batch_df = pd.DataFrame(st.session_state.ip_lookup_batch_result)
@@ -212,3 +263,10 @@ def render_ip_lookup_page() -> None:
                 st.session_state.ip_lookup_asset_result = tool.query_icp_info(st.session_state.ip_lookup_asset_input)
 
         _render_asset_result(st.session_state.ip_lookup_asset_result, st.session_state.ip_lookup_asset_label)
+
+    render_task_run_panel(
+        run_center=run_center,
+        tool_name="IP/域名查询工具",
+        panel_key="ip_lookup_run_panel",
+        limit=10,
+    )

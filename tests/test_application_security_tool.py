@@ -19,6 +19,7 @@ except Exception:
 
 import sys
 
+import pytest
 import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -180,7 +181,10 @@ class _TestHandler(BaseHTTPRequestHandler):
 
 
 def _start_server():
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _TestHandler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _TestHandler)
+    except PermissionError as exc:
+        pytest.skip(f"当前执行环境不允许绑定本地端口: {exc}")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     return server

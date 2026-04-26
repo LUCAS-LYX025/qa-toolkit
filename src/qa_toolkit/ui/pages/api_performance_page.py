@@ -2,13 +2,18 @@ import html
 import json
 import os
 import time
+from typing import Any, Dict
 from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 
 from qa_toolkit.core.api_performance_tool import PerformanceTestTool
+from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
+from qa_toolkit.core.task_runner import get_session_task_runner
+from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
+from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
 
@@ -134,6 +139,38 @@ def _compose_base_url_from_fields() -> str:
     if base_path:
         base_url += f"/{base_path}"
     return base_url
+
+
+def _capture_performance_env_profile() -> Dict[str, Any]:
+    base_url = _compose_base_url_from_fields().strip()
+    return {
+        "base_url": base_url,
+        "timeout_seconds": float(st.session_state.get("performance_timeout", 30.0) or 30.0),
+        "retry_times": 0,
+        "verify_ssl": bool(st.session_state.get("performance_verify_ssl", False)),
+        "auth": {"mode": "none"},
+        "headers": {},
+    }
+
+
+def _apply_performance_env_profile(profile: Dict[str, Any]) -> None:
+    base_url = str(profile.get("base_url") or "").strip()
+    st.session_state.performance_base_url = base_url
+    st.session_state.performance_timeout = float(profile.get("timeout_seconds") or 30.0)
+    st.session_state.performance_verify_ssl = bool(profile.get("verify_ssl", False))
+
+    parsed = urlparse(base_url)
+    if parsed.scheme and parsed.netloc:
+        st.session_state.api_perf_protocol = parsed.scheme
+        st.session_state.api_perf_server_name = parsed.hostname or ""
+        st.session_state.api_perf_port = str(parsed.port or "")
+        st.session_state.api_perf_base_path = (parsed.path or "").strip("/")
+        st.session_state.api_perf_http_fields_synced_from = base_url
+    else:
+        st.session_state.api_perf_server_name = ""
+        st.session_state.api_perf_port = ""
+        st.session_state.api_perf_base_path = ""
+        st.session_state.api_perf_http_fields_synced_from = ""
 
 
 def _clear_results():
@@ -2041,7 +2078,7 @@ def _render_listener_shortcuts(perf_plan, perf_result):
             st.rerun()
 
 
-def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTestTool):
+def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTestTool, run_center):
     st.markdown('<div class="jmeter-toolbar"><div class="jmeter-panel-title">Toolbar / Execute</div>只保留一套真正可执行的操作按钮，避免同类功能重复展示。</div>', unsafe_allow_html=True)
     action_col1, action_col2, action_col3, action_col4, action_col5, action_col6 = st.columns(6)
     with action_col1:
@@ -2106,24 +2143,52 @@ def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTest
 
     if build_clicked:
         try:
-            st.session_state.api_perf_active_menu = "File"
-            plan = _build_plan_from_state(perf_interfaces, performance_tool)
-            st.session_state.interface_perf_plan = plan
-            _open_listener_view("Test Plan")
-            st.success("✅ Test Plan 已生成")
+            def _build_task(logger):
+                st.session_state.api_perf_active_menu = "File"
+                logger(f"开始生成 Test Plan，接口数量={len(perf_interfaces)}。")
+                plan = _build_plan_from_state(perf_interfaces, performance_tool)
+                st.session_state.interface_perf_plan = plan
+                _open_listener_view("Test Plan")
+                sampler_count = len(plan.get("samplers", [])) if isinstance(plan, dict) else 0
+                logger(f"Test Plan 生成完成，Sampler 数量={sampler_count}。")
+                return {"sampler_count": sampler_count}
+
+            run_info = run_center.submit(
+                tool="接口性能测试",
+                action="生成测试计划",
+                payload={"interface_count": len(perf_interfaces)},
+                executor=_build_task,
+            )
+            st.success(f"✅ Test Plan 已生成（Run ID: `{run_info['run_id']}`）")
         except Exception as exc:
             st.error(f"❌ 生成测试计划失败: {exc}")
 
     if run_clicked:
         try:
-            st.session_state.api_perf_active_menu = "Run"
-            plan = _build_plan_from_state(perf_interfaces, performance_tool)
-            st.session_state.interface_perf_plan = plan
-            with st.spinner("正在执行性能测试，请稍候..."):
-                result = performance_tool.run_test_plan(plan)
-            st.session_state.interface_perf_result = result
-            _open_listener_view("Summary Report")
-            st.success("✅ 性能测试执行完成")
+            def _run_task(logger):
+                st.session_state.api_perf_active_menu = "Run"
+                logger("准备构建并执行性能测试计划。")
+                plan = _build_plan_from_state(perf_interfaces, performance_tool)
+                st.session_state.interface_perf_plan = plan
+                with st.spinner("正在执行性能测试，请稍候..."):
+                    result = performance_tool.run_test_plan(plan)
+                st.session_state.interface_perf_result = result
+                _open_listener_view("Summary Report")
+                summary = result.get("summary", {}) if isinstance(result, dict) else {}
+                logger(
+                    "性能测试执行完成，"
+                    f"total_requests={summary.get('total_requests', 0)}, "
+                    f"success_rate={summary.get('success_rate', 0)}。"
+                )
+                return summary
+
+            run_info = run_center.submit(
+                tool="接口性能测试",
+                action="执行性能测试",
+                payload={"interface_count": len(perf_interfaces)},
+                executor=_run_task,
+            )
+            st.success(f"✅ 性能测试执行完成（Run ID: `{run_info['run_id']}`）")
         except Exception as exc:
             st.error(f"❌ 性能测试执行失败: {exc}")
 
@@ -2479,6 +2544,7 @@ def render_api_performance_test_page():
     _ensure_perf_defaults()
     _sync_http_fields_from_base_url()
     _render_styles()
+    run_center = get_session_task_runner("api_performance")
 
     if "interface_perf_parser" not in st.session_state:
         st.session_state.interface_perf_parser = InterfaceAutoTestCore()
@@ -2507,8 +2573,18 @@ def render_api_performance_test_page():
         tips=["先跑 1-5 用户冒烟", "事务视图更适合看链路耗时", "CSV 建议先预览字段映射"],
         eyebrow="页面向导",
     )
+    env_profile_manager = get_session_env_profile_manager()
+    render_env_profile_panel(
+        manager=env_profile_manager,
+        namespace="api_performance",
+        panel_key="api_performance_env_profile_panel",
+        capture_state=_capture_performance_env_profile,
+        apply_profile=_apply_performance_env_profile,
+        description="保存并复用压测目标地址、超时和 SSL 校验开关。",
+        suggested_name="api-perf-staging",
+    )
 
-    _render_execution_toolbar(perf_interfaces, performance_tool)
+    _render_execution_toolbar(perf_interfaces, performance_tool, run_center)
     _render_execution_status(perf_interfaces)
     _render_horizontal_splitter("Workspace")
 
@@ -2537,4 +2613,11 @@ def render_api_performance_test_page():
     st.markdown(
         f'<div class="jmeter-statusbar"><span>{status_text}</span><span>{result_text}</span></div>',
         unsafe_allow_html=True,
+    )
+
+    render_task_run_panel(
+        run_center=run_center,
+        tool_name="接口性能测试",
+        panel_key="api_performance_run_panel",
+        limit=10,
     )

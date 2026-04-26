@@ -2,6 +2,7 @@ import datetime
 import ipaddress
 import re
 import socket
+import time
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
@@ -32,24 +33,63 @@ class IPQueryTool:
         "com.hk", "com.tw", "com.mo", "com.sg", "co.jp", "co.kr",
         "co.uk", "org.uk", "ac.uk",
     }
+    SOURCE_PRIORITY = ["ipapi", "ipinfo", "ipwhois"]
+    SOURCE_LABELS = {
+        "ipapi": "ipapi.co (HTTPS)",
+        "ipinfo": "ipinfo.io (HTTPS)",
+        "ipwhois": "ipwho.is (HTTPS)",
+    }
 
     def __init__(self):
-        self.data_source = "全球IP数据库API"
+        self.data_source = "HTTPS多源IP地理接口"
         self.ip_apis = {
             "ipapi": "https://ipapi.co/{ip}/json/",
-            "ipapi_com": "http://ip-api.com/json/{ip}",
             "ipinfo": "https://ipinfo.io/{ip}/json",
+            "ipwhois": "https://ipwho.is/{ip}",
         }
+        self._source_failures: Dict[str, int] = {name: 0 for name in self.SOURCE_PRIORITY}
+        self._source_block_until: Dict[str, float] = {name: 0.0 for name in self.SOURCE_PRIORITY}
+        self._source_last_error: Dict[str, str] = {name: "" for name in self.SOURCE_PRIORITY}
+        self._failure_threshold = 2
+        self._cooldown_seconds = 120.0
+
+    def _is_source_blocked(self, api_name: str, now: Optional[float] = None) -> bool:
+        now = time.time() if now is None else now
+        return now < float(self._source_block_until.get(api_name, 0.0))
+
+    def _mark_source_success(self, api_name: str) -> None:
+        self._source_failures[api_name] = 0
+        self._source_block_until[api_name] = 0.0
+        self._source_last_error[api_name] = ""
+
+    def _mark_source_failure(self, api_name: str, error: str) -> None:
+        fail_count = int(self._source_failures.get(api_name, 0)) + 1
+        self._source_failures[api_name] = fail_count
+        self._source_last_error[api_name] = str(error or "未知错误")
+        if fail_count >= self._failure_threshold:
+            self._source_block_until[api_name] = time.time() + self._cooldown_seconds
+
+    def _build_source_skip_reason(self, api_name: str) -> str:
+        if self._is_source_blocked(api_name):
+            seconds = int(max(self._source_block_until.get(api_name, 0.0) - time.time(), 0))
+            return f"{self.SOURCE_LABELS.get(api_name, api_name)} 熔断中({seconds}s)"
+        error = str(self._source_last_error.get(api_name, "") or "").strip()
+        if error:
+            return f"{self.SOURCE_LABELS.get(api_name, api_name)} 失败: {error}"
+        return f"{self.SOURCE_LABELS.get(api_name, api_name)} 暂不可用"
 
     def _query_ip_api(self, ip_address: str, api_name: str) -> Optional[Dict[str, Any]]:
         """查询单个 IP 的地理位置与 ASN 信息。"""
+        if self._is_source_blocked(api_name):
+            return None
+
         try:
             if api_name == "ipapi":
                 url = self.ip_apis["ipapi"].format(ip=ip_address)
                 response = requests.get(url, timeout=8, headers=self.DEFAULT_HEADERS)
                 if response.status_code == 200:
                     data = response.json()
-                    return {
+                    result = {
                         "country": data.get("country_name", "未知"),
                         "province": data.get("region", "未知"),
                         "city": data.get("city", "未知"),
@@ -64,28 +104,8 @@ class IPQueryTool:
                         "currency": data.get("currency", ""),
                         "languages": data.get("languages", ""),
                     }
-
-            if api_name == "ipapi_com":
-                url = self.ip_apis["ipapi_com"].format(ip=ip_address)
-                response = requests.get(url, timeout=8, headers=self.DEFAULT_HEADERS)
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("status") == "success":
-                        return {
-                            "country": data.get("country", "未知"),
-                            "province": data.get("regionName", "未知"),
-                            "city": data.get("city", "未知"),
-                            "isp": data.get("isp", "未知"),
-                            "location": self._compose_location(
-                                data.get("country"),
-                                data.get("regionName"),
-                                data.get("city"),
-                            ),
-                            "asn": data.get("as", ""),
-                            "timezone": data.get("timezone", ""),
-                            "org": data.get("org", ""),
-                            "zip": data.get("zip", ""),
-                        }
+                    self._mark_source_success(api_name)
+                    return result
 
             if api_name == "ipinfo":
                 url = self.ip_apis["ipinfo"].format(ip=ip_address)
@@ -93,7 +113,7 @@ class IPQueryTool:
                 if response.status_code == 200:
                     data = response.json()
                     country_code = data.get("country", "")
-                    return {
+                    result = {
                         "country": self._get_country_name(country_code),
                         "province": data.get("region", "未知"),
                         "city": data.get("city", "未知"),
@@ -107,8 +127,41 @@ class IPQueryTool:
                         "timezone": data.get("timezone", ""),
                         "coordinates": data.get("loc", ""),
                     }
+                    self._mark_source_success(api_name)
+                    return result
+
+            if api_name == "ipwhois":
+                url = self.ip_apis["ipwhois"].format(ip=ip_address)
+                response = requests.get(url, timeout=8, headers=self.DEFAULT_HEADERS)
+                if response.status_code == 200:
+                    data = response.json()
+                    if data.get("success") is False:
+                        message = data.get("message") or "ipwho.is 返回失败"
+                        self._mark_source_failure(api_name, str(message))
+                        return None
+                    region = data.get("region") or data.get("region_name") or ""
+                    connection = data.get("connection", {}) if isinstance(data.get("connection"), dict) else {}
+                    result = {
+                        "country": data.get("country", "未知"),
+                        "province": region or "未知",
+                        "city": data.get("city", "未知"),
+                        "isp": connection.get("isp") or connection.get("org") or "未知",
+                        "location": self._compose_location(
+                            data.get("country"),
+                            region,
+                            data.get("city"),
+                        ),
+                        "asn": connection.get("asn", ""),
+                        "timezone": data.get("timezone", {}).get("id", "") if isinstance(data.get("timezone"), dict) else "",
+                        "currency": data.get("currency", {}).get("code", "") if isinstance(data.get("currency"), dict) else "",
+                    }
+                    self._mark_source_success(api_name)
+                    return result
         except Exception as exc:
-            print(f"API {api_name} 查询失败: {exc}")
+            self._mark_source_failure(api_name, str(exc))
+            return None
+
+        self._mark_source_failure(api_name, "返回内容无效")
         return None
 
     def _compose_location(self, country: Optional[str], province: Optional[str], city: Optional[str]) -> str:
@@ -149,6 +202,7 @@ class IPQueryTool:
                     "isp": "局域网",
                     "location": "私有网络地址",
                     "ip_type": "私有IP",
+                    "_source": "本地判断",
                 }
             if ip.is_loopback:
                 return {
@@ -158,6 +212,7 @@ class IPQueryTool:
                     "isp": "Loopback",
                     "location": "回环地址",
                     "ip_type": "回环IP",
+                    "_source": "本地判断",
                 }
             if ip.is_link_local:
                 return {
@@ -167,6 +222,7 @@ class IPQueryTool:
                     "isp": "局域网",
                     "location": "链路本地地址",
                     "ip_type": "链路本地IP",
+                    "_source": "本地判断",
                 }
         except ValueError:
             return {
@@ -176,21 +232,34 @@ class IPQueryTool:
                 "isp": "未知",
                 "location": "未知",
                 "ip_type": "未知",
+                "_source": "输入无效",
             }
 
-        for api_name in ["ipapi", "ipinfo", "ipapi_com"]:
+        fallback_notes: List[str] = []
+        for api_name in self.SOURCE_PRIORITY:
+            if self._is_source_blocked(api_name):
+                fallback_notes.append(self._build_source_skip_reason(api_name))
+                continue
             result = self._query_ip_api(ip_address, api_name)
             if result and result.get("country") not in {"", "未知"}:
+                result["_source"] = self.SOURCE_LABELS.get(api_name, api_name)
+                if fallback_notes:
+                    result["_fallback_notes"] = "；".join(fallback_notes)
                 return result
+            fallback_notes.append(self._build_source_skip_reason(api_name))
 
-        return {
+        unknown_result = {
             "country": "未知",
             "province": "未知",
             "city": "未知",
             "isp": "未知",
             "location": "未知",
             "ip_type": self._get_ip_type(ip_address),
+            "_source": "无可用HTTPS源",
         }
+        if fallback_notes:
+            unknown_result["_fallback_notes"] = "；".join(fallback_notes)
+        return unknown_result
 
     def get_public_ip(self) -> str:
         """获取当前机器的公网 IP。"""
@@ -742,6 +811,10 @@ class IPQueryTool:
                     "运营商": location_info.get("isp", "未知"),
                     "地理位置": location_info.get("location", "未知"),
                 })
+                if location_info.get("_source"):
+                    info_dict["地理数据来源"] = location_info["_source"]
+                if location_info.get("_fallback_notes"):
+                    info_dict["来源降级说明"] = location_info["_fallback_notes"]
 
                 if location_info.get("timezone"):
                     info_dict["时区"] = location_info["timezone"]
@@ -753,6 +826,7 @@ class IPQueryTool:
                     info_dict["语言"] = location_info["languages"]
             else:
                 info_dict.update(self._default_location())
+                info_dict["地理数据来源"] = "无可用来源"
 
             asn_target = normalized_target if is_ip else (primary_ip or normalized_target)
             info_dict["ASN信息"] = self.get_asn_info(asn_target, location_info=location_info)
@@ -966,7 +1040,7 @@ class IPQueryTool:
     def get_tool_info(self) -> Dict[str, Any]:
         return {
             "name": "改进的IP地址查询工具",
-            "version": "3.1",
+            "version": "3.2",
             "author": "IP Query Tool",
             "functions": [
                 "IP/域名信息查询（支持 URL 提取）",
@@ -974,6 +1048,7 @@ class IPQueryTool:
                 "ASN 信息查询",
                 "rDNS 查询",
                 "A/AAAA 域名解析",
+                "HTTPS 多源地理查询与熔断降级",
                 "子域名查询",
                 "旁站查询",
                 "ICP备案查询",
