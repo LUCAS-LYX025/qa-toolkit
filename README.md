@@ -1,453 +1,180 @@
 # QA Toolkit
 
-面向测试工程师的综合工具平台，基于 Streamlit 构建，覆盖测试数据生成、测试用例生成、接口研发辅助、接口自动化、接口性能、接口安全、文本与图片处理、日志分析、禅道绩效统计等场景。
+> 17 个测试工程师高频工具，一个本地入口。不用再为了造一条测试数据去开三个网页。
 
-这个 README 不只介绍怎么启动项目，也作为项目的操作手册和使用说明。
+<p>
+  <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
+  <img alt="Streamlit" src="https://img.shields.io/badge/Streamlit-1.50-FF4B4B?logo=streamlit&logoColor=white">
+  <img alt="tools" src="https://img.shields.io/badge/tools-17-4CAF50">
+  <img alt="tests" src="https://img.shields.io/badge/tests-31%20files-blue">
+</p>
 
-## 如何阅读本文档
+![QA Toolkit 首页](assets/images/screenshots/01_home.png)
 
-如果你是日常使用者，优先阅读下面这些部分：
+---
 
-- `第一部分：使用者操作手册`
-- `1. 项目定位`
-- `2. 适用场景`
-- `3. 能力总览`
-- `4. 快速开始`
-- `5. 页面导航与通用使用方式`
-- `6. 重点工具操作手册`
-- `7. 典型工作流`
+## 这东西是给谁用的
 
-如果你是项目维护者或部署负责人，优先阅读下面这些部分：
+写测试的人每天都在重复做几件事：造数据、写用例、对接口文档、看日志、整理报告。这些活单看都不难，但每个都要切换工具、拼命令、手动整理格式，一天下来真正花在「判断」上的时间没多少。
 
-- `第二部分：维护者指南`
-- `8. 开发环境与项目结构`
-- `9. 部署与运行说明`
-- `10. 运行产物与示例资源`
-- `11. 开发与维护建议`
-- `12. 发布前检查清单`
+QA Toolkit 把这些活收进一个 Streamlit 应用里。启动一次，左边选工具，右边干活，结果直接下载成 CSV / Excel / JSON / HTML。
 
-## 第一部分：使用者操作手册
+具体一点，它覆盖这些场景：
 
-## 1. 项目定位
+- 联调前要一批格式正确的用户、订单、地址数据
+- 拿到需求文档或原型截图，要先出一版用例初稿
+- 接口文档换了版本，想知道到底改了哪几个字段
+- 想按接口文档直接跑一轮基础回归，而不是手写脚本
+- 上线前想做安全基线自查，但不知道从哪下手
+- 几十万行日志里要找出异常和状态码分布
 
-- 主应用：一个本地可运行、也可部署到 Streamlit Cloud 的测试工程工具平台
-- 核心目标：把测试设计、联调准备、回归支持、基线检查和常用效率工具放到一个入口里
-- 适用人群：测试工程师、测试开发、接口联调人员、质量负责人、部分研发同学
+## 工具一览
 
-## 2. 适用场景
+按使用场景分五组，共 17 个。
 
-- 需要快速造测试数据，支持联调、导入、回归、边界值设计
-- 需要根据需求文档、截图、原型图快速生成测试用例
-- 需要对接口文档做标准化、变更分析、Mock、断言模板和调试代码生成
-- 需要把接口文档转成自动化测试脚本并执行
-- 需要对接口做压测、安全基线检查、移动包静态扫描或 Web 轻量扫描
-- 需要处理文本、正则、JSON、时间、图片、加密、IP/域名、日志等日常测试工作
+### 测试设计
 
-## 3. 能力总览
+| 工具 | 什么时候会用到 | 输出 |
+| --- | --- | --- |
+| 🧬 数据生成工具 | 联调造数、表单校验、边界值设计。支持 Faker 真实感数据、基础随机值、业务场景数据集、边界值/异常值 | 文本、CSV、JSON |
+| 📑 测试用例生成器 | 拿到需求文本或截图，要一版用例初稿。四种模型可选，支持 OCR 识别截图、需求分析助手 | Excel、CSV、Markdown、JSON |
+| 📈 禅道绩效统计 | 月底统计测试/开发的缺陷处理时效、超时响应率 | Excel、CSV |
 
-| 模块 | 主要用途 | 典型输出 |
-|---|---|---|
-| 数据生成工具 | 造随机值、结构化场景数据、边界值/异常值 | 文本、CSV、JSON |
-| 测试用例生成器 | 基于需求文本或截图生成测试用例 | Excel、CSV、Markdown、JSON |
-| 接口研发辅助 | 文档标准化、变更分析、Mock、断言、调试代码 | JSON、Markdown、Mock 脚本、代码片段 |
-| 接口自动化测试 | 解析接口文档、生成并执行自动化测试 | 测试脚本、HTML 报告 |
-| 接口性能测试 | JMeter 风格接口压测、参数化和事务链路 | HTML、JSON、CSV 报告 |
-| 接口安全测试 | API 安全基线、APK/IPA/APPX 静态扫描、MobSF 静态/动态集成、Web 基线扫描 | Markdown、JSON、CSV、PDF 报告 |
-| 禅道绩效统计 | 测试/开发绩效统计、超时响应分析 | Excel、CSV |
-| 通用效率工具 | 文本、JSON、正则、时间、图片、加密、IP、日志、BI | 对应格式结果或下载文件 |
+### 接口相关
 
-## 4. 快速开始
+| 工具 | 什么时候会用到 | 输出 |
+| --- | --- | --- |
+| 🔧 接口研发辅助 | 文档要标准化、两个版本要对比、联调前要 Mock 和调试代码、要生成断言模板 | JSON、Markdown、Mock 脚本、代码片段 |
+| 🤖 接口自动化测试 | 按接口文档直接生成脚本并执行，支持 pytest / unittest / requests 三种模式 | 测试脚本 + HTML 报告 |
+| 🚀 接口性能测试 | 轻量压测。Thread Group、多接口顺序执行、CSV 参数化、事务链路聚合 | HTML、JSON、CSV 报告 |
+| 🛡️ 接口安全测试 | 上线前安全基线。API 基线检查、APK/IPA/APPX 静态扫描、MobSF 集成、Web 站点扫描、Nuclei 模板导出 | Markdown、JSON、CSV、PDF |
 
-### 4.1 环境要求
+### 日志与数据
 
-- 建议 Python 3.9 及以上
-- 建议使用虚拟环境
-- 若需 OCR，需安装系统级 `tesseract`
+| 工具 | 什么时候会用到 | 输出 |
+| --- | --- | --- |
+| 📜 日志分析工具 | 日志级别统计、过滤搜索、状态码/IP/接口分布、异常洞察 | 统计表、CSV |
+| 🧩 JSON 处理工具 | 格式化、校验、两个 JSON 对比、JSONPath 取值 | JSON、文本 |
+| 📊 BI 数据分析工具 | 数据分析类测试的图表辅助 | 图表 |
 
-### 4.2 安装 Python 依赖
+### 文本与内容
+
+| 工具 | 什么时候会用到 | 输出 |
+| --- | --- | --- |
+| 🆚 文本对比工具 | 对比两版文档/配置。行级差异、词级高亮、空白规范化 | Unified Diff、对比视图 |
+| 🔢 字数统计工具 | 字符/单词/段落统计、词频、重复行诊断，支持 doc/docx/log 等导入 | 多格式导出 |
+| 🔣 正则测试工具 | 调表达式、看分组、生成多语言示例代码 | 匹配结果、代码片段 |
+
+### 工程杂活
+
+| 工具 | 什么时候会用到 | 输出 |
+| --- | --- | --- |
+| 🕒 时间处理工具 | 时间戳转换、区间计算、日期推算 | 时间字符串 |
+| 🔐 加密/解密工具 | Base64、MD5、SHA、RSA、URL、HTML、Unicode、Hex 编解码 | 结果文本 |
+| 🌐 IP/域名查询工具 | 解析 IP 归属、域名信息、URL 拆解，支持批量 | 表格 |
+| 🖼️ 图片处理工具 | 格式转换、尺寸调整、裁剪、旋转、加水印 | 图片文件 |
+
+## 界面
+
+几个用得最多的页面：
+
+| 数据生成 | 测试用例生成 |
+| --- | --- |
+| ![数据生成工具](assets/images/screenshots/02_data_generator.png) | ![测试用例生成器](assets/images/screenshots/03_test_case_generator.png) |
+
+| 接口自动化 | 接口安全测试 |
+| --- | --- |
+| ![接口自动化测试](assets/images/screenshots/05_api_automation.png) | ![接口安全测试](assets/images/screenshots/07_api_security.png) |
+
+<details>
+<summary>展开看其余工具的界面截图</summary>
+
+| | |
+| --- | --- |
+| ![接口研发辅助](assets/images/screenshots/04_api_dev_tools.png) | ![接口性能测试](assets/images/screenshots/06_api_performance.png) |
+| ![禅道绩效统计](assets/images/screenshots/08_zentao.png) | ![文本对比](assets/images/screenshots/09_text_compare.png) |
+| ![JSON 处理](assets/images/screenshots/10_json_tools.png) | ![正则测试](assets/images/screenshots/11_regex_tester.png) |
+| ![日志分析](assets/images/screenshots/12_log_analysis.png) | ![字数统计](assets/images/screenshots/13_word_counter.png) |
+| ![时间处理](assets/images/screenshots/14_time_processor.png) | ![IP 域名查询](assets/images/screenshots/15_ip_lookup.png) |
+| ![加密解密](assets/images/screenshots/16_crypto_tools.png) | ![图片处理](assets/images/screenshots/17_image_processor.png) |
+| ![BI 分析](assets/images/screenshots/18_bi_analysis.png) | ![正则字段提取](assets/images/screenshots/19_regex_field_extractor.png) |
+
+</details>
+
+## 快速开始
 
 ```bash
-python -m pip install -r requirements.txt
-```
+git clone https://github.com/LUCAS-LYX025/qa-toolkit.git
+cd qa-toolkit
 
-### 4.3 启动主工具平台
+python3 -m venv .venv
+source .venv/bin/activate          # Windows 用 .venv\Scripts\activate
 
-```bash
+python3 -m pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
-默认会在本机打开一个本地地址，通常是 `http://localhost:8501`。
+浏览器会打开 `http://localhost:8501`。左边是工具切换区，默认停在首页。
 
-### 4.4 运行测试
-
-```bash
-pytest tests/test_application_security_tool.py
-```
-
-如果你补充了新的单测，也可以按文件维度执行，例如：
+**需要 OCR（识别需求截图）时**，额外装系统级 tesseract：
 
 ```bash
-pytest tests/test_data_generator.py
-pytest tests/test_test_case_generator.py
-```
-
-## 5. 页面导航与通用使用方式
-
-启动后，页面会展示工具切换区。推荐按下面的方式使用：
-
-1. 先选择工具分类
-2. 按页面提示输入文本、上传文件或配置参数
-3. 先预览分析结果，再执行生成、扫描、导出或测试
-4. 结果优先下载到本地归档，必要时保留 `workspace/` 产物
-
-通用交互特点：
-
-- 多数工具支持复制结果和下载文件
-- 结构化结果通常支持表格预览
-- 复杂工具会保留历史记录或上次生成结果
-- 上传文件默认会放到 `workspace/uploads/`
-
-## 6. 重点工具操作手册
-
-### 6.1 数据生成工具
-
-适用场景：
-
-- 注册账号、员工信息、订单支付、收货地址等联调造数
-- 随机字符串、密码、邮箱、手机号、身份证等单字段造数
-- 表单校验、接口校验所需的边界值和异常值设计
-
-主要功能：
-
-- Faker 高级生成器：人物、地址、网络、公司、日期、文本等真实感数据
-- 基础随机生成器：字符串、数字、密码、UUID、邮箱、电话、地址、身份证
-- 测试场景造数：按业务场景生成结构化数据集
-- 边界值/异常值生成器：按字段生成正常值、边界值和异常值
-
-推荐使用流程：
-
-1. 若只是联调单个字段，直接用基础生成器
-2. 若要批量导入或联调整组数据，优先用“测试场景造数”
-3. 若在做测试设计，优先用“边界值/异常值生成器”
-4. 结果优先下载 CSV 或 JSON，便于复用
-
-实用建议：
-
-- 批次标识建议写清楚，例如 `qa0410`、`regression_v2`
-- 随机种子建议在回归场景填写，这样同参数可复现同一批数据
-- 结构化数据更适合接口联调、导入测试和数据准备，不建议只复制纯文本
-
-### 6.2 测试用例生成器
-
-适用场景：
-
-- 根据需求文档、验收标准、原型图、聊天截图快速生成测试用例
-- 为迭代回归、新功能测试、测试评审提供初版用例
-- 为新人提供标准化测试用例模板
-
-主要功能：
-
-- 支持多模型：阿里通义千问、OpenAI、百度文心一言、讯飞星火、智谱 ChatGLM
-- 支持三种需求输入方式：手动输入、图片 OCR、结构化补充
-- 支持需求分析助手：自动提取功能点、业务规则、建议覆盖维度、待确认项
-- 支持设置目标用例数、输出语言、测试风格和覆盖维度
-- 支持结果筛选、逐条查看和多格式导出
-
-推荐使用流程：
-
-1. 先在“手动输入”里录入主要需求
-2. 若需求来自截图或原型图，再在“图片 OCR 识别”里补充
-3. 在“结构化补充”里明确模块、业务规则、验收标准和不覆盖范围
-4. 看“需求分析助手”给出的建议覆盖维度和待确认项
-5. 选择模型、风格、语言和目标用例数后生成
-6. 先筛选查看，再导出 Excel/CSV/Markdown/JSON
-
-使用建议：
-
-- 复杂需求不要只贴一段大文本，最好拆出“业务规则”和“验收标准”
-- OCR 更适合提取标题、规则、表单说明，不适合完全替代人工整理
-- 生成结果建议作为初稿，正式评审前仍要人工补充和修正
-
-### 6.3 接口研发辅助
-
-适用场景：
-
-- 新版本接口文档回归前检查
-- 前后端联调前做 Mock、调试代码和接口体检
-- 两份接口文档之间做变更分析
-
-主要功能：
-
-- 文档标准化导出
-- 接口变更分析
-- 回归清单生成
-- 接口文档体检
-- 断言模板生成
-- Mock 服务生成
-- 调试代码片段生成
-
-推荐使用流程：
-
-1. 先导入接口文档
-2. 先做标准化导出和接口体检
-3. 如有版本对比，再做变更分析
-4. 按需要生成回归清单、断言模板、Mock 或调试代码
-
-更适合的使用顺序：
-
-- 接口文档很乱：先标准化
-- 准备联调：先 Mock，再生成调试代码
-- 准备回归：先变更分析，再看回归清单
-- 准备自动化：先体检，再生成断言模板
-
-### 6.4 接口自动化测试
-
-适用场景：
-
-- 根据 Excel、JSON、文本、Swagger 等接口定义快速生成自动化测试
-- 快速验证接口基础可用性、状态码、返回结构和简单断言
-- 沉淀基础接口回归能力
-
-主要功能：
-
-- 解析接口文档
-- 自动生成测试脚本
-- 支持 pytest / unittest / requests 脚本模式
-- 执行自动化测试
-- 生成 HTML 报告
-
-推荐使用流程：
-
-1. 导入接口文档或使用示例数据
-2. 配置基础 URL、请求方式和参数格式
-3. 生成自动化用例脚本
-4. 执行测试
-5. 下载或查看 HTML 报告
-
-使用建议：
-
-- 导入前先用“接口研发辅助”做一次体检，能减少坏文档带来的问题
-- 基础 URL 建议优先使用测试环境或预发环境
-- 如果文档不完整，先补充期望状态码和响应示例
-
-### 6.5 接口性能测试
-
-适用场景：
-
-- 做轻量接口压测、基准测试、事务链路测试
-- 用 CSV 参数化压测账号、Token、订单号等不同数据
-- 观察吞吐量、响应时间和错误率
-
-主要功能：
-
-- Thread Group：并发用户、Ramp-Up、循环、时长
-- HTTP Sampler：多接口顺序执行
-- Assertions：状态码、响应内容、最大响应时间
-- Timer：固定等待和随机抖动
-- CSV 参数化
-- Transaction Controller：链路级聚合
-- 报告导出：HTML、JSON、CSV
-
-推荐使用流程：
-
-1. 导入接口定义，选择参与压测的接口
-2. 设置并发、持续时间和断言
-3. 如需参数化，上传 CSV
-4. 如需链路统计，配置事务控制器
-5. 先小规模试跑，再扩大规模
-
-使用建议：
-
-- 在 Streamlit 页面里执行压测时，不建议一上来就跑超大规模并发
-- 先用少量并发确认脚本和断言是否正常，再扩大线程数
-- 对于长链路，优先看事务级统计而不是只看单接口
-
-### 6.6 接口安全测试
-
-适用场景：
-
-- 接口上线前做安全基线自查
-- 对 APK/IPA/APPX 做静态安全预检
-- 通过 MobSF 官方能力补强移动端静态分析、动态报告拉取与测试视角整理
-- 对 Web 站点做轻量头部和暴露面扫描
-
-主要功能：
-
-- API 文档安全方案与基线检查
-- APK / IPA / APPX 静态扫描
-- MobSF 官方静态/动态集成、一次性预配置、连通性检查、结果回填、一键拉报告与二次整理
-- Web 站点轻量扫描
-- OWASP API Top 10 清单
-- 权限矩阵
-- Nuclei 模板导出
-- 安全回归套件和报告
-
-推荐使用流程：
-
-1. 导入接口文档，确认测试范围和 Base URL
-2. 做 API 基线检查
-3. 如有移动端包，先上传 APK / IPA / APPX 做本地静态扫描
-4. 如需更完整能力，配置 MobSF 地址和 API Key，执行官方静态分析、动态报告拉取和测试视角二次整理
-5. 如有 Web 入口，补一轮站点基线扫描
-6. 最后导出报告或回归清单
-
-注意事项：
-
-- 当前更偏向“安全基线”和“低风险检查”，不是主动攻击平台
-- 适合已授权目标，不建议拿来直接打生产环境
-- 自动化发现不能替代人工安全测试
-- MobSF 动态分析需要其自身侧准备设备、模拟器、Frida 或 Corellium 等环境
-- 部署到 Streamlit Community Cloud 时，MobSF 建议改为“远程服务模式”，通过 `st.secrets` 或环境变量提供 `base_url/api_key`
-- Streamlit Community Cloud 不提供本机 Docker、ADB、Frida、Android 模拟器，因此不能在云端直接启动本地 MobSF 或 Android 动态环境
-
-### 6.7 禅道绩效统计
-
-适用场景：
-
-- 按月、季度统计测试和开发的缺陷处理绩效
-- 统计超时响应率和超时明细
-- 生成 Excel / CSV 绩效报表
-
-推荐使用流程：
-
-1. 配置禅道数据库连接
-2. 选择产品、时间范围、统计维度
-3. 设置超时规则和排除缺陷类型
-4. 生成统计报告
-5. 按成员查看超时明细
-
-使用建议：
-
-- 建议先在数据库备份或影子环境验证
-- 月度和季度是更适合的统计粒度
-- 统计结果建议结合项目背景解读，不建议脱离上下文单独评价
-
-### 6.8 通用效率工具
-
-这些工具适合日常测试和联调工作中的高频小任务：
-
-- 文本对比工具：双栏文本导入、行级差异、词级高亮、空白规范化和 Unified Diff 导出
-- 字数统计工具：统计字符、单词、段落、频率，并支持 txt/md/json/csv/log/doc/docx 导入、文本清洗、重复行诊断和多格式导出
-- 正则测试工具：调试表达式、替换规则、生成语言示例
-- JSON 处理工具：格式化、校验、对比、解析
-- 时间处理工具：时间转换、区间计算、日期辅助
-- 图片处理工具：格式转换、尺寸调整、裁剪、旋转、水印
-- IP/域名查询工具：解析 IP、域名、URL、批量查询
-- 加密/解密工具：Base64、MD5、SHA、RSA、URL/HTML/Unicode/Hex
-- 日志分析工具：日志级别统计、过滤搜索、JSON/CSV字段筛选、状态码/IP/接口/异常洞察
-- BI 数据分析工具：面向数据分析类测试和可视化辅助
-
-## 7. 典型工作流
-
-### 7.1 需求截图转测试用例
-
-1. 打开“测试用例生成器”
-2. 上传需求截图或原型图
-3. 用 OCR 提取文本
-4. 在结构化补充里补业务规则和验收标准
-5. 看需求分析助手
-6. 生成并导出测试用例
-
-### 7.2 接口文档转自动化回归
-
-1. 打开“接口研发辅助”
-2. 先做文档标准化和接口体检
-3. 必要时做版本变更分析
-4. 打开“接口自动化测试”
-5. 导入接口文档并生成脚本
-6. 执行测试并查看 HTML 报告
-
-### 7.3 联调前准备
-
-1. 打开“数据生成工具”造联调数据
-2. 打开“接口研发辅助”生成 Mock 和调试代码
-3. 用“JSON 处理工具”或“加密/解密工具”处理请求参数
-
-### 7.4 上线前基线检查
-
-1. 先用“接口安全测试”做 API 基线
-2. 如有 Web 入口，补 Web 扫描
-3. 如有移动端安装包，做 APK / IPA 静态扫描
-4. 对关键接口做轻量性能验证
-
-## 第二部分：维护者指南
-
-## 8. 开发环境与项目结构
-
-```text
-.
-├── assets/                     # 静态资源、字体、内置工具
-│   ├── bin/
-│   ├── fonts/
-│   └── images/
-├── examples/                   # 示例输入与样例文件
-│   ├── api_cases/
-│   ├── interface_documents/
-│   └── screenshots/
-├── src/
-│   └── qa_toolkit/
-│       ├── config/             # 常量、配置、样例文案
-│       ├── core/               # 接口自动化、性能、安全等核心能力
-│       ├── integrations/       # 外部系统集成
-│       ├── reporting/          # 报告生成与执行封装
-│       ├── support/            # 页面内置文档说明
-│       ├── tools/              # 数据生成、测试用例等工具模块
-│       ├── ui/                 # 页面和组件
-│       ├── utils/              # 日志、时间、图片、JSON 等通用工具
-│       ├── paths.py            # 路径常量
-│       └── streamlit_app.py    # 主应用入口模块
-├── tests/                      # 自动化测试
-├── workspace/                  # 运行期产物目录
-│   ├── api_cases/
-│   ├── reports/
-│   └── uploads/
-├── packages.txt                # Streamlit Cloud 系统依赖
-├── requirements.txt            # Python 依赖
-└── streamlit_app.py            # 根目录启动入口
-```
-
-## 9. 部署与运行说明
-
-本节更适合项目维护者、部署负责人和需要排查环境问题的同学。
-
-### 9.1 本地开发运行
-
-- 安装 Python 依赖：`python -m pip install -r requirements.txt`
-- 启动项目：`streamlit run streamlit_app.py`
-- 若需 OCR，需额外安装系统级 `tesseract`
-
-### 9.2 OCR 与 Streamlit Cloud 部署
-
-测试用例生成器支持图片 OCR 识别需求，运行时依赖系统级 `tesseract`。
-
-本地运行：
-
-- 先安装 Python 依赖：`python -m pip install -r requirements.txt`
-- 再安装系统级 `tesseract`
-- macOS 可用 Homebrew：
-
-```bash
+# macOS
 brew install tesseract tesseract-lang
+
+# Ubuntu / Debian
+sudo apt install tesseract-ocr tesseract-ocr-chi-sim
 ```
 
-Streamlit Cloud 部署：
+装完在页面里应该能看到「OCR 已就绪」。没装也不影响其他 16 个工具。
 
-- 如果你只想看最短上线步骤，直接看 `DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md`
-- 如果你准备现在就发布，优先看其中的“上线前最后检查清单”和“Cloud 后台填写模板”
-- 如果已经上线但遇到问题，直接看其中的“故障排查速查表”
+## 四个高频场景怎么走
 
-- 根目录的 `packages.txt` 已声明系统依赖：
-  - `tesseract-ocr`
-  - `tesseract-ocr-chi-sim`
-  - `poppler-utils`
-  - `libgl1`
-- Streamlit Cloud 构建时会按 `packages.txt` 安装 Linux 系统依赖
-- 更新依赖后建议重新部署或手动 `Reboot app`
-- 根目录的 `.streamlit/config.toml` 已设置上传和消息体大小为 `200MB`
-- 如需在 Cloud 中使用 MobSF，建议在应用 Secrets 中配置：
+### 1. 截图/需求文档 → 测试用例
+
+打开 **测试用例生成器** → 上传原型图或需求截图，用 OCR 提取文本 → 在「结构化补充」里补业务规则、验收标准、不覆盖范围 → 看「需求分析助手」给出的覆盖维度和待确认项 → 选模型、风格、目标用例数 → 生成后筛选、导出 Excel。
+
+> 生成结果是初稿。复杂需求建议拆成「业务规则」+「验收标准」两块喂进去，比贴一大段文本效果好得多。
+
+### 2. 接口文档 → 自动化回归
+
+先打开 **接口研发辅助** 做文档标准化和接口体检，顺手看一眼变更分析（如果是新版本）→ 打开 **接口自动化测试**，导入文档、填 Base URL、选脚本模式 → 生成脚本、执行、下载 HTML 报告。
+
+> 体检这一步别跳过。文档缺字段是最常见的失败原因，提前修比跑挂了再查省事。
+
+### 3. 上线前安全基线
+
+打开 **接口安全测试** → 导入接口文档，确认范围 → 跑 API 基线检查 → 有移动端包就上传 APK/IPA 做静态扫描（想更完整就配 MobSF 做官方静态分析）→ 有 Web 入口补一轮站点扫描 → 导出报告和回归清单。
+
+### 4. 联调前准备
+
+**数据生成工具** 造一批场景数据（建议填随机种子，回归时可复现）→ **接口研发辅助** 生成 Mock 服务和调试代码 → 需要处理请求参数就用 **JSON 处理** 或 **加密/解密**。
+
+## 关于 AI 部分
+
+测试用例生成器支持四家模型，都需要你自己的 API Key：
+
+- 阿里通义千问（DashScope）
+- 百度文心一言
+- 讯飞星火（OpenAI 兼容接口）
+- 智谱 ChatGLM
+
+想让人不填 Key 就能试用，可以配一个示范模型 Key：
 
 ```toml
-TCG_DEMO_GLM_API_KEY = "replace-with-your-demo-glm-api-key"
+# .streamlit/secrets.toml
+TCG_DEMO_GLM_API_KEY = "your-demo-key"
+```
+
+配好后页面上的「免费体验示范」入口直接可用。
+
+## 配置
+
+敏感配置统一走 Streamlit Secrets，不进仓库：
+
+```toml
+# .streamlit/secrets.toml
+TCG_DEMO_GLM_API_KEY = "replace-with-your-key"
 
 [mobsf]
 base_url = "https://your-mobsf.example.com"
@@ -457,119 +184,78 @@ verify_ssl = true
 include_pdf = false
 ```
 
-- `TCG_DEMO_GLM_API_KEY` 用于“测试用例生成器 -> 免费体验示范”，配置后用户可免填 API Key 直接体验默认示范模型
-- 仓库提供示例文件：`.streamlit/secrets.toml.example`
-- Community Cloud 中本地文件系统是临时的，`workspace/mobsf_profile.local.json` 只适合本机，不适合当长期云端配置
+模板见 `.streamlit/secrets.toml.example`。`.streamlit/secrets.toml` 已在 `.gitignore` 里，不会误提交。
 
-推荐配置：
+## 部署到 Streamlit Community Cloud
 
-- Repository：当前仓库
-- Branch：稳定分支，如 `main`
-- Main file path：`streamlit_app.py`
-- Python version：`3.12`
-- Python dependencies：`requirements.txt`
-- System dependencies：`packages.txt`
+仓库根目录已经准备好部署所需的三个文件：`streamlit_app.py`、`requirements.txt`、`packages.txt`。
 
-推荐保留的根目录结构：
+| 配置项 | 值 |
+| --- | --- |
+| Main file path | `streamlit_app.py` |
+| Python version | `3.12` |
+| System dependencies | `packages.txt`（tesseract-ocr、中文语言包、poppler、libgl1） |
+
+几个 Cloud 上的限制值得提前知道：
+
+- Cloud 实例是临时的，`workspace/` 里的产物不会长期保存，结果请及时下载
+- 没有 Docker / ADB / 模拟器，MobSF 只能用「远程服务模式」，通过 Secrets 提供地址和 Key
+- 上传和消息体上限已设为 200MB（`.streamlit/config.toml`）
+
+完整步骤、Cloud 后台填写模板和故障速查表在 [DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md](DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md)。
+
+## 项目结构
 
 ```text
 .
-├── .streamlit/
-│   ├── config.toml
-│   └── secrets.toml.example
-├── packages.txt
-├── requirements.txt
-├── streamlit_app.py
-├── src/
-├── assets/
-└── workspace/
+├── streamlit_app.py             # 启动入口（根目录薄壳）
+├── src/qa_toolkit/
+│   ├── streamlit_app.py         # 主应用逻辑
+│   ├── config/                  # 工具路由、常量、图标资源
+│   ├── core/                    # 接口自动化/性能/安全等核心能力
+│   ├── tools/                   # 数据生成、用例生成、IP 查询等工具模块
+│   ├── ui/pages/                # 每个工具一个页面模块
+│   ├── integrations/            # 禅道导出与代理
+│   ├── reporting/               # 报告生成、执行封装、MobSF PDF
+│   └── utils/                   # 日志、时间、图片、JSON 等通用工具
+├── assets/images/screenshots/   # 工具截图
+├── examples/                    # 接口文档模板、示例用例、示例脚本
+├── tests/                       # 31 个测试文件
+├── workspace/                   # 运行期产物（uploads / reports / api_cases）
+├── MANUAL.md                    # 完整操作手册（每个工具的使用细节）
+├── packages.txt                 # Cloud 系统依赖
+└── requirements.txt
 ```
 
-### 9.3 兼容性说明
+## 测试
 
-- `assets/bin/tesseract` 仅作为本地资源兜底，不应依赖它做云端跨平台部署
-- Linux 部署环境会优先使用系统安装的 `tesseract`
-- 如果页面提示 OCR 不可用，优先检查系统是否安装了 `tesseract`
+```bash
+pytest                            # 跑全部
+pytest tests/test_data_generator.py -v    # 跑单个模块
+```
 
-### 9.4 常见问题排查
+`tests/` 下 31 个文件，覆盖核心逻辑（数据生成、接口核心、安全工具、禅道导出）和页面冒烟（各工具页面能否正常渲染、工具路由是否可达）。
 
-- 报错 `Exec format error`
-  - 原因：运行了不匹配当前平台架构的 `tesseract`
-  - 处理：不要依赖仓库里的 `assets/bin/tesseract`，云端通过 `packages.txt` 安装系统版
+## 文档
 
-- 报错 `OCR 不可用，请确认 pytesseract 和 tesseract 已正确安装`
-  - 原因：系统里没有可执行的 `tesseract`，或 Python 环境里缺少 `pytesseract`
-  - 处理：先确认 `tesseract --version` 能执行；本项目即使没有 `pytesseract`，只要系统 `tesseract` 可用也能工作
+| 文档 | 内容 |
+| --- | --- |
+| [MANUAL.md](MANUAL.md) | 完整操作手册，逐工具讲清输入、输出、注意事项和典型流程 |
+| [DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md](DEPLOY_STREAMLIT_COMMUNITY_CLOUD.md) | Cloud 部署步骤、后台填写模板、故障排查 |
+| 本 README | 快速了解项目全貌和上手方式 |
 
-- 报错 `Failed loading language 'chi_sim'`
-  - 原因：缺少简体中文语言包
-  - 处理：本地安装 `tesseract-lang`；云端保证 `packages.txt` 包含 `tesseract-ocr-chi-sim`
+日常使用建议直接看 MANUAL，这份 README 只负责让你在 3 分钟内知道它能干什么。
 
-- 页面显示 OCR 可用，但识别结果为空
-  - 原因：截图分辨率低、背景干扰大、对比度不足
-  - 处理：优先尝试“增强文本 / 高对比度 / 黑白文档”预处理模式，并尽量上传清晰截图
+## 注意事项
 
-- 本地正常、云端失败
-  - 原因：本地依赖的是 macOS/Homebrew，云端是 Linux 系统依赖
-  - 处理：检查 `packages.txt` 是否已提交、云端是否完成新一轮构建
+- **安全测试模块是基线自查工具，不是攻击平台。** 只对已授权目标使用，别直接对着生产环境跑。自动化扫描替代不了人工安全测试。
+- **AI 生成的用例需要人工复核。** 模型给的是初稿，业务规则和边界条件还是要自己过一遍。
+- **Streamlit 页面里压测别一上来就开大并发。** 先用小规模确认脚本和断言正常，再放大线程数；长链路优先看事务级统计。
+- **禅道绩效统计建议先在数据库备份或影子库验证**，统计口径建议结合项目背景解读。
+- 仓库目前未声明开源协议，如需商用请先联系作者。
 
-## 10. 运行产物与示例资源
+## 已知可以更好的地方
 
-- `workspace/uploads/`：页面上传文件暂存目录
-- `workspace/api_cases/`：接口自动化生成的脚本与清单
-- `workspace/reports/`：测试报告、执行结果、导出文件
-
-建议：
-
-- 可以保留目录结构，但不要把运行产物长期提交到仓库
-- 对需要归档的结果，建议导出到独立归档目录或对象存储
-
-### 10.1 示例资源说明
-
-- `examples/interface_documents/`：接口文档模板和示例输入
-- `examples/api_cases/`：接口测试清单与示例执行脚本
-- `examples/screenshots/`：历史输出或截图样例
-
-适合的使用方式：
-
-- 第一次接触工具时，先用示例跑通完整流程
-- 确认格式后，再替换成自己的真实文档或数据
-
-## 11. 开发与维护建议
-
-- 页面逻辑目前仍有一部分集中在 `src/qa_toolkit/streamlit_app.py`，后续可持续拆分到 `ui/pages/`
-- 新工具优先放到 `src/qa_toolkit/tools/` 或 `src/qa_toolkit/core/`，不要直接堆到根目录
-- 页面新功能如果有稳定说明，建议同步写入 `src/qa_toolkit/support/documentation.py`
-- 涉及核心逻辑的改动，建议补 `tests/` 下对应单测
-- 运行产物统一落到 `workspace/`，避免源码目录被污染
-
-## 12. 发布前检查清单
-
-### 12.1 部署前自检
-
-- 确认根目录已提交 `packages.txt`
-- 确认 `requirements.txt` 已包含运行所需依赖
-- 确认 `streamlit_app.py` 位于仓库根目录
-- 确认 `src/`、`assets/` 已完整提交
-- 本地先执行 `tesseract --version`
-- 本地启动后，确认“测试用例生成器”页面提示 `OCR 已就绪`
-- 本地至少做一次 OCR 冒烟
-- 云端发布后，验证截图上传、OCR、需求追加、测试用例生成链路
-
-### 12.2 发布提交清单
-
-建议至少确认以下文件已提交：
-
-- `streamlit_app.py`
-- `requirements.txt`
-- `packages.txt`
-- `src/qa_toolkit/streamlit_app.py`
-- `src/qa_toolkit/tools/test_case_generator.py`
-- `src/qa_toolkit/tools/data_generator.py`
-- `src/qa_toolkit/support/documentation.py`
-
-如果本次改动涉及 OCR、图片处理或字体显示，再额外确认：
-
-- `assets/bin/tesseract` 仅作为本地资源保留，不作为云端依赖
-- `assets/fonts/` 下的字体资源路径没有被改坏
-- 新增系统依赖是否同步到了 `packages.txt`
+- 页面逻辑还有一部分集中在 `src/qa_toolkit/streamlit_app.py`，后续可以继续往 `ui/pages/` 拆
+- `.npm-cache/` 目录曾被误提交（294 个文件），不影响运行，但会让仓库变大，后续会清理
+- 部分工具的错误提示还比较粗，遇到问题欢迎提 issue 带上复现步骤
