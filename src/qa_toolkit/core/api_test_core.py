@@ -1,4 +1,5 @@
 import io
+import html
 import importlib.util
 import json
 import os
@@ -10,12 +11,15 @@ import sys
 import time
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 
 import pandas as pd
 import requests
 
 from qa_toolkit.paths import API_CASES_DIR, REPORTS_DIR, UPLOADS_DIR
+
+
+SUBPROCESS_TIMEOUT_SECONDS = 300
 
 
 class InterfaceAutoTestCore:
@@ -613,6 +617,7 @@ class InterfaceAutoTestCore:
         failed = test_results.get("failed", 0)
         errors = test_results.get("errors", 0)
         success_rate = (passed / total * 100) if total else 0
+        framework_escaped = html.escape(str(framework))
 
         html_content = f"""
 <!DOCTYPE html>
@@ -634,7 +639,7 @@ class InterfaceAutoTestCore:
 <body>
     <div class="container">
         <h1>接口自动化测试报告</h1>
-        <p>执行模式: {framework} | 生成时间: {timestamp}</p>
+        <p>执行模式: {framework_escaped} | 生成时间: {timestamp}</p>
         <p>成功率: {success_rate:.1f}%</p>
         <div class="metrics">
             <div class="card"><div>总用例</div><div class="value">{total}</div></div>
@@ -1285,8 +1290,8 @@ from copy import deepcopy
 
 import requests
 
-CONFIG = json.loads(r'''__CONFIG_JSON__''')
-CASES = json.loads(r'''__CASES_JSON__''')
+CONFIG = json.loads(__CONFIG_JSON_LITERAL__)
+CASES = json.loads(__CASES_JSON_LITERAL__)
 CASE_INDEX = {case["case_id"]: case for case in CASES}
 
 
@@ -1570,8 +1575,8 @@ def execute_case(session, case):
         raise
 """
         return (
-            template.replace("__CONFIG_JSON__", json.dumps(config, ensure_ascii=False))
-            .replace("__CASES_JSON__", json.dumps(cases, ensure_ascii=False))
+            template.replace("__CONFIG_JSON_LITERAL__", repr(json.dumps(config, ensure_ascii=False)))
+            .replace("__CASES_JSON_LITERAL__", repr(json.dumps(cases, ensure_ascii=False)))
             .strip()
         )
 
@@ -1584,6 +1589,17 @@ def execute_case(session, case):
                 capture_output=True,
                 text=True,
                 cwd=self.test_dir,
+                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired as exc:
+            output_parts = []
+            for part in (exc.stdout, exc.stderr):
+                if not part:
+                    continue
+                output_parts.append(part.decode("utf-8", "replace") if isinstance(part, bytes) else str(part))
+            return self._build_runner_error(
+                f"测试执行超时（超过 {SUBPROCESS_TIMEOUT_SECONDS} 秒）",
+                output="\n".join(output_parts),
             )
         except Exception as exc:
             return self._build_runner_error(str(exc))
@@ -1733,9 +1749,9 @@ def execute_case(session, case):
         for detail in test_details:
             rows.append(
                 "<tr>"
-                f"<td>{detail.get('name', '未命名接口')}</td>"
-                f"<td>{detail.get('method', 'GET')}</td>"
-                f"<td>{detail.get('path', '')}</td>"
+                f"<td>{html.escape(str(detail.get('name', '未命名接口')))}</td>"
+                f"<td>{html.escape(str(detail.get('method', 'GET')))}</td>"
+                f"<td>{html.escape(str(detail.get('path', '')))}</td>"
                 f"<td>{detail.get('status', 'unknown')}</td>"
                 f"<td>{detail.get('status_code', 0)}</td>"
                 f"<td>{detail.get('response_time', 0):.2f}s</td>"
@@ -2212,7 +2228,10 @@ def execute_case(session, case):
         query = self._name_value_list_to_dict(url_data.get("query"), variables)
         query_suffix = ""
         if query:
-            query_suffix = "?" + "&".join(f"{key}={value}" for key, value in query.items())
+            # 直接拼接会让值中的 & / = 被拆成额外参数，须按 URL 规则编码 key/value
+            query_suffix = "?" + urlencode(
+                [(key, "" if value is None else str(value)) for key, value in query.items()]
+            )
 
         if host.startswith("http://") or host.startswith("https://"):
             return f"{host.rstrip('/')}{path}{query_suffix}"
@@ -2702,7 +2721,10 @@ def execute_case(session, case):
 
     def _looks_like_har(self, data: Any) -> bool:
         """判断内容是否像 HAR"""
-        return isinstance(data, dict) and isinstance((data.get("log") or {}).get("entries"), list)
+        if not isinstance(data, dict):
+            return False
+        log = data.get("log")
+        return isinstance(log, dict) and isinstance(log.get("entries"), list)
 
     def _looks_like_insomnia_export(self, data: Any) -> bool:
         """判断内容是否像 Insomnia 导出"""
@@ -2773,7 +2795,7 @@ def execute_case(session, case):
             return default
         try:
             return int(float(text))
-        except ValueError:
+        except (ValueError, OverflowError):
             return default
 
     def _clean_text(self, value: Any) -> str:

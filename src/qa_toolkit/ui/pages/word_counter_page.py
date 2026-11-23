@@ -7,6 +7,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.utils.text_analysis import (
@@ -285,10 +286,11 @@ def _render_diagnostics_tab(
             st.info("当前统计基于预处理后的文本。你可以直接把清洗结果覆盖回编辑区，继续修改或导出。")
             st.caption("；".join(preprocess_result["changes"]))
         with info_col2:
-            if st.button("回填清洗结果", use_container_width=True):
-                st.session_state.word_counter_text = preprocess_result["text"]
-                st.session_state.word_counter_source_name = f"{source_name}（已清洗）"
-                st.rerun()
+            st.button("回填清洗结果", use_container_width=True,
+                      on_click=make_multi_setter({
+                          "word_counter_text": preprocess_result["text"],
+                          "word_counter_source_name": f"{source_name}（已清洗）",
+                      }))
 
         st.markdown("### 清洗后预览")
         st.text_area(

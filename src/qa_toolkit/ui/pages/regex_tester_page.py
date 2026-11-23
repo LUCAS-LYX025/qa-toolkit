@@ -166,6 +166,19 @@ def _clear_examples():
     st.session_state.regex_tool_examples_error = ""
 
 
+def _filter_flags_for_language(language: str, selected_flags: List[str]) -> List[str]:
+    """仅保留目标语言支持的 flags；切换语言后旧 flag 不再适用。"""
+    supported = LANGUAGE_TEMPLATES.get(language, {}).get("flags", {})
+    return [flag for flag in (selected_flags or []) if flag in supported]
+
+
+def _favorite_at(favorites: List[dict], index: int) -> dict:
+    """带边界校验地读取收藏项，避免陈旧索引越界。"""
+    if not isinstance(index, int) or not 0 <= index < len(favorites):
+        return {}
+    return favorites[index]
+
+
 def _add_current_favorite():
     pattern = st.session_state.regex_tool_pattern.strip()
     if not pattern:
@@ -184,7 +197,9 @@ def _add_current_favorite():
 
 
 def _apply_favorite(index: int):
-    favorite = st.session_state.regex_tool_favorites[index]
+    favorite = _favorite_at(list(st.session_state.regex_tool_favorites), index)
+    if not favorite:
+        return
     st.session_state.regex_tool_pattern = favorite["pattern"]
     _reset_playground_result()
 
@@ -491,6 +506,15 @@ def _run_playground():
         if st.session_state.regex_tool_enable_replacement:
             replacement = st.session_state.regex_tool_replacement_text
 
+        # 前置保护：灾难性回溯模式 + 超长文本会在标准库 re 中指数级卡顿，
+        # 页面层先拦截，避免挂死整个 Streamlit 脚本线程。
+        _risky = any(marker in pattern for marker in ("(a+)+", "(a*)*", "(.+)+", "(.*)*", "[a-zA-Z]++"))
+        if _risky:
+            st.error("检测到疑似灾难性回溯的表达式（嵌套量词），已拒绝执行以避免页面卡死。")
+            return
+        if len(text) > 100_000:
+            st.error("测试文本超过 10 万字符，请截断后再运行以避免页面卡死。")
+            return
         result = analyze_regex(
             pattern,
             text,
@@ -656,6 +680,10 @@ def _render_codegen_tab():
     with right_col:
         language = st.session_state.regex_tool_codegen_language
         flag_options = list(LANGUAGE_TEMPLATES[language]["flags"].keys())
+        # 目标语言切换后剔除旧语言专属 flag，避免生成时 KeyError
+        current_flags = _filter_flags_for_language(language, st.session_state.get("regex_tool_codegen_flags", []))
+        if current_flags != st.session_state.get("regex_tool_codegen_flags", []):
+            st.session_state.regex_tool_codegen_flags = current_flags
         st.multiselect(
             "选择 flags",
             flag_options,
@@ -674,7 +702,7 @@ def _render_codegen_tab():
                     pattern,
                     target_language=language,
                     operation_type=st.session_state.regex_tool_codegen_operation,
-                    selected_flags=st.session_state.regex_tool_codegen_flags,
+                    selected_flags=_filter_flags_for_language(language, st.session_state.regex_tool_codegen_flags),
                     replacement=st.session_state.regex_tool_codegen_replacement,
                 )
 

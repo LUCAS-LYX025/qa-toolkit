@@ -402,18 +402,22 @@ class ApplicationSecurityTool:
         custom_keywords: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
         suffix = Path(file_name or "").suffix.lower()
+        if suffix not in {".apk", ".ipa", ".appx"}:
+            return {"success": False, "error": "仅支持上传 .apk、.ipa 或 .appx 文件。"}
         keywords = self._normalize_keywords(custom_keywords)
-        with tempfile.TemporaryDirectory(prefix="app-sec-") as temp_dir:
-            package_path = Path(temp_dir) / (Path(file_name).name or f"package{suffix or '.bin'}")
-            package_path.write_bytes(file_bytes)
-            if suffix == ".apk":
-                result = self._scan_apk_package(package_path, file_bytes, keywords)
-            elif suffix == ".ipa":
-                result = self._scan_ipa_package(package_path, file_bytes, keywords)
-            elif suffix == ".appx":
-                result = self._scan_appx_package(package_path, file_bytes, keywords)
-            else:
-                raise ValueError("仅支持上传 .apk、.ipa 或 .appx 文件。")
+        try:
+            with tempfile.TemporaryDirectory(prefix="app-sec-") as temp_dir:
+                package_path = Path(temp_dir) / (Path(file_name).name or f"package{suffix}")
+                package_path.write_bytes(file_bytes)
+                if suffix == ".apk":
+                    result = self._scan_apk_package(package_path, file_bytes, keywords)
+                elif suffix == ".ipa":
+                    result = self._scan_ipa_package(package_path, file_bytes, keywords)
+                else:
+                    result = self._scan_appx_package(package_path, file_bytes, keywords)
+        except Exception as exc:
+            # 损坏/非法的压缩包返回友好错误，不向上传播异常栈。
+            return {"success": False, "error": f"移动应用包解析失败: {exc}"}
 
         result["summary"] = self._build_summary(result.get("findings", []))
         result["report_markdown"] = self.build_mobile_report_markdown(result)
@@ -430,170 +434,173 @@ class ApplicationSecurityTool:
     ) -> Dict[str, Any]:
         normalized_url = self._normalize_url(url)
         session = requests.Session()
-        session.headers.update(
-            {
-                "User-Agent": "ApplicationSecurityTool/1.0",
-                "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-            }
-        )
-        for key, value in (headers or {}).items():
-            session.headers[str(key)] = str(value)
-
-        findings: List[Dict[str, Any]] = []
-        pages: List[Dict[str, Any]] = []
-        forms: List[Dict[str, Any]] = []
-        assets: List[Dict[str, Any]] = []
-        common_path_results: List[Dict[str, Any]] = []
-        visited: Set[str] = set()
-        discovered: Set[str] = set()
-        queue: Deque[str] = deque([normalized_url])
-        root = self._site_root(normalized_url)
-        same_origin = self._origin(normalized_url)
-        robots_paths: List[str] = []
-
-        while queue and len(visited) < max(int(max_pages), 1):
-            current = queue.popleft()
-            if current in visited:
-                continue
-            visited.add(current)
-            try:
-                response = session.get(
-                    current,
-                    allow_redirects=True,
-                    timeout=max(float(timeout_seconds), 1.0),
-                    verify=bool(verify_ssl),
-                )
-            except Exception as exc:
-                findings.append(
-                    self._make_finding(
-                        "medium",
-                        "connectivity",
-                        "页面请求失败",
-                        current,
-                        str(exc),
-                        "确认目标 URL、网络连通性、证书链和访问 ACL，再在授权环境中重试。",
-                        "OWASP WSTG-INFO / Deployment",
-                    )
-                )
-                continue
-
-            final_url = self._canonicalize_url(response.url)
-            parsed_final = urlparse(final_url)
-            body = response.text or ""
-            lower_headers = {str(key).lower(): str(value) for key, value in dict(response.headers or {}).items()}
-            content_type = lower_headers.get("content-type", "").lower()
-            title = self._extract_html_title(body) if "html" in content_type else ""
-            internal_links: List[str] = []
-            page_forms: List[Dict[str, Any]] = []
-            page_assets: List[Dict[str, Any]] = []
-
-            if "html" in content_type:
-                soup = BeautifulSoup(body, "html.parser")
-                internal_links = self._extract_internal_links(final_url, soup, same_origin)
-                page_forms = self._extract_forms(final_url, soup)
-                page_assets = self._extract_assets(final_url, soup)
-                forms.extend(page_forms)
-                assets.extend(page_assets)
-                findings.extend(self._analyze_forms(page_forms))
-                findings.extend(self._analyze_html(body, title, final_url))
-                for link in internal_links:
-                    if link not in visited and link not in discovered and len(visited) + len(queue) < max(int(max_pages), 1) * 3:
-                        queue.append(link)
-                        discovered.add(link)
-
-            if final_url == urljoin(root + "/", "robots.txt") and response.status_code < 400:
-                robots_paths = self._extract_robots_paths(body)
-
-            findings.extend(self._analyze_web_response(response, final_url))
-            pages.append(
+        try:
+            session.headers.update(
                 {
-                    "URL": final_url,
-                    "Status Code": response.status_code,
-                    "Content Type": content_type or "unknown",
-                    "Title": title or "",
-                    "Forms": len(page_forms),
-                    "Scripts": sum(1 for item in page_assets if item.get("Type") == "script"),
-                    "Internal Links": len(internal_links),
-                    "Body Preview": body[:300],
+                    "User-Agent": "ApplicationSecurityTool/1.0",
+                    "Accept": "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
                 }
             )
+            for key, value in (headers or {}).items():
+                session.headers[str(key)] = str(value)
 
-        if include_common_paths:
-            for rule in self.WEB_COMMON_PATHS:
-                target_url = self._canonicalize_url(urljoin(root + "/", rule["path"].lstrip("/")))
-                if any(item.get("URL") == target_url for item in pages):
+            findings: List[Dict[str, Any]] = []
+            pages: List[Dict[str, Any]] = []
+            forms: List[Dict[str, Any]] = []
+            assets: List[Dict[str, Any]] = []
+            common_path_results: List[Dict[str, Any]] = []
+            visited: Set[str] = set()
+            discovered: Set[str] = set()
+            queue: Deque[str] = deque([normalized_url])
+            root = self._site_root(normalized_url)
+            same_origin = self._origin(normalized_url)
+            robots_paths: List[str] = []
+
+            while queue and len(visited) < max(int(max_pages), 1):
+                current = queue.popleft()
+                if current in visited:
                     continue
+                visited.add(current)
                 try:
                     response = session.get(
-                        target_url,
-                        allow_redirects=False,
+                        current,
+                        allow_redirects=True,
                         timeout=max(float(timeout_seconds), 1.0),
                         verify=bool(verify_ssl),
                     )
-                    content_type = str(response.headers.get("Content-Type", "")).lower()
-                    body_preview = (response.text or "")[:240]
-                    common_path_results.append(
-                        {
-                            "Path": rule["path"],
-                            "URL": target_url,
-                            "Status Code": response.status_code,
-                            "Content Type": content_type,
-                            "Body Preview": body_preview,
-                        }
-                    )
-                    if response.status_code < 400:
-                        if rule["path"] == "/robots.txt":
-                            robots_paths = self._extract_robots_paths(response.text or "")
-                        findings.append(
-                            self._make_finding(
-                                rule["severity"],
-                                rule["category"],
-                                rule["title"],
-                                target_url,
-                                f"{response.status_code} {content_type}".strip(),
-                                rule["recommendation"],
-                                "OWASP WSTG-INFO / Exposure Review",
-                            )
-                        )
                 except Exception as exc:
-                    common_path_results.append(
-                        {
-                            "Path": rule["path"],
-                            "URL": target_url,
-                            "Status Code": 0,
-                            "Content Type": "",
-                            "Body Preview": str(exc),
-                        }
+                    findings.append(
+                        self._make_finding(
+                            "medium",
+                            "connectivity",
+                            "页面请求失败",
+                            current,
+                            str(exc),
+                            "确认目标 URL、网络连通性、证书链和访问 ACL，再在授权环境中重试。",
+                            "OWASP WSTG-INFO / Deployment",
+                        )
                     )
+                    continue
 
-        certificate = self._inspect_tls_certificate(normalized_url, timeout_seconds, verify_ssl)
-        page_urls = [item.get("URL", "") for item in pages]
-        findings = self._dedupe_findings(findings)
+                final_url = self._canonicalize_url(response.url)
+                parsed_final = urlparse(final_url)
+                body = response.text or ""
+                lower_headers = {str(key).lower(): str(value) for key, value in dict(response.headers or {}).items()}
+                content_type = lower_headers.get("content-type", "").lower()
+                title = self._extract_html_title(body) if "html" in content_type else ""
+                internal_links: List[str] = []
+                page_forms: List[Dict[str, Any]] = []
+                page_assets: List[Dict[str, Any]] = []
 
-        result = {
-            "generated_at": self._now(),
-            "scan_type": "web",
-            "target_url": normalized_url,
-            "site_root": root,
-            "verify_ssl": bool(verify_ssl),
-            "crawl": {
-                "pages_scanned": len(pages),
-                "forms_found": len(forms),
-                "assets_found": len(assets),
-                "common_paths_tested": len(common_path_results),
-                "robots_disallow_count": len(robots_paths),
-                "page_urls": page_urls,
-            },
-            "certificate": certificate,
-            "pages": pages,
-            "forms": forms,
-            "assets": assets,
-            "robots_paths": robots_paths,
-            "common_path_results": common_path_results,
-            "findings": findings,
-        }
-        result["summary"] = self._build_summary(findings)
-        result["report_markdown"] = self.build_web_report_markdown(result)
+                if "html" in content_type:
+                    soup = BeautifulSoup(body, "html.parser")
+                    internal_links = self._extract_internal_links(final_url, soup, same_origin)
+                    page_forms = self._extract_forms(final_url, soup)
+                    page_assets = self._extract_assets(final_url, soup)
+                    forms.extend(page_forms)
+                    assets.extend(page_assets)
+                    findings.extend(self._analyze_forms(page_forms))
+                    findings.extend(self._analyze_html(body, title, final_url))
+                    for link in internal_links:
+                        if link not in visited and link not in discovered and len(visited) + len(queue) < max(int(max_pages), 1) * 3:
+                            queue.append(link)
+                            discovered.add(link)
+
+                if final_url == urljoin(root + "/", "robots.txt") and response.status_code < 400:
+                    robots_paths = self._extract_robots_paths(body)
+
+                findings.extend(self._analyze_web_response(response, final_url))
+                pages.append(
+                    {
+                        "URL": final_url,
+                        "Status Code": response.status_code,
+                        "Content Type": content_type or "unknown",
+                        "Title": title or "",
+                        "Forms": len(page_forms),
+                        "Scripts": sum(1 for item in page_assets if item.get("Type") == "script"),
+                        "Internal Links": len(internal_links),
+                        "Body Preview": body[:300],
+                    }
+                )
+
+            if include_common_paths:
+                for rule in self.WEB_COMMON_PATHS:
+                    target_url = self._canonicalize_url(urljoin(root + "/", rule["path"].lstrip("/")))
+                    if any(item.get("URL") == target_url for item in pages):
+                        continue
+                    try:
+                        response = session.get(
+                            target_url,
+                            allow_redirects=False,
+                            timeout=max(float(timeout_seconds), 1.0),
+                            verify=bool(verify_ssl),
+                        )
+                        content_type = str(response.headers.get("Content-Type", "")).lower()
+                        body_preview = (response.text or "")[:240]
+                        common_path_results.append(
+                            {
+                                "Path": rule["path"],
+                                "URL": target_url,
+                                "Status Code": response.status_code,
+                                "Content Type": content_type,
+                                "Body Preview": body_preview,
+                            }
+                        )
+                        if response.status_code < 400:
+                            if rule["path"] == "/robots.txt":
+                                robots_paths = self._extract_robots_paths(response.text or "")
+                            findings.append(
+                                self._make_finding(
+                                    rule["severity"],
+                                    rule["category"],
+                                    rule["title"],
+                                    target_url,
+                                    f"{response.status_code} {content_type}".strip(),
+                                    rule["recommendation"],
+                                    "OWASP WSTG-INFO / Exposure Review",
+                                )
+                            )
+                    except Exception as exc:
+                        common_path_results.append(
+                            {
+                                "Path": rule["path"],
+                                "URL": target_url,
+                                "Status Code": 0,
+                                "Content Type": "",
+                                "Body Preview": str(exc),
+                            }
+                        )
+
+            certificate = self._inspect_tls_certificate(normalized_url, timeout_seconds, verify_ssl)
+            page_urls = [item.get("URL", "") for item in pages]
+            findings = self._dedupe_findings(findings)
+
+            result = {
+                "generated_at": self._now(),
+                "scan_type": "web",
+                "target_url": normalized_url,
+                "site_root": root,
+                "verify_ssl": bool(verify_ssl),
+                "crawl": {
+                    "pages_scanned": len(pages),
+                    "forms_found": len(forms),
+                    "assets_found": len(assets),
+                    "common_paths_tested": len(common_path_results),
+                    "robots_disallow_count": len(robots_paths),
+                    "page_urls": page_urls,
+                },
+                "certificate": certificate,
+                "pages": pages,
+                "forms": forms,
+                "assets": assets,
+                "robots_paths": robots_paths,
+                "common_path_results": common_path_results,
+                "findings": findings,
+            }
+            result["summary"] = self._build_summary(findings)
+            result["report_markdown"] = self.build_web_report_markdown(result)
+        finally:
+            session.close()
         return result
 
     def build_mobsf_quick_start(self, base_url: str = "http://127.0.0.1:8000") -> Dict[str, Any]:
@@ -2758,51 +2765,60 @@ class ApplicationSecurityTool:
         return summary
 
     def _parse_axml_events(self, data: bytes) -> List[Tuple[str, str, Dict[str, Any]]]:
-        root_type = self._u16(data, 0)
-        if root_type != 0x0003:
-            raise ValueError("不是有效的 Android Binary XML。")
+        events: List[Tuple[str, str, Dict[str, Any]]] = []
+        # 损坏/截断的 Manifest 不能越界读取，直接返回空结果
+        if not isinstance(data, (bytes, bytearray)) or len(data) < 4:
+            return events
+        if self._u16(data, 0) != 0x0003:
+            return events
 
         offset = self._u16(data, 2)
         strings: List[str] = []
-        events: List[Tuple[str, str, Dict[str, Any]]] = []
 
         while offset + 8 <= len(data):
             chunk_type = self._u16(data, offset)
             header_size = self._u16(data, offset + 2)
             chunk_size = self._u32(data, offset + 4)
-            if chunk_size <= 0:
+            if chunk_size < 8 or offset + chunk_size > len(data):
                 break
 
             if chunk_type == 0x0001:
                 strings = self._parse_axml_string_pool(data, offset)
             elif chunk_type == 0x0102:
+                if chunk_size < 30:
+                    break
                 tag_name = self._get_axml_string(strings, self._u32(data, offset + 20)) or ""
                 attr_start = self._u16(data, offset + 24)
                 attr_size = self._u16(data, offset + 26)
                 attr_count = self._u16(data, offset + 28)
                 attrs: Dict[str, Any] = {}
                 attr_offset = offset + 16 + attr_start
-                for index in range(attr_count):
-                    item_offset = attr_offset + index * attr_size
-                    attr_name = self._get_axml_string(strings, self._u32(data, item_offset + 4)) or f"attr_{index}"
-                    raw_value = self._get_axml_string(strings, self._u32(data, item_offset + 8))
-                    data_type = data[item_offset + 15]
-                    data_value = self._u32(data, item_offset + 16)
-                    if raw_value is not None:
-                        value = raw_value
-                    elif data_type == 0x03:
-                        value = self._get_axml_string(strings, data_value)
-                    elif data_type == 0x12:
-                        value = "true" if data_value != 0 else "false"
-                    elif data_type == 0x10:
-                        value = str(data_value)
-                    elif data_type == 0x01:
-                        value = f"@0x{data_value:08x}"
-                    else:
-                        value = f"type=0x{data_type:02x} data=0x{data_value:x}"
-                    attrs[attr_name] = value
+                if attr_size >= 20:
+                    for index in range(attr_count):
+                        item_offset = attr_offset + index * attr_size
+                        if item_offset + 20 > offset + chunk_size or item_offset + 20 > len(data):
+                            break
+                        attr_name = self._get_axml_string(strings, self._u32(data, item_offset + 4)) or f"attr_{index}"
+                        raw_value = self._get_axml_string(strings, self._u32(data, item_offset + 8))
+                        data_type = data[item_offset + 15]
+                        data_value = self._u32(data, item_offset + 16)
+                        if raw_value is not None:
+                            value = raw_value
+                        elif data_type == 0x03:
+                            value = self._get_axml_string(strings, data_value)
+                        elif data_type == 0x12:
+                            value = "true" if data_value != 0 else "false"
+                        elif data_type == 0x10:
+                            value = str(data_value)
+                        elif data_type == 0x01:
+                            value = f"@0x{data_value:08x}"
+                        else:
+                            value = f"type=0x{data_type:02x} data=0x{data_value:x}"
+                        attrs[attr_name] = value
                 events.append(("start", tag_name, attrs))
             elif chunk_type == 0x0103:
+                if chunk_size < 24:
+                    break
                 tag_name = self._get_axml_string(strings, self._u32(data, offset + 20)) or ""
                 events.append(("end", tag_name, {}))
 
@@ -2811,16 +2827,23 @@ class ApplicationSecurityTool:
         return events
 
     def _parse_axml_string_pool(self, data: bytes, offset: int) -> List[str]:
+        if offset + 28 > len(data):
+            return []
         string_count = self._u32(data, offset + 8)
         flags = self._u32(data, offset + 16)
         strings_start = self._u32(data, offset + 20)
         is_utf8 = bool(flags & 0x00000100)
+        # 字符串数量被伪造得过大时会越界读取偏移表，按剩余长度截断
+        string_count = min(string_count, max(0, (len(data) - offset - 28) // 4))
         offsets = [self._u32(data, offset + 28 + index * 4) for index in range(string_count)]
         base = offset + strings_start
         strings: List[str] = []
 
         for relative_offset in offsets:
             pos = base + relative_offset
+            if pos < 0 or pos >= len(data):
+                strings.append("")
+                continue
             try:
                 if is_utf8:
                     _, consumed = self._decode_length8(data, pos)
@@ -2918,7 +2941,7 @@ class ApplicationSecurityTool:
 
         ascii_items = [item.decode("utf-8", "ignore") for item in re.findall(rb"[ -~]{4,}", data)]
         utf16_items = []
-        for item in re.findall(rb"((?:[ -~]\\x00){4,})", data):
+        for item in re.findall(rb"((?:[ -~]\x00){4,})", data):
             try:
                 utf16_items.append(item.decode("utf-16le", "ignore"))
             except Exception:
@@ -3269,7 +3292,10 @@ class ApplicationSecurityTool:
             return {}
 
         host = parsed.hostname
-        port = parsed.port or 443
+        try:
+            port = parsed.port or 443
+        except ValueError:
+            return {"error": f"URL 中的端口无效: {url}"}
         context = ssl.create_default_context()
         if not verify_ssl:
             context.check_hostname = False

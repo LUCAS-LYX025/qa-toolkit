@@ -222,10 +222,21 @@ class TaskRunCenter:
     def _invoke_executor(self, executor: Callable[..., Any], logger: Callable[[str], None]) -> Any:
         try:
             signature = inspect.signature(executor)
-            if len(signature.parameters) == 0:
-                return executor()
-            return executor(logger)
-        except ValueError:
+            positional = [
+                p for p in signature.parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+            # 只有恰好接受 1 个必填位置参数的 executor 才注入 logger；
+            # 0 参数 / 仅 **kwargs / 多参数 都按无参调用，避免 TypeError。
+            required = [p for p in positional if p.default is p.empty]
+            accepts_one = len(required) == 1 and len(positional) >= 1
+            if accepts_one:
+                try:
+                    return executor(logger)
+                except TypeError:
+                    return executor()
+            return executor()
+        except (ValueError, TypeError):
             return executor()
 
     def run(self, run_id: str, executor: Callable[..., Any]) -> Any:
@@ -273,7 +284,10 @@ class TaskRunCenter:
         return record.to_dict() if record else None
 
     def list_runs(self, tool: str = "", limit: int = 20) -> List[Dict[str, Any]]:
-        limit = max(1, int(limit))
+        try:
+            limit = max(1, int(limit))
+        except (TypeError, ValueError, OverflowError):
+            limit = 20
         rows: List[Dict[str, Any]] = []
         for run_id in reversed(self._order):
             record = self._records.get(run_id)

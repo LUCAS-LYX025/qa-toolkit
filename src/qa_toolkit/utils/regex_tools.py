@@ -16,6 +16,9 @@ _VISIBLE_FLAG_ITEMS: Sequence[Tuple[str, int, str]] = (
 
 _TOKEN_PATTERN = re.compile(r"\d+|[A-Za-z]+|[\u4e00-\u9fff]+|\s+|[_-]+|[^A-Za-z0-9_\-\s\u4e00-\u9fff]+")
 
+# 单次分析最多保留的匹配记录数，避免海量匹配拖垮页面。
+MAX_MATCH_RECORDS = 5000
+
 
 def build_regex_flags(
     *,
@@ -294,9 +297,40 @@ def analyze_regex(
     flags = build_regex_flags(ignore_case=ignore_case, multiline=multiline, dotall=dotall)
 
     start_time = perf_counter()
-    compiled = re.compile(pattern, flags)
+    try:
+        compiled = re.compile(pattern, flags)
+    except re.error as exc:
+        error_message = f"正则表达式错误: {exc}"
+        return {
+            "pattern": pattern,
+            "flags": flags,
+            "flags_display": describe_enabled_flags(flags),
+            "global_match": global_match,
+            "match_count": 0,
+            "has_match": False,
+            "unique_match_count": 0,
+            "zero_length_match_count": 0,
+            "group_count": 0,
+            "named_group_names": [],
+            "execution_ms": round((perf_counter() - start_time) * 1000, 3),
+            "risk_warnings": [
+                {"level": "error", "title": "正则表达式无效", "message": error_message}
+            ],
+            "error": error_message,
+            "matches": [],
+            "unique_matches": [],
+            "preview_html": highlight_regex_matches(text, []),
+            "replacement": None,
+        }
+
+    match_objects = []
+    truncated = False
     if global_match:
-        match_objects = list(compiled.finditer(text))
+        for match in compiled.finditer(text):
+            match_objects.append(match)
+            if len(match_objects) >= MAX_MATCH_RECORDS:
+                truncated = True
+                break
     else:
         first_match = compiled.search(text)
         match_objects = [first_match] if first_match else []
@@ -321,6 +355,16 @@ def analyze_regex(
             "diff": build_replacement_diff(text, replaced_text),
         }
 
+    risk_warnings = detect_regex_risks(pattern, text_length=len(text), global_match=global_match)
+    if truncated:
+        risk_warnings.append(
+            {
+                "level": "warning",
+                "title": "匹配结果已截断",
+                "message": f"匹配数量超过 {MAX_MATCH_RECORDS} 条，仅展示前 {MAX_MATCH_RECORDS} 条。",
+            }
+        )
+
     return {
         "pattern": pattern,
         "flags": flags,
@@ -333,7 +377,7 @@ def analyze_regex(
         "group_count": compiled.groups,
         "named_group_names": list(compiled.groupindex.keys()),
         "execution_ms": round(elapsed_ms, 3),
-        "risk_warnings": detect_regex_risks(pattern, text_length=len(text), global_match=global_match),
+        "risk_warnings": risk_warnings,
         "matches": records,
         "unique_matches": unique_rows,
         "preview_html": highlight_regex_matches(text, spans),

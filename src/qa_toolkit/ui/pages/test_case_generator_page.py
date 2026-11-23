@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 
 import pandas as pd
 import streamlit as st
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.action_controls import action_download_button, primary_action_button, secondary_action_button
@@ -941,11 +942,12 @@ def render_test_case_generator_page() -> None:
                     with history_col1:
                         st.write(title)
                     with history_col2:
-                        if secondary_action_button("回填结果", key=f"tcg_history_apply_{index}"):
-                            st.session_state.tcg_requirement_text = item["requirement"]
-                            st.session_state.tcg_composed_requirement = item["requirement"]
-                            st.session_state.tcg_generated_cases = item["cases"]
-                            st.rerun()
+                        secondary_action_button("回填结果", key=f"tcg_history_apply_{index}",
+                                                on_click=make_multi_setter({
+                                                    "tcg_requirement_text": item["requirement"],
+                                                    "tcg_composed_requirement": item["requirement"],
+                                                    "tcg_generated_cases": item["cases"],
+                                                }))
 
     with result_tab:
         if not st.session_state.tcg_generated_cases:

@@ -142,9 +142,15 @@ def _ensure_defaults() -> None:
             current_value = st.session_state.get(key)
             if current_value in ("", None) or key == "zentao_connection_mode":
                 if key == "zentao_db_port":
-                    st.session_state[key] = int(value)
+                    try:
+                        st.session_state[key] = int(value)
+                    except (TypeError, ValueError):
+                        st.session_state[key] = 3306
                 elif key == "zentao_proxy_timeout_seconds":
-                    st.session_state[key] = float(value)
+                    try:
+                        st.session_state[key] = float(value)
+                    except (TypeError, ValueError):
+                        st.session_state[key] = 30.0
                 elif key == "zentao_connection_mode":
                     st.session_state[key] = _normalize_connection_mode(value)
                 else:
@@ -265,6 +271,9 @@ def _build_query_config() -> Dict[str, Any]:
 def _validate_query_inputs() -> bool:
     if st.session_state.zentao_selected_product_id is None:
         render_warning_feedback("请先选择产品后再执行统计。", title="缺少产品")
+        return False
+    if st.session_state.zentao_start_date is None or st.session_state.zentao_end_date is None:
+        render_error_feedback("请选择完整的开始日期和结束日期。", title="时间范围无效")
         return False
     if st.session_state.zentao_start_date > st.session_state.zentao_end_date:
         render_error_feedback("开始日期不能晚于结束日期。", title="时间范围无效")
@@ -451,7 +460,8 @@ def _filter_dataframe_by_keyword(df: pd.DataFrame, keyword: str) -> pd.DataFrame
     normalized = keyword.strip().lower()
     if not normalized:
         return df
-    mask = df.astype(str).apply(lambda column: column.str.lower().str.contains(normalized, na=False))
+    # 关键字按普通子串匹配，避免用户输入 '(' '[' 被当作正则导致 re.error。
+    mask = df.astype(str).apply(lambda column: column.str.lower().str.contains(normalized, na=False, regex=False))
     return df[mask.any(axis=1)]
 
 

@@ -593,8 +593,10 @@ def _render_crop_tab(processor: ImageProcessor, image: Image.Image, stem_name: s
             with col_setting:
                 left = st.slider("左边距", 0, max(0, original_width - 1), 0, key="image_tool_crop_left")
                 top = st.slider("上边距", 0, max(0, original_height - 1), 0, key="image_tool_crop_top")
-                right = st.slider("右边距", left + 1, original_width, original_width, key="image_tool_crop_right")
-                bottom = st.slider("下边距", top + 1, original_height, original_height, key="image_tool_crop_bottom")
+                right_min = min(left + 1, original_width)
+                bottom_min = min(top + 1, original_height)
+                right = st.slider("右边距", right_min, max(right_min + 1, original_width), original_width, key="image_tool_crop_right", disabled=right_min >= original_width)
+                bottom = st.slider("下边距", bottom_min, max(bottom_min + 1, original_height), original_height, key="image_tool_crop_bottom", disabled=bottom_min >= original_height)
                 crop_box = processor.normalize_crop_box((left, top, right, bottom), original_width, original_height)
             with col_preview:
                 preview_image = processor.crop_image(image, crop_box)
@@ -625,8 +627,8 @@ def _render_crop_tab(processor: ImageProcessor, image: Image.Image, stem_name: s
 
                 max_left = max(0, original_width - crop_width)
                 max_top = max(0, original_height - crop_height)
-                left = st.slider("水平位置", 0, max_left if max_left > 0 else 0, max_left // 2, key="image_tool_crop_ratio_left")
-                top = st.slider("垂直位置", 0, max_top if max_top > 0 else 0, max_top // 2, key="image_tool_crop_ratio_top")
+                left = st.slider("水平位置", 0, max(1, max_left), min(max_left, max(1, max_left) // 2), key="image_tool_crop_ratio_left", disabled=max_left <= 0)
+                top = st.slider("垂直位置", 0, max(1, max_top), min(max_top, max(1, max_top) // 2), key="image_tool_crop_ratio_top", disabled=max_top <= 0)
                 crop_box = processor.normalize_crop_box(
                     (left, top, left + crop_width, top + crop_height),
                     original_width,

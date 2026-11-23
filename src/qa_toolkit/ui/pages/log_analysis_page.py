@@ -75,6 +75,11 @@ DEFAULT_STATE = {
 }
 
 
+def _is_valid_json_filter_field(json_fields: Dict[str, List[str]], column: str, field: Any) -> bool:
+    """切换日志后旧字段可能已不存在，空字段/无效字段不应加入过滤条件。"""
+    return bool(field) and field in (json_fields.get(column) or [])
+
+
 def _ensure_defaults():
     for key, value in DEFAULT_STATE.items():
         if key not in st.session_state:
@@ -513,7 +518,6 @@ def _render_filter_tab(source_lines: List[str]):
     row1[0].multiselect(
         "日志级别",
         LOG_LEVEL_OPTIONS,
-        default=list(st.session_state.log_analyzer_quick_levels),
         key="log_analyzer_quick_levels",
     )
     row1[1].text_input("包含关键词", key="log_analyzer_include_keyword", placeholder="例如 timeout / orderId")
@@ -586,7 +590,9 @@ def _render_filter_tab(source_lines: List[str]):
             else:
                 json_value = col4.text_input("字段值", key="log_json_filter_value")
             if col5.button("添加 JSON 条件", use_container_width=True):
-                if json_operator not in {"有值", "没有值", "数值范围"} and not json_value:
+                if not _is_valid_json_filter_field(st.session_state.log_analyzer_json_fields, json_column, json_field):
+                    render_warning_feedback("请先选择有效的 JSON 字段。", title="条件未完成")
+                elif json_operator not in {"有值", "没有值", "数值范围"} and not json_value:
                     render_warning_feedback("请输入字段值。", title="条件未完成")
                 else:
                     st.session_state.log_analyzer_json_filters.append(

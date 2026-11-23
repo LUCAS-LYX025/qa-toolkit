@@ -23,6 +23,11 @@ RAW_FORMAT_MAP = {
 }
 
 
+def _resolve_snippet_language(current_language, cached_language):
+    """代码片段展示语言以当前选择为准，缓存值仅在 radio 未实例化时兜底。"""
+    return current_language or cached_language or "Python requests"
+
+
 def _build_template_download_items(parser: InterfaceAutoTestCore) -> List[Dict[str, Any]]:
     return [
         {
@@ -105,7 +110,7 @@ def _escape_js_string(text: str) -> str:
 
 def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板", key: str = None) -> None:
     """创建一键复制按钮。"""
-    button_key = key or f"copy_{hash(text)}"
+    button_key = key or f"copy_{abs(hash(text))}"
     escaped_text = _escape_js_string(text)
 
     html_code = f"""
@@ -661,6 +666,8 @@ def render_api_dev_tools_page() -> None:
                     interfaces, source_name = _parse_interface_source(dev_parser, assertion_source, "interface_assertion_source")
                     st.session_state.interface_dev_assertion_interfaces = interfaces
                     st.session_state.interface_dev_assertion_source_name = source_name
+                    # 来源已切换，旧响应生成的断言模板不再适用
+                    st.session_state.pop("interface_dev_assertion_result", None)
                     st.success(f"✅ 成功解析出 {len(interfaces)} 个接口")
                 except Exception as exc:
                     st.error(f"❌ 解析失败: {exc}")
@@ -859,7 +866,11 @@ def render_api_dev_tools_page() -> None:
 
         snippet_result = st.session_state.get("interface_dev_snippet_result")
         if snippet_result:
-            snippet_language = st.session_state.get("interface_dev_snippet_language_value", "Python requests")
+            # 以当前"代码类型"选择为准；缓存值仅在没有实例化 radio 时兜底
+            snippet_language = _resolve_snippet_language(
+                st.session_state.get("interface_snippet_language"),
+                st.session_state.get("interface_dev_snippet_language_value"),
+            )
             snippet_language_map = {
                 "Python requests": "python",
                 "JavaScript fetch": "javascript",

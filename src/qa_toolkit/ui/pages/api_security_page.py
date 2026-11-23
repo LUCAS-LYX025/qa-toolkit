@@ -15,6 +15,7 @@ from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.reporting.mobsf_pdf_report import build_mobsf_chinese_pdf
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
@@ -264,6 +265,8 @@ def _reset_security_workspace():
     for key, value in DEFAULT_STATE.items():
         st.session_state[key] = value
     _reset_security_outputs()
+    # 已恢复页面默认值，避免下一轮 rerun 再次套用本地保存的 MobSF 预配置
+    st.session_state["app_sec_mobsf_profile_bootstrapped"] = True
 
 
 def _render_styles():
@@ -659,9 +662,8 @@ def _render_source_section(core: InterfaceAutoTestCore):
                     except Exception as exc:
                         st.error(f"解析上传文档失败: {exc}")
         with action_col2:
-            if st.button("🧹 清空安全工作台", key="api_sec_reset_workspace", use_container_width=True):
-                _reset_security_workspace()
-                st.rerun()
+            st.button("🧹 清空安全工作台", key="api_sec_reset_workspace", use_container_width=True,
+                      on_click=_reset_security_workspace)
 
         with st.expander("⬇️ 上传模版下载", expanded=False):
             for row_start in range(0, len(template_items), 2):
@@ -827,17 +829,18 @@ def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, so
         )
         profile_col1, profile_col2 = st.columns(2)
         with profile_col1:
-            if st.button("填充多角色示例", key="api_sec_fill_role_profiles", use_container_width=True):
-                st.session_state.api_sec_role_profiles_text = json.dumps(
-                    [
-                        {"role": "匿名用户", "headers": {}},
-                        {"role": "普通用户", "headers": {"Authorization": "Bearer <user-token>"}},
-                        {"role": "管理员", "headers": {"Authorization": "Bearer <admin-token>"}},
-                    ],
-                    ensure_ascii=False,
-                    indent=2,
-                )
-                st.rerun()
+            st.button("填充多角色示例", key="api_sec_fill_role_profiles", use_container_width=True,
+                      on_click=make_multi_setter({
+                          "api_sec_role_profiles_text": json.dumps(
+                              [
+                                  {"role": "匿名用户", "headers": {}},
+                                  {"role": "普通用户", "headers": {"Authorization": "Bearer <user-token>"}},
+                                  {"role": "管理员", "headers": {"Authorization": "Bearer <admin-token>"}},
+                              ],
+                              ensure_ascii=False,
+                              indent=2,
+                          )
+                      }))
         with profile_col2:
             st.download_button(
                 label="下载多角色模版",
@@ -868,6 +871,14 @@ def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, so
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _action_prerequisite_ready(value: Any, label: str) -> bool:
+    """动作前置配置校验：失败时仅提示并跳过当前动作，不终止整页渲染。"""
+    if value is None:
+        st.error(f"{label}配置无效，请修正后再执行该操作。")
+        return False
+    return True
+
+
 def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]]):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">3. 安全测试动作</div>', unsafe_allow_html=True)
@@ -893,9 +904,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
     action_col1, action_col2, action_col3, action_col4, action_col5 = st.columns(5)
 
     with action_col1:
-        if st.button("🧭 生成安全方案", key="api_sec_build_plan", use_container_width=True):
-            if auth_headers is None:
-                st.stop()
+        if st.button("🧭 生成安全方案", key="api_sec_build_plan", use_container_width=True) and _action_prerequisite_ready(auth_headers, "鉴权头"):
             st.session_state.api_sec_plan = tool.build_security_plan(
                 interfaces=interfaces,
                 base_url=base_url,
@@ -930,9 +939,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
             st.success("被动审计已完成。")
 
     with action_col3:
-        if st.button("🛰️ 执行基线探测", key="api_sec_run_probe", use_container_width=True):
-            if auth_headers is None:
-                st.stop()
+        if st.button("🛰️ 执行基线探测", key="api_sec_run_probe", use_container_width=True) and _action_prerequisite_ready(auth_headers, "鉴权头"):
             with st.spinner("正在执行低风险安全基线探测..."):
                 st.session_state.api_sec_probe_report = tool.run_baseline_probe(
                     interfaces=interfaces,
@@ -966,9 +973,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
             st.success("OWASP 清单已刷新。")
 
     with action_col5:
-        if st.button("📦 一键生成完整报告", key="api_sec_bundle_report", use_container_width=True):
-            if auth_headers is None:
-                st.stop()
+        if st.button("📦 一键生成完整报告", key="api_sec_bundle_report", use_container_width=True) and _action_prerequisite_ready(auth_headers, "鉴权头"):
             with st.spinner("正在构建安全方案、被动审计、基线探测和报告..."):
                 plan = tool.build_security_plan(
                     interfaces=interfaces,
@@ -1101,9 +1106,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
 
     role_col1, role_col2 = st.columns(2)
     with role_col1:
-        if st.button("👥 执行多角色回归", key="api_sec_run_role_regression", use_container_width=True):
-            if role_profiles is None:
-                st.stop()
+        if st.button("👥 执行多角色回归", key="api_sec_run_role_regression", use_container_width=True) and _action_prerequisite_ready(role_profiles, "角色凭证"):
             with st.spinner("正在执行多角色低风险回归..."):
                 st.session_state.api_sec_role_regression = tool.run_role_batch_regression(
                     interfaces=interfaces,
@@ -1689,7 +1692,8 @@ def _load_mobsf_android_dynamic_bundle(app_tool: ApplicationSecurityTool, file_h
         identifier=normalized_hash,
         runtime_target=normalized_hash,
     )
-    st.session_state.app_sec_mobsf_dynamic_android_hash = normalized_hash
+    # 通过 pending action 回填 hash，避免在 text_input 实例化后写其 key。
+    _queue_mobsf_action("fill_android_hash", {"hash": normalized_hash})
     st.session_state.app_sec_mobsf_android_dynamic_bundle = bundle
     return bundle
 

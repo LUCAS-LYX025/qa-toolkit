@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict
 
 import streamlit as st
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter, pop_widget_updates, queue_widget_updates
 
 from qa_toolkit.core.env_profile_manager import EnvProfileManager
 
@@ -31,6 +32,8 @@ def render_env_profile_panel(
     suggested_name: str = "",
 ) -> None:
     with st.expander(title, expanded=False):
+        # 上次 rerun 排队的 widget key 更新必须在任何 widget 实例化前应用。
+        pop_widget_updates(panel_key)
         if description:
             st.caption(description)
         encryption_issues = manager.list_encryption_issues()
@@ -133,8 +136,10 @@ def render_env_profile_panel(
                     payload = capture_state()
                     saved = manager.upsert_profile(target_name, payload)
                     manager.set_active(saved.get("name", target_name), namespace)
-                    st.session_state[selected_key] = saved.get("name", target_name)
-                    st.session_state[profile_name_key] = saved.get("name", target_name)
+                    queue_widget_updates(panel_key, {
+                        selected_key: saved.get("name", target_name),
+                        profile_name_key: saved.get("name", target_name),
+                    })
                     st.success(f"配置已保存: {saved.get('name', target_name)}")
                     st.rerun()
                 except Exception as exc:
@@ -143,7 +148,7 @@ def render_env_profile_panel(
         if delete_clicked:
             if manager.delete_profile(selected_name):
                 st.success(f"配置已删除: {selected_name}")
-                st.session_state[selected_key] = ""
+                queue_widget_updates(panel_key, {selected_key: ""})
                 st.rerun()
             else:
                 st.error("删除配置失败。")

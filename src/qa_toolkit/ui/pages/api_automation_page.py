@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -223,12 +224,21 @@ def _create_reqres_test_data() -> Tuple[str, List[Dict[str, Any]]]:
     return base_url, interfaces
 
 
+def _interfaces_signature(interfaces: Sequence[Dict[str, Any]]) -> str:
+    """生成接口清单的稳定指纹，用于判定磁盘上的测试产物是否对应当前清单。"""
+    payload = json.dumps(interfaces or [], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def _set_interface_state(interfaces: List[Dict[str, Any]], base_url: str = "", source_name: str = "") -> None:
     st.session_state.interface_loaded_interfaces = interfaces
     st.session_state.interface_loaded_base_url = base_url or ""
     st.session_state.interface_source_name = source_name or ""
+    st.session_state.interface_loaded_signature = _interfaces_signature(interfaces)
     st.session_state.pop("interface_last_generated_files", None)
     st.session_state.pop("interface_last_test_results", None)
+    # 接口清单已变更，磁盘上旧产物不再对应当前清单
+    st.session_state.pop("interface_generated_signature", None)
 
 
 def _clear_interface_state() -> None:
@@ -238,6 +248,8 @@ def _clear_interface_state() -> None:
         "interface_source_name",
         "interface_last_generated_files",
         "interface_last_test_results",
+        "interface_loaded_signature",
+        "interface_generated_signature",
         "interface_upload_signature",
     ]:
         st.session_state.pop(key, None)
@@ -367,6 +379,7 @@ def _generate_artifacts(
         )
         st.session_state.auto_test_tool.save_test_files(test_files)
         st.session_state.interface_last_generated_files = test_files
+        st.session_state.interface_generated_signature = _interfaces_signature(interfaces)
     return test_files
 
 
@@ -375,6 +388,11 @@ def _ensure_generated_file(execution_mode: str) -> bool:
     manifest_file = os.path.join(st.session_state.auto_test_tool.test_dir, "interface_manifest.json")
     target_path = os.path.join(st.session_state.auto_test_tool.test_dir, target_file)
     if not (os.path.exists(manifest_file) and os.path.exists(target_path)):
+        return False
+    # 磁盘产物可能来自上一次加载的接口清单（清单切换只清了 session_state）
+    loaded_signature = st.session_state.get("interface_loaded_signature")
+    generated_signature = st.session_state.get("interface_generated_signature")
+    if not loaded_signature or generated_signature != loaded_signature:
         return False
     try:
         with open(manifest_file, "r", encoding="utf-8") as file:
@@ -687,13 +705,17 @@ def _render_generated_files(generated_files: Dict[str, str]) -> None:
 
 
 def _load_uploaded_document(uploaded_file) -> None:
-    upload_signature = f"{uploaded_file.name}:{uploaded_file.size}"
+    file_bytes = uploaded_file.getbuffer()
+    upload_signature = f"{uploaded_file.name}:{hashlib.sha256(file_bytes).hexdigest()}"
     if st.session_state.get("interface_upload_signature") == upload_signature:
         return
 
-    file_path = os.path.join(st.session_state.auto_test_tool.upload_dir, uploaded_file.name)
+    # 文件名净化：只保留安全 basename，避免 ../ 越界写入与覆盖已有产物。
+    safe_name = os.path.basename(str(uploaded_file.name or "upload.json"))
+    safe_name = "".join(c for c in safe_name if c.isalnum() or c in "._-") or "upload.json"
+    file_path = os.path.join(st.session_state.auto_test_tool.upload_dir, safe_name)
     with open(file_path, "wb") as file:
-        file.write(uploaded_file.getbuffer())
+        file.write(file_bytes)
 
     with st.spinner("正在解析接口文档..."):
         interfaces = st.session_state.auto_test_tool.parse_document(file_path)
@@ -959,6 +981,10 @@ def render_api_automation_test_page() -> None:
             )
             try:
                 environment_config = json.loads(env_config_text)
+                if not isinstance(environment_config, dict):
+                    st.error("❌ 环境配置必须是 JSON 对象")
+                    environment_config = None
+                    raise ValueError("环境配置不是 JSON 对象")
                 env_names = list((environment_config.get("environments") or {}).keys())
                 if env_names:
                     default_env = environment_config.get("active_env")
@@ -968,8 +994,9 @@ def render_api_automation_test_page() -> None:
                 else:
                     st.error("❌ 环境配置缺少 environments 节点")
                     environment_config = None
-            except json.JSONDecodeError as exc:
-                st.error(f"❌ 环境配置 JSON 格式错误: {exc}")
+            except (json.JSONDecodeError, ValueError) as exc:
+                if "不是 JSON 对象" not in str(exc):
+                    st.error(f"❌ 环境配置 JSON 格式错误: {exc}")
                 environment_config = None
         else:
             st.info("当前使用单环境模式，执行时直接使用上面的基础 URL。")
@@ -1061,7 +1088,7 @@ def render_api_automation_test_page() -> None:
     with action_col2:
         if st.button("▶️ 执行测试", use_container_width=True, key="run_tests_v2"):
             if not _ensure_generated_file(execution_mode):
-                st.error("❌ 请先生成当前执行模式对应的测试文件")
+                st.error("❌ 当前接口清单与已生成的测试文件不一致，请先重新生成测试用例")
             elif _check_interface_dependencies(execution_mode, for_execution=True):
                 try:
                     def _run_task(logger):
@@ -1166,6 +1193,7 @@ def render_api_automation_test_page() -> None:
                 os.makedirs(auto_test_tool.test_dir)
                 st.session_state.pop("interface_last_generated_files", None)
                 st.session_state.pop("interface_last_test_results", None)
+                st.session_state.pop("interface_generated_signature", None)
                 st.success("✅ 生成文件已清理")
             except Exception as exc:
                 st.error(f"❌ 清理失败: {exc}")

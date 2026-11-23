@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 from typing import Iterable
 
 import streamlit as st
@@ -155,13 +156,22 @@ def render_tool_page_hero(
     description_color: str = "#365168",
 ) -> None:
     _inject_styles()
-    tag_items = "".join(f'<span class="qa-tool-shell-tag">{tag}</span>' for tag in (tags or []))
+    # 所有进入 HTML 的动态内容统一转义，避免污染页面结构（与同类组件保持一致）。
+    safe_icon = html.escape(str(icon))
+    safe_title = html.escape(str(title))
+    safe_description = html.escape(str(description))
+    safe_accent = html.escape(str(accent), quote=True)
+    safe_title_color = html.escape(str(title_color), quote=True)
+    safe_description_color = html.escape(str(description_color), quote=True)
+    tag_items = "".join(
+        f'<span class="qa-tool-shell-tag">{html.escape(str(tag))}</span>' for tag in (tags or [])
+    )
     st.markdown(
         f"""
-        <div class="qa-tool-shell-hero" style="--hero-accent: {accent}; --hero-title-color: {title_color}; --hero-desc-color: {description_color};">
+        <div class="qa-tool-shell-hero" style="--hero-accent: {safe_accent}; --hero-title-color: {safe_title_color}; --hero-desc-color: {safe_description_color};">
             <div class="qa-tool-shell-hero__content">
-                <h3 class="qa-tool-shell-hero__title">{icon} {title}</h3>
-                <p class="qa-tool-shell-hero__desc">{description}</p>
+                <h3 class="qa-tool-shell-hero__title">{safe_icon} {safe_title}</h3>
+                <p class="qa-tool-shell-hero__desc">{safe_description}</p>
                 <div class="qa-tool-shell-tags">{tag_items}</div>
             </div>
         </div>
@@ -172,11 +182,12 @@ def render_tool_page_hero(
 
 def render_tool_tips(title: str, tips: Iterable[str]) -> None:
     _inject_styles()
-    tip_items = "".join(f"<li>{tip}</li>" for tip in tips)
+    safe_title = html.escape(str(title))
+    tip_items = "".join(f"<li>{html.escape(str(tip))}</li>" for tip in tips)
     st.markdown(
         f"""
         <div class="qa-tool-shell-tips">
-            <strong>{title}</strong>
+            <strong>{safe_title}</strong>
             <ul>{tip_items}</ul>
         </div>
         """,
@@ -186,11 +197,13 @@ def render_tool_tips(title: str, tips: Iterable[str]) -> None:
 
 def render_tool_empty_state(title: str, description: str) -> None:
     _inject_styles()
+    safe_title = html.escape(str(title))
+    safe_description = html.escape(str(description))
     st.markdown(
         f"""
         <div class="qa-tool-shell-empty">
-            <h4>{title}</h4>
-            <p>{description}</p>
+            <h4>{safe_title}</h4>
+            <p>{safe_description}</p>
         </div>
         """,
         unsafe_allow_html=True,

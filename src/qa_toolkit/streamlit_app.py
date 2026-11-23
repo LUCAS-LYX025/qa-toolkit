@@ -1,6 +1,7 @@
 from PIL import Image
 from importlib import import_module
 import io
+import html
 import json
 import os
 import random
@@ -190,6 +191,7 @@ def escape_js_string(text):
 
 
 def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
+    _safe_button_text = json.dumps(str(button_text), ensure_ascii=False)[1:-1]
     """创建一键复制按钮"""
     if key is None:
         key = hash(text)
@@ -256,7 +258,7 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
                         button.style.fontWeight = '800';
                         button.style.textShadow = '0 1px 1px rgba(127,29,29,0.54)';
                         setTimeout(function() {{
-                            button.innerHTML = '{button_text}';
+                            button.innerHTML = '{_safe_button_text}';
                             button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
                             button.style.color = '#ffffff';
                             button.style.fontWeight = '700';
@@ -274,7 +276,7 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
     <div>
         <button data-copy-button="{key}"
                 style="background:linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%);color:white;border:1px solid rgba(250,204,21,0.22);padding:8px 16px;border-radius:12px;cursor:pointer;font-size:14px;margin:5px;font-weight:700;transition:all 0.3s ease;width:100%;height:42px;font-family:inherit;box-shadow:0 12px 22px rgba(7,20,39,0.26);">
-            {button_text}
+            {html.escape(str(button_text))}
         </button>
     </div>
     """

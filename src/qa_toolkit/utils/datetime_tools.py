@@ -25,6 +25,8 @@ class DateTimeUtils:
         """获取指定年月的天数"""
         days_per_month = [31, 29 if DateTimeUtils.is_leap_year(year) else 28, 31,
                           30, 31, 30, 31, 31, 30, 31, 30, 31]
+        if not isinstance(month, int) or not 1 <= month <= 12:
+            raise ValueError(f"月份必须在 1-12 之间，收到: {month}")
         return days_per_month[month - 1]
 
     @staticmethod
@@ -240,6 +242,8 @@ class DateTimeUtils:
             (1123, '射手座'),
             (1222, '摩羯座'),
         ]
+        if not (isinstance(month, int) and isinstance(day, int) and 1 <= month <= 12 and 1 <= day <= 31):
+            return ""
         date_num = month * 100 + day
         constellation = '摩羯座'
         for start_num, name in boundaries:
@@ -373,11 +377,18 @@ class DateTimeUtils:
 
         if percentiles is None:
             percentiles = [50, 90, 95, 99]
+        elif isinstance(percentiles, (int, float)):
+            percentiles = [percentiles]
 
-        sorted_times = sorted(response_times)
+        clean_times = [v for v in response_times if isinstance(v, (int, float)) and not isinstance(v, bool)]
+        if not clean_times:
+            return {}
+        sorted_times = sorted(clean_times)
         results = {}
 
         for p in percentiles:
+            if not isinstance(p, (int, float)) or not 0 <= p <= 100:
+                continue
             if len(sorted_times) == 1:
                 results[p] = sorted_times[0]
                 continue
@@ -503,6 +514,11 @@ class DateTimeUtils:
     @staticmethod
     def summarize_date_range(start_date, end_date, country=None):
         """输出日期区间摘要"""
+        if start_date is None or end_date is None:
+            return {
+                "signed_diff_days": 0, "weekend_days": 0, "holiday_days": 0,
+                "holiday_only_days": 0, "total_days": 0, "invalid": True,
+            }
         ordered_start = min(start_date, end_date)
         ordered_end = max(start_date, end_date)
         sign = 1 if end_date >= start_date else -1

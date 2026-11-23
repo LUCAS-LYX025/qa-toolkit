@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import datetime
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import pandas as pd
 import pytz
 import streamlit as st
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.action_controls import primary_action_button, secondary_action_button
@@ -112,7 +113,8 @@ def _format_lines(lines: List[str]) -> str:
 
 def _convert_timestamp_input(raw_text: str, unit_mode: str, timezone_name: str) -> Dict[str, Any]:
     value = float(str(raw_text).strip())
-    if unit_mode == "毫秒" or (unit_mode == "自动识别" and abs(value) >= 1_000_000_000_000):
+    # 2000-09 之后的毫秒时间戳是 12 位（1e11 起），原 1e12 阈值会误判为秒。
+    if unit_mode == "毫秒" or (unit_mode == "自动识别" and abs(value) >= 100_000_000_000):
         seconds = value / 1000
         precision = "毫秒"
     else:
@@ -135,6 +137,28 @@ def _parse_response_times(text: str) -> List[float]:
     if not chunks:
         raise ValueError("请至少输入一个响应时间")
     return [float(item) for item in chunks]
+
+
+MAX_MONTH_OFFSET = 1200  # 100 年，避免 add_months 越过年份上限
+MAX_PERF_TIMESTAMPS = 100000
+
+
+def _clamp_month_offset(months: Any) -> int:
+    """钳制月偏移，避免日期计算越过 datetime.date 的年份范围。"""
+    try:
+        value = int(months)
+    except (TypeError, ValueError, OverflowError):
+        value = 0
+    return max(-MAX_MONTH_OFFSET, min(MAX_MONTH_OFFSET, value))
+
+
+def _clamp_perf_inputs(duration: Any, rps: Any, max_timestamps: int = MAX_PERF_TIMESTAMPS) -> Tuple[float, float]:
+    """钳制压测参数，使生成的时间戳总数不超过上限。"""
+    safe_duration = max(1.0, float(duration))
+    safe_rps = max(1.0, float(rps))
+    if safe_duration * safe_rps > max_timestamps:
+        safe_rps = max(1.0, max_timestamps / safe_duration)
+    return safe_duration, safe_rps
 
 
 def _apply_range_preset(preset: str) -> None:
@@ -222,10 +246,17 @@ def _render_timestamp_tab() -> None:
             selected_time = st.time_input("选择时间", key="time_tool_time_input")
             timezone_label = st.selectbox("输入时间所属时区", list(tz_options.keys()), key="time_tool_datetime_tz")
             if primary_action_button("转换为时间戳", key="time_tool_convert_to_timestamp"):
-                timezone = pytz.timezone(tz_options[timezone_label])
-                combined = datetime.datetime.combine(selected_date, selected_time)
-                localized = timezone.localize(combined)
-                seconds = localized.timestamp()
+                if selected_date is None:
+                    st.error("请先选择有效日期。")
+                    st.stop()
+                try:
+                    timezone = pytz.timezone(tz_options[timezone_label])
+                    combined = datetime.datetime.combine(selected_date, selected_time)
+                    localized = timezone.localize(combined, is_dst=None)  # 歧义/不存在时间直接报异常
+                    seconds = localized.timestamp()
+                except (pytz.NonExistentTimeError, pytz.AmbiguousTimeError) as _dst_exc:
+                    st.error(f"所选本地时间在该时区不存在或有歧义（夏令时切换）：{_dst_exc}")
+                    st.stop()
                 st.session_state["time_tool_datetime_result"] = {
                     "datetime": localized,
                     "timestamp_seconds": int(seconds),
@@ -265,10 +296,10 @@ def _render_timestamp_tab() -> None:
         with info_col:
             timezone_label = st.selectbox("结果展示时区", list(tz_options.keys()), key="time_tool_batch_timezone")
             st.caption("适合日志排查、批量核对回调时间或把多种格式统一成一张表。")
-            if secondary_action_button("填入示例数据", key="time_tool_fill_batch_sample"):
-                st.session_state["time_tool_batch_input"] = DEFAULT_BATCH_SAMPLE
-            if secondary_action_button("清空批量输入", key="time_tool_clear_batch_input"):
-                st.session_state["time_tool_batch_input"] = ""
+            secondary_action_button("填入示例数据", key="time_tool_fill_batch_sample",
+                                    on_click=make_multi_setter({"time_tool_batch_input": DEFAULT_BATCH_SAMPLE}))
+            secondary_action_button("清空批量输入", key="time_tool_clear_batch_input",
+                                    on_click=make_multi_setter({"time_tool_batch_input": ""}))
             if primary_action_button("开始批量转换", key="time_tool_batch_convert"):
                 rows = DateTimeUtils.batch_convert_temporal_values(batch_text, tz_options[timezone_label])
                 st.session_state["time_tool_batch_result"] = rows
@@ -373,18 +404,26 @@ def _render_date_calculator_tab() -> None:
     with offset_col1:
         offset_days = st.number_input("自然日偏移", value=7, step=1, key="time_tool_offset_days")
     with offset_col2:
-        offset_months = st.number_input("月偏移", value=1, step=1, key="time_tool_offset_months")
+        offset_months = st.number_input(
+            "月偏移",
+            value=1,
+            step=1,
+            min_value=-MAX_MONTH_OFFSET,
+            max_value=MAX_MONTH_OFFSET,
+            key="time_tool_offset_months",
+        )
     with offset_col3:
         business_offset = st.number_input("工作日偏移", value=3, step=1, key="time_tool_business_offset")
     with offset_col4:
         birthday = st.date_input("生日 / 出生日期", key="time_tool_birthday")
 
     business_offset_date = DateTimeUtils.add_business_days(start_date, int(business_offset), country=holiday_country)
+    safe_offset_months = _clamp_month_offset(offset_months)
     result_rows = [
         {"场景": "开始日期 + 自然日", "结果": DateTimeUtils.add_days(start_date, int(offset_days)).strftime("%Y-%m-%d")},
         {"场景": "开始日期 - 自然日", "结果": DateTimeUtils.subtract_days(start_date, int(offset_days)).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 + 月数", "结果": DateTimeUtils.add_months(start_date, int(offset_months)).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 - 月数", "结果": DateTimeUtils.subtract_months(start_date, int(offset_months)).strftime("%Y-%m-%d")},
+        {"场景": "开始日期 + 月数", "结果": DateTimeUtils.add_months(start_date, safe_offset_months).strftime("%Y-%m-%d")},
+        {"场景": "开始日期 - 月数", "结果": DateTimeUtils.subtract_months(start_date, safe_offset_months).strftime("%Y-%m-%d")},
         {"场景": "开始日期 + 工作日偏移", "结果": business_offset_date.strftime("%Y-%m-%d")},
         {"场景": "当月第一天", "结果": DateTimeUtils.get_first_day_of_month(start_date).strftime("%Y-%m-%d")},
         {"场景": "当月最后一天", "结果": DateTimeUtils.get_last_day_of_month(start_date).strftime("%Y-%m-%d")},
@@ -465,8 +504,8 @@ def _render_advanced_tab() -> None:
             render_info_feedback("可直接用模板验证工作日任务、定时轮询和每日批处理的下次触发时间。")
 
     with perf_tab:
-        duration = st.number_input("持续时间(秒)", min_value=1.0, value=10.0, key="time_tool_perf_duration")
-        rps = st.number_input("每秒请求数", min_value=1.0, value=5.0, key="time_tool_perf_rps")
+        duration = st.number_input("持续时间(秒)", min_value=1.0, max_value=3600.0, value=10.0, key="time_tool_perf_duration")
+        rps = st.number_input("每秒请求数", min_value=1.0, max_value=1000.0, value=5.0, key="time_tool_perf_rps")
         response_times_text = st.text_area(
             "响应时间列表(ms)",
             key="time_tool_response_times",
@@ -476,7 +515,13 @@ def _render_advanced_tab() -> None:
         if primary_action_button("分析性能时间", key="time_tool_run_perf_analysis"):
             try:
                 parsed_response_times = _parse_response_times(response_times_text)
-                timestamps = DateTimeUtils.get_performance_test_timestamps(duration, rps)
+                safe_duration, safe_rps = _clamp_perf_inputs(duration, rps)
+                if safe_rps != float(rps) or safe_duration != float(duration):
+                    render_warning_feedback(
+                        f"压测参数过大，已按总量上限 {MAX_PERF_TIMESTAMPS} 个时间戳自动收敛。",
+                        title="性能参数已收敛",
+                    )
+                timestamps = DateTimeUtils.get_performance_test_timestamps(safe_duration, safe_rps)
                 percentiles = DateTimeUtils.calculate_response_time_percentiles(parsed_response_times)
                 st.session_state["time_tool_perf_result"] = {
                     "timestamps": timestamps,
