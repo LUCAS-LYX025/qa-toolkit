@@ -46,6 +46,8 @@ SAMPLE_LOG_TEXT = """2026-04-05 09:30:01 INFO  [gateway] GET /api/orders 200 dur
 
 UPLOAD_TYPES = ["txt", "log", "csv", "jsonl", "ndjson"]
 LOG_LEVEL_OPTIONS = ["错误", "警告", "信息", "调试", "其他"]
+# 大日志分析上限：超出后仅统计前 N 行并在界面明确提示（避免长时间卡死）
+MAX_ANALYZE_LINES = 100_000
 DEFAULT_STATE = {
     "log_analyzer_raw_text": "",
     "log_analyzer_df": None,
@@ -69,6 +71,7 @@ DEFAULT_STATE = {
     "log_analyzer_search_whole_word": False,
     "log_analyzer_search_use_regex": False,
     "log_analyzer_search_context": 1,
+    "log_analyzer_search_last": "",
     "log_analyzer_show_charts": True,
     "log_analyzer_slow_threshold": 1000.0,
     "log_analyzer_top_n": 10,
@@ -299,7 +302,10 @@ def _render_import_tab():
 
                 try:
                     if suffix == "csv":
-                        dataframe = pd.read_csv(io.BytesIO(raw_bytes))
+                        try:
+                            dataframe = pd.read_csv(io.BytesIO(raw_bytes), encoding="utf-8-sig")
+                        except UnicodeDecodeError:
+                            dataframe = pd.read_csv(io.BytesIO(raw_bytes), encoding="gb18030")
                         _load_dataframe_source(dataframe, file_name, "csv")
                     elif suffix in {"jsonl", "ndjson"}:
                         text = decode_log_bytes(raw_bytes)
@@ -351,7 +357,18 @@ def _render_import_tab():
             )
 
 
-def _render_overview_tab(summary: Dict[str, Any], scope_label: str):
+def _render_overview_tab(
+    summary: Dict[str, Any],
+    scope_label: str,
+    summary_lines: List[str] | None = None,
+    analysis_truncated: bool = False,
+):
+    if analysis_truncated:
+        render_warning_feedback(
+            f"日志行数超出分析上限 {MAX_ANALYZE_LINES:,}，当前统计仅覆盖前 {MAX_ANALYZE_LINES:,} 行；"
+            "如需完整统计，请先分段导出或缩小范围。",
+            title="分析范围已截断",
+        )
     level_counts = summary["level_counts"]
     metric_cols = st.columns(6)
     metric_cols[0].metric("总行数", f"{summary['total_lines']:,}")
@@ -414,13 +431,14 @@ def _render_overview_tab(summary: Dict[str, Any], scope_label: str):
             use_container_width=True,
         )
     with export_cols[1]:
+        scope_lines = summary_lines if summary_lines is not None else _get_source_lines()
         st.download_button(
             "下载当前范围日志",
-            data="\n".join(_get_source_lines()) if scope_label == "全部日志" else "",
+            data="\n".join(scope_lines),
             file_name=f"log_scope_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             mime="text/plain",
             use_container_width=True,
-            disabled=scope_label != "全部日志",
+            disabled=not scope_lines,
         )
 
 
@@ -650,20 +668,31 @@ def _render_search_tab(source_lines: List[str]):
         st.session_state.log_analyzer_search_scope = scope_options[0]
 
     search_cols = st.columns([2.5, 1, 1, 1])
-    search_cols[0].text_input("搜索关键词", key="log_analyzer_search_keyword", placeholder="支持普通文本或正则表达式")
+    search_cols[0].text_input("搜索关键词", key="log_analyzer_search_keyword", placeholder="支持普通文本或正则表达式", on_change=None)
     search_cols[1].checkbox("区分大小写", key="log_analyzer_search_case_sensitive")
     search_cols[2].checkbox("全词匹配", key="log_analyzer_search_whole_word")
     search_cols[3].checkbox("正则表达式", key="log_analyzer_search_use_regex")
 
-    option_cols = st.columns([1.4, 1, 2.6])
+    option_cols = st.columns([1.4, 1, 1.6, 1])
     option_cols[0].radio("搜索范围", scope_options, horizontal=True, key="log_analyzer_search_scope")
     option_cols[1].slider("上下文行数", 0, 3, key="log_analyzer_search_context")
-    option_cols[2].caption("支持在过滤结果内二次定位，适合先缩小范围再看上下文。")
+    option_cols[2].caption("点击执行搜索后才扫描，修改关键词后需重新点击。")
+    run_search = option_cols[3].button("执行搜索", type="primary", use_container_width=True)
 
     keyword = str(st.session_state.log_analyzer_search_keyword or "").strip()
+    if run_search:
+        st.session_state.log_analyzer_search_last = keyword
     if not keyword:
-        render_info_feedback("请输入搜索关键词后查看结果。", title="等待搜索")
+        render_info_feedback("请输入搜索关键词后点击「执行搜索」。", title="等待搜索")
         return
+
+    effective_keyword = str(st.session_state.log_analyzer_search_last or "")
+    if not effective_keyword:
+        render_info_feedback("点击「执行搜索」开始扫描。", title="等待搜索")
+        return
+    if effective_keyword != keyword:
+        render_info_feedback("关键词已修改，点击「执行搜索」更新结果。", title="待重新搜索")
+        keyword = effective_keyword
 
     if st.session_state.log_analyzer_search_scope == "过滤结果" and active_filters:
         target_lines = filtered_lines
@@ -673,7 +702,7 @@ def _render_search_tab(source_lines: List[str]):
         line_number_map = list(range(len(source_lines)))
 
     try:
-        results = search_lines(
+        results, total_matched, results_truncated = search_lines(
             target_lines,
             keyword,
             case_sensitive=bool(st.session_state.log_analyzer_search_case_sensitive),
@@ -683,6 +712,7 @@ def _render_search_tab(source_lines: List[str]):
             context_after=int(st.session_state.log_analyzer_search_context),
             line_number_map=line_number_map,
             max_results=200,
+            include_total=True,
         )
     except ValueError as exc:
         render_error_feedback(str(exc), title="搜索失败")
@@ -692,8 +722,15 @@ def _render_search_tab(source_lines: List[str]):
         render_warning_feedback("未找到匹配结果。", title="搜索结果")
         return
 
+    if results_truncated:
+        render_warning_feedback(
+            f"共 {total_matched:,} 行匹配，超出展示上限，仅显示前 {len(results):,} 行；"
+            "可改用更精确的关键词或先过滤缩小范围。",
+            title="结果已截断",
+        )
+
     metric_cols = st.columns(4)
-    metric_cols[0].metric("匹配行数", len(results))
+    metric_cols[0].metric("匹配行数", f"{total_matched:,}")
     metric_cols[1].metric("唯一级别数", len({item["level"] for item in results}))
     metric_cols[2].metric("首个匹配位置", results[0]["position"])
     metric_cols[3].metric("搜索范围", st.session_state.log_analyzer_search_scope)
@@ -798,6 +835,10 @@ def render_log_analysis_page():
     filtered_lines, _, _ = _apply_active_filters()
     active_scope_label = "过滤结果" if _has_active_filters() else "全部日志"
     summary_lines = filtered_lines if _has_active_filters() else source_lines
+    analysis_truncated = False
+    if len(summary_lines) > MAX_ANALYZE_LINES:
+        summary_lines = summary_lines[:MAX_ANALYZE_LINES]
+        analysis_truncated = True
     summary = summarize_log_lines(
         summary_lines,
         slow_threshold_ms=float(st.session_state.log_analyzer_slow_threshold),
@@ -805,7 +846,7 @@ def render_log_analysis_page():
     )
 
     with tabs[1]:
-        _render_overview_tab(summary, active_scope_label)
+        _render_overview_tab(summary, active_scope_label, summary_lines, analysis_truncated)
 
     with tabs[2]:
         _render_filter_tab(source_lines)
