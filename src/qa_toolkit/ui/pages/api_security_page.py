@@ -13,6 +13,7 @@ from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
 from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.task_runner import get_session_task_runner
+from qa_toolkit.reporting.mobsf_pdf_report import build_mobsf_chinese_pdf
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
 from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
@@ -1671,7 +1672,6 @@ def _load_mobsf_static_bundle_by_hash(app_tool: ApplicationSecurityTool, file_ha
         include_pdf=bool(st.session_state.get("app_sec_mobsf_include_pdf", False)),
         **options,
     )
-    st.session_state.app_sec_mobsf_hash_query = str(file_hash or "").strip()
     st.session_state.app_sec_mobsf_hash_report = bundle.get("json_report", {})
     st.session_state.app_sec_mobsf_hash_scorecard = bundle.get("scorecard", {})
     st.session_state.app_sec_mobsf_hash_pdf_bytes = bundle.get("pdf_bytes", b"")
@@ -2769,6 +2769,27 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
             )
             append_review_exports(export_items, label_prefix, file_prefix, runtime_bundle.get("review_bundle", {}))
 
+        def append_chinese_pdf_export(export_items: List[Dict[str, Any]], label_prefix: str, file_prefix: str, static_bundle: Dict[str, Any]):
+            if not static_bundle.get("json_report"):
+                return
+            try:
+                pdf_bytes = build_mobsf_chinese_pdf(
+                    report_json=static_bundle.get("json_report", {}),
+                    review_bundle=static_bundle.get("review_bundle", {}),
+                    file_hash=str(static_bundle.get("hash") or ""),
+                )
+            except Exception as exc:
+                st.warning(f"生成 {label_prefix}中文 PDF 报告失败: {exc}")
+                return
+            export_items.append(
+                {
+                    "label": f"下载 {label_prefix}中文安全报告 PDF",
+                    "data": pdf_bytes,
+                    "file_name": f"{file_prefix}_chinese_security_report.pdf",
+                    "mime": "application/pdf",
+                }
+            )
+
         export_items = [
             {
                 "label": "下载 MobSF 快速上手 Markdown",
@@ -2840,6 +2861,7 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
                     f"mobsf_static_{bundle.get('hash', 'latest')}",
                     bundle.get("review_bundle", {}),
                 )
+            append_chinese_pdf_export(export_items, "MobSF 静态分析", f"mobsf_static_{bundle.get('hash', 'latest')}", bundle)
             if bundle.get("pdf_bytes"):
                 export_items.append(
                     {
@@ -2860,6 +2882,16 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
             )
             if hash_review_bundle:
                 append_review_exports(export_items, "按 Hash 静态结果", "mobsf_hash_static", hash_review_bundle)
+            append_chinese_pdf_export(
+                export_items,
+                "按 Hash 静态结果",
+                "mobsf_hash_static",
+                {
+                    "hash": st.session_state.get("app_sec_mobsf_hash_query", ""),
+                    "json_report": hash_report,
+                    "review_bundle": hash_review_bundle,
+                },
+            )
         if hash_scorecard:
             export_items.append(
                 {

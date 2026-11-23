@@ -25,6 +25,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
+from qa_toolkit.reporting.mobsf_pdf_report import build_mobsf_chinese_pdf
 
 
 APK_MANIFEST_B64 = (
@@ -617,3 +618,33 @@ def test_mobsf_extract_reference_candidates_supports_nested_recent_and_search_pa
     assert any(item["Bundle ID"] == "com.demo.ios" for item in candidates)
     assert any(item["Instance ID"] == "instance-1" for item in candidates)
     assert any(item["Device ID"] == "device-1" for item in candidates)
+
+
+def test_build_mobsf_chinese_pdf_uses_a_chinese_capable_font():
+    pdf_bytes = build_mobsf_chinese_pdf(
+        report_json={
+            "app_name": "专塑视界",
+            "package_name": "com.example.app",
+            "version_name": "4.28.0",
+            "file_name": "demo.apk",
+            "timestamp": "2026-08-06 14:00:00",
+        },
+        review_bundle={
+            "summary": {"issue_count": 1, "high": 1, "medium": 0, "low": 0, "regression_case_count": 1},
+            "issue_register": [
+                {
+                    "Severity": "high",
+                    "Category": "组件暴露",
+                    "Title": "导出组件复核",
+                    "Evidence": "发现未限制访问的 Activity",
+                    "Suggested Check": "补充权限校验",
+                }
+            ],
+            "regression_suite": [{"Priority": "P0", "Scenario": "未授权访问", "Check": "验证权限拦截"}],
+        },
+        file_hash="abc123",
+    )
+
+    assert pdf_bytes.startswith(b"%PDF")
+    assert len(pdf_bytes) > 1000
+    assert b"STSong-Light" in pdf_bytes
