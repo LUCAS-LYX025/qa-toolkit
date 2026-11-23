@@ -11,10 +11,22 @@ import pandas as pd
 
 
 LOG_LEVEL_PATTERNS = {
-    "错误": re.compile(r"(^|[\s\[\(])(?:ERROR|ERR|FATAL|SEVERE|EXCEPTION)(?=$|[\s\]\):,])", re.IGNORECASE),
-    "警告": re.compile(r"(^|[\s\[\(])(?:WARN|WARNING)(?=$|[\s\]\):,])", re.IGNORECASE),
-    "信息": re.compile(r"(^|[\s\[\(])(?:INFO|INFORMATION)(?=$|[\s\]\):,])", re.IGNORECASE),
-    "调试": re.compile(r"(^|[\s\[\(])(?:DEBUG|DBG|TRACE)(?=$|[\s\]\):,])", re.IGNORECASE),
+    "错误": re.compile(
+        r"(^|[\s\[\(\u3010])(?:ERROR|ERR|FATAL|SEVERE|EXCEPTION|严重|致命|错误)(?=$|[\s\]\):,，\u3011])",
+        re.IGNORECASE,
+    ),
+    "警告": re.compile(
+        r"(^|[\s\[\(\u3010])(?:WARN|WARNING|警告)(?=$|[\s\]\):,，\u3011])",
+        re.IGNORECASE,
+    ),
+    "信息": re.compile(
+        r"(^|[\s\[\(\u3010])(?:INFO|INFORMATION|信息)(?=$|[\s\]\):,，\u3011])",
+        re.IGNORECASE,
+    ),
+    "调试": re.compile(
+        r"(^|[\s\[\(\u3010])(?:DEBUG|DBG|TRACE|调试)(?=$|[\s\]\):,，\u3011])",
+        re.IGNORECASE,
+    ),
 }
 TIMESTAMP_REGEXES = [
     re.compile(r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?(?:Z|[+-]\d{2}:?\d{2})?"),
@@ -33,16 +45,29 @@ TIMESTAMP_FORMATS = [
     "%H:%M:%S",
 ]
 IP_REGEX = re.compile(r"(?<![\d.])(?:\d{1,3}\.){3}\d{1,3}(?![\d.])")
-STATUS_CODE_REGEX = re.compile(r"(?<!\d)([1-5]\d{2})(?!\d)")
+# 粗提取 IPv6 候选，最终以 ipaddress 校验为准（时间/MAC 等伪候选会被校验丢弃）
+IPV6_REGEX = re.compile(r"(?<![\w:])(?:[0-9A-Fa-f]{0,4}:){2,7}[0-9A-Fa-f]{0,4}(?![\w:])")
+# 状态码要求前后不是字母/数字/点，避免耗时毫秒值(123ms)、时间戳毫秒(.123)、追踪 ID(abc123) 误计
+STATUS_CODE_REGEX = re.compile(r"(?<![\w.\-])([1-5]\d{2})(?![\w.\-])")
 HTTP_PATH_REGEX = re.compile(
     r"(?:\"|^|\s)(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+([^\s\"?]+)",
     re.IGNORECASE,
 )
 DURATION_PATTERNS = [
-    re.compile(r"(?:duration|cost|elapsed|latency|耗时|用时)\s*[:=]\s*(\d+(?:\.\d+)?)\s*ms", re.IGNORECASE),
-    re.compile(r"(\d+(?:\.\d+)?)\s*ms", re.IGNORECASE),
+    re.compile(
+        r"(?:duration|cost|elapsed|latency|耗时|用时)\s*[:=]\s*(\d+(?:\.\d+)?)\s*(ms|毫秒|s|秒)(?![A-Za-z])",
+        re.IGNORECASE,
+    ),
+    re.compile(r"(\d+(?:\.\d+)?)\s*(ms|毫秒|s|秒)(?![A-Za-z])", re.IGNORECASE),
 ]
+DURATION_UNIT_TO_MS = {"ms": 1.0, "毫秒": 1.0, "s": 1000.0, "秒": 1000.0}
 EXCEPTION_REGEX = re.compile(r"\b([A-Z][A-Za-z0-9_]*(?:Exception|Error))\b")
+
+# 灾难性回溯风险模式（嵌套量词 / 分支回溯），命中即拒绝执行（ReDoS 防护）
+REDOS_RISK_PATTERNS = [
+    re.compile(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d*,?\d*\})"),
+    re.compile(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)+\)\s*(?:[+*]|\{\d*,?\d*\})"),
+]
 
 
 def decode_log_bytes(raw_bytes: bytes) -> str:
@@ -64,14 +89,17 @@ def dataframe_to_lines(df: pd.DataFrame) -> List[str]:
     return [stringify_dataframe_row(row) for _, row in df.iterrows()]
 
 
-def detect_json_columns(df: pd.DataFrame, sample_rows: int = 10) -> Dict[str, List[str]]:
+def detect_json_columns(df: pd.DataFrame, sample_rows: int | None = None) -> Dict[str, List[str]]:
+    """发现 JSON 列字段。sample_rows=None 时采样上限提高，避免只看前几行漏检字段。"""
     json_fields: Dict[str, List[str]] = {}
     if df.empty:
         return json_fields
 
     for column in df.columns:
         discovered_keys = set()
-        for value in df[column].dropna().head(sample_rows):
+        values = df[column].dropna()
+        values = values.head(500) if sample_rows is None else values.head(sample_rows)
+        for value in values:
             try:
                 if isinstance(value, dict):
                     discovered_keys.update(value.keys())
@@ -91,10 +119,16 @@ def detect_json_columns(df: pd.DataFrame, sample_rows: int = 10) -> Dict[str, Li
 
 
 def detect_log_level(line: str) -> str:
-    for level in ("错误", "警告", "信息", "调试"):
-        if LOG_LEVEL_PATTERNS[level].search(line or ""):
-            return level
-    return "其他"
+    """按行内最早出现的级别标记判级，避免正文含 error 等词时把 INFO 行误升级。"""
+    text = line or ""
+    best_level = None
+    best_pos = None
+    for level, pattern in LOG_LEVEL_PATTERNS.items():
+        match = pattern.search(text)
+        if match and (best_pos is None or match.start() < best_pos):
+            best_level = level
+            best_pos = match.start()
+    return best_level or "其他"
 
 
 def parse_timestamp(text: str) -> datetime | None:
@@ -138,14 +172,15 @@ def extract_timestamp(line: str) -> str:
 def extract_ip_addresses(line: str) -> List[str]:
     results: List[str] = []
     seen = set()
-    for candidate in IP_REGEX.findall(line or ""):
+    candidates = list(IP_REGEX.findall(line or "")) + list(IPV6_REGEX.findall(line or ""))
+    for candidate in candidates:
         try:
-            ipaddress.ip_address(candidate)
+            normalized = str(ipaddress.ip_address(candidate))
         except ValueError:
             continue
-        if candidate not in seen:
-            seen.add(candidate)
-            results.append(candidate)
+        if normalized not in seen:
+            seen.add(normalized)
+            results.append(normalized)
     return results
 
 
@@ -172,9 +207,11 @@ def extract_duration_ms(line: str) -> float | None:
         match = pattern.search(line or "")
         if match:
             try:
-                return float(match.group(1))
-            except ValueError:
+                value = float(match.group(1))
+                unit = match.group(2).lower() if match.lastindex and match.lastindex >= 2 else "ms"
+            except (ValueError, IndexError):
                 return None
+            return value * DURATION_UNIT_TO_MS.get(unit, 1.0)
     return None
 
 
@@ -233,9 +270,11 @@ def summarize_log_lines(lines: Iterable[str], *, slow_threshold_ms: float = 1000
 
         parsed = parse_timestamp(line)
         if parsed:
-            parsed_timestamps.append(parsed)
-            bucket = parsed.strftime("%Y-%m-%d %H:%M")
-            timeline_counter[bucket] += 1
+            # 仅含 HH:MM:SS 的行会解析出 1900 伪日期，不应进入时间线/时间范围
+            if parsed.year != 1900:
+                parsed_timestamps.append(parsed)
+                bucket = parsed.strftime("%Y-%m-%d %H:%M")
+                timeline_counter[bucket] += 1
 
     top_duplicate_lines = [
         {"line": line, "count": count}
@@ -309,6 +348,20 @@ def build_health_notes(summary: Dict[str, Any]) -> List[str]:
     if time_range:
         notes.append(f"日志时间范围从 {time_range['start']} 到 {time_range['end']}。")
 
+    status_counts = summary.get("status_code_counts") or []
+    server_errors = sum(int(count) for code, count in status_counts if str(code).startswith("5"))
+    client_errors = sum(int(count) for code, count in status_counts if str(code).startswith("4"))
+    total_status = sum(int(count) for _, count in status_counts)
+    if server_errors > 0:
+        ratio = server_errors / total_status * 100 if total_status else 0.0
+        notes.append(
+            f"检测到 {server_errors} 次 5xx 服务端错误响应（占状态码 {ratio:.0f}%），建议优先排查下游服务状态。"
+        )
+    elif client_errors > 0 and total_status and client_errors / total_status >= 0.3:
+        notes.append(
+            f"4xx 客户端错误占比 {client_errors / total_status * 100:.0f}%，建议检查鉴权、限流与资源路径。"
+        )
+
     if not notes:
         notes.append("日志总体结构正常，可进一步使用筛选和搜索做精确排障。")
     return notes
@@ -361,7 +414,7 @@ def _match_ip_filter(line: str, filter_value: str) -> bool:
                 continue
             if any(ipaddress.ip_address(ip) in network for ip in extracted_ips):
                 return True
-        elif term in line or term in extracted_ips:
+        elif term in extracted_ips:
             return True
     return False
 
@@ -391,6 +444,9 @@ def apply_text_filters(
                 column_index = csv_columns.index(column_name)
                 column_value = columns[column_index].strip()
                 filter_match = _match_text_operator(column_value, filter_operator, filter_value)
+            elif csv_columns and column_name in csv_columns:
+                # 单元格值含分隔符导致列错位：条件无法评估，按逻辑极性放行（AND 不误杀，OR 不误放）
+                filter_match = logic == "AND"
 
         elif filter_type == "log_level":
             selected_levels = list(filter_value or [])
@@ -501,12 +557,20 @@ def search_lines(
     context_after: int = 0,
     line_number_map: List[int] | None = None,
     max_results: int | None = 200,
-) -> List[Dict[str, Any]]:
+    include_total: bool = False,
+):
+    """日志搜索。include_total=True 时返回 (results, total_matched, truncated)。"""
     if not keyword:
-        return []
+        return ([], 0, False) if include_total else []
 
     flags = 0 if case_sensitive else re.IGNORECASE
     if use_regex:
+        for risk in REDOS_RISK_PATTERNS:
+            if risk.search(keyword):
+                raise ValueError(
+                    "正则表达式存在灾难性回溯风险（嵌套量词或分支回溯），已拒绝执行；"
+                    "请简化表达式或改用普通文本搜索。"
+                )
         try:
             pattern = re.compile(keyword, flags)
         except re.error as exc:
@@ -519,9 +583,14 @@ def search_lines(
             pattern = re.compile(escaped, flags)
 
     results: List[Dict[str, Any]] = []
+    total_matched = 0
     for index, line in enumerate(lines):
         matches = list(pattern.finditer(line))
         if not matches:
+            continue
+
+        total_matched += 1
+        if max_results and len(results) >= max_results:
             continue
 
         results.append(
@@ -549,9 +618,9 @@ def search_lines(
             }
         )
 
-        if max_results and len(results) >= max_results:
-            break
-
+    truncated = bool(max_results) and total_matched > len(results)
+    if include_total:
+        return results, total_matched, truncated
     return results
 
 
