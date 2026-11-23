@@ -351,6 +351,17 @@ class EnvProfileManager:
         normalized.pop("_auth_encrypted", None)
         normalized.pop("_headers_encrypted", None)
 
+        # 密钥轮换后旧密文解密失败时保留原密文，避免用解密失败的空值重新加密导致凭据永久丢失
+        if existing.get("_encryption_error"):
+            incoming_auth = normalized.get("auth", {})
+            auth_is_default_none = incoming_auth.get("mode") == "none" and len(incoming_auth) == 1
+            if auth_is_default_none and existing.get("_auth_encrypted"):
+                normalized["_auth_encrypted"] = existing["_auth_encrypted"]
+            if not normalized.get("headers") and existing.get("_headers_encrypted"):
+                normalized["_headers_encrypted"] = existing["_headers_encrypted"]
+            if normalized.get("_auth_encrypted") or normalized.get("_headers_encrypted"):
+                normalized["_encryption_error"] = True
+
         self._store["profiles"][normalized_name] = normalized
         if not self._store["active_by_namespace"].get("default"):
             self._store["active_by_namespace"]["default"] = normalized_name
@@ -385,7 +396,11 @@ class EnvProfileManager:
     def get_active_profile_name(self, namespace: str = "default") -> str:
         normalized_namespace = _normalize_namespace(namespace)
         active_map = self._store.get("active_by_namespace", {})
-        profile_name = str(active_map.get(normalized_namespace) or active_map.get("default") or "").strip()
+        # 命名空间已显式设置（clear_active 写入空串）时不再回退 default，否则清空会失效
+        if normalized_namespace in active_map:
+            profile_name = str(active_map.get(normalized_namespace) or "").strip()
+        else:
+            profile_name = str(active_map.get("default") or "").strip()
         if profile_name and profile_name in self._store.get("profiles", {}):
             return profile_name
         return ""

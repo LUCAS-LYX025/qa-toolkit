@@ -24,6 +24,22 @@ def _build_table_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return rows
 
 
+def _build_run_options(records: List[Dict[str, Any]]) -> tuple:
+    """构建运行记录选择项：以记录索引作为稳定标识，标签仅用于展示。"""
+    labels = [
+        f"{item.get('run_id', '')} | {item.get('action', '')} | {item.get('status', '')}"
+        for item in records
+    ]
+    return list(range(len(records))), labels
+
+
+def _resolve_run_id(records: List[Dict[str, Any]], selected_index: Any) -> str:
+    """按索引反解 run_id，避免对 ' | ' 分隔字符串做脆弱切分。"""
+    if not isinstance(selected_index, int) or not 0 <= selected_index < len(records):
+        return ""
+    return str(records[selected_index].get("run_id", "") or "")
+
+
 def render_task_run_panel(
     run_center: TaskRunCenter,
     tool_name: str,
@@ -38,9 +54,14 @@ def render_task_run_panel(
 
         st.dataframe(pd.DataFrame(_build_table_rows(records)), use_container_width=True, hide_index=True)
 
-        options = [f"{item.get('run_id', '')} | {item.get('action', '')} | {item.get('status', '')}" for item in records]
-        selected = st.selectbox("查看日志详情", options=options, key=f"{panel_key}_run_selector")
-        selected_run_id = selected.split(" | ", 1)[0].strip()
+        indexes, labels = _build_run_options(records)
+        selected_index = st.selectbox(
+            "查看日志详情",
+            options=indexes,
+            format_func=lambda index: labels[index],
+            key=f"{panel_key}_run_selector",
+        )
+        selected_run_id = _resolve_run_id(records, selected_index)
         run_detail = run_center.get_run(selected_run_id) or {}
 
         if run_detail.get("error"):

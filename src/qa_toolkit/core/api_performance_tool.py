@@ -19,6 +19,9 @@ import requests
 class PerformanceTestTool:
     """JMeter 风格接口性能测试工具"""
 
+    # 虚拟用户数上限，避免超大线程数导致资源耗尽
+    MAX_VIRTUAL_USERS = 1000
+
     def build_test_plan(
         self,
         interfaces: List[Dict[str, Any]],
@@ -71,7 +74,7 @@ class PerformanceTestTool:
                 }
             )
 
-        users = self._to_int(thread_group.get("users"), 10)
+        users = min(self._to_int(thread_group.get("users"), 10), self.MAX_VIRTUAL_USERS)
         ramp_up_seconds = self._to_float(thread_group.get("ramp_up_seconds"), 0.0)
         loop_count = self._to_int(thread_group.get("loop_count"), 1)
         duration_seconds = self._to_float(thread_group.get("duration_seconds"), 0.0)
@@ -138,7 +141,7 @@ class PerformanceTestTool:
         transaction_controller = deepcopy(plan.get("transaction_controller") or {})
         samplers = deepcopy(plan.get("samplers") or [])
 
-        users = max(self._to_int(thread_group.get("users"), 1), 1)
+        users = min(max(self._to_int(thread_group.get("users"), 1), 1), self.MAX_VIRTUAL_USERS)
         start_delay_seconds = self._to_float(thread_group.get("start_delay_seconds"), 0.0)
 
         if not samplers:
@@ -849,8 +852,12 @@ class PerformanceTestTool:
         if not query_params:
             return url
         parsed = urlparse(url)
-        query_dict = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        query_dict.update({str(key): str(value) for key, value in query_params.items()})
+        # 保留同名多值参数，避免 dict() 静默丢值。
+        query_dict: Dict[str, list] = {}
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            query_dict.setdefault(key, []).append(value)
+        for key, value in query_params.items():
+            query_dict[str(key)] = [str(value)]
         return urlunparse(parsed._replace(query=urlencode(query_dict, doseq=True)))
 
     def _estimate_request_count(
@@ -986,8 +993,14 @@ class PerformanceTestTool:
         if not text:
             return text
         result = str(text)
-        for key, value in csv_row.items():
-            result = result.replace("${" + str(key) + "}", str(value))
+        # 迭代展开嵌套占位符（如 a=${b}, b=X），最多 10 轮防止循环引用死循环。
+        for _ in range(10):
+            updated = result
+            for key, value in csv_row.items():
+                updated = updated.replace("${" + str(key) + "}", str(value))
+            if updated == result or "${" not in updated:
+                return updated
+            result = updated
         return result
 
     def _build_payload_preview(self, payload: Any) -> str:
@@ -1000,6 +1013,8 @@ class PerformanceTestTool:
     def _percentile(self, values: List[float], percentile: float) -> float:
         if not values:
             return 0.0
+        # 分位数越界会直接索引越界，统一钳制到 [0, 100]
+        percentile = max(0.0, min(100.0, self._to_float(percentile, 0.0)))
         sorted_values = sorted(values)
         if len(sorted_values) == 1:
             return sorted_values[0]

@@ -1,3 +1,5 @@
 [server]
-maxUploadSize = 200
-maxMessageSize = 200
+# 原先 200MB 远超工具实际处理能力（文档建议 bi < 100MB、image < 10MB），
+# 大上传会全量进入内存且无限流，存在内存与响应性风险。下调到 50MB 并保留显式上限。
+maxUploadSize = 50
+maxMessageSize = 50

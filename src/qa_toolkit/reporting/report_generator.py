@@ -16,6 +16,17 @@ class EnhancedReportGenerator:
         self.report_dir = str(REPORTS_DIR)
         os.makedirs(self.report_dir, exist_ok=True)
 
+    @staticmethod
+    def _coerce_response_time(value: Any, default: float = 0.0) -> float:
+        """将响应时间规范化为非负浮点数，避免非数值数据破坏报告生成。"""
+        try:
+            result = float(value)
+        except (TypeError, ValueError):
+            return float(default)
+        if result != result or result in (float("inf"), float("-inf")):  # NaN / Infinity
+            return float(default)
+        return max(result, 0.0)
+
     def generate_detailed_report(self, test_results: Dict[str, Any],
                                  framework: str,
                                  interfaces: List[Dict[str, Any]] = None,
@@ -155,7 +166,7 @@ class EnhancedReportGenerator:
                 'path': detail.get('path', ''),
                 'status': detail.get('status', 'unknown'),
                 'status_code': detail.get('status_code', 0),
-                'response_time': max(detail.get('response_time', 0), 0),
+                'response_time': self._coerce_response_time(detail.get('response_time', 0)),
                 'headers': detail.get('headers', {}),
                 'parameters': detail.get('parameters', {}),
                 'response_body': detail.get('response_body', ''),
@@ -875,7 +886,7 @@ class EnhancedReportGenerator:
         lines.append(f"请求方法: {detail.get('method', 'GET')}")
         lines.append(f"请求路径: {detail.get('path', '')}")
         lines.append(f"测试状态: {detail.get('status', 'unknown')}")
-        lines.append(f"响应时间: {detail.get('response_time', 0):.2f}秒")
+        lines.append(f"响应时间: {self._coerce_response_time(detail.get('response_time', 0)):.2f}秒")
         lines.append(f"状态码: {detail.get('status_code', 'N/A')}")
         lines.append("")
 

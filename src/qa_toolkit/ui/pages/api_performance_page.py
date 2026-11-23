@@ -13,6 +13,7 @@ from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
+from qa_toolkit.ui.components.session_state_bridge import make_multi_setter, make_setter
 from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
@@ -671,20 +672,23 @@ def _render_report_table_workbench(
             )
             if not visible_columns:
                 visible_columns = preferred_columns
-                st.session_state[columns_key] = preferred_columns
+                # 不再回写已实例化的 multiselect key；仅本地回退展示，下次由 stored_columns 兜底。
     with ctrl_col4:
-        if st.button("重置视图", key=f"{report_key}_reset_view", use_container_width=True):
-            st.session_state[search_key] = ""
-            st.session_state[display_key] = "核心列"
-            st.session_state[columns_key] = preferred_columns
-            st.session_state[sort_key] = default_sort if default_sort in all_columns else "默认顺序"
-            st.session_state[sort_order_key] = "降序" if default_sort else "升序"
-            st.session_state[second_sort_key] = "无"
-            st.session_state[second_sort_order_key] = "升序"
-            st.session_state[pin_columns_key] = preferred_columns[: min(2, len(preferred_columns))]
-            st.session_state[page_size_key] = 20
-            st.session_state[page_number_key] = 1
-            st.rerun()
+        _reset_view_payload = {
+            search_key: "",
+            display_key: "核心列",
+            columns_key: preferred_columns,
+            sort_key: default_sort if default_sort in all_columns else "默认顺序",
+            sort_order_key: "降序" if default_sort else "升序",
+            second_sort_key: "无",
+            second_sort_order_key: "升序",
+            pin_columns_key: preferred_columns[: min(2, len(preferred_columns))],
+            page_size_key: 20,
+            page_number_key: 1,
+        }
+        # on_click 在下一轮 widget 实例化前执行，避免 StreamlitAPIException。
+        st.button("重置视图", key=f"{report_key}_reset_view", use_container_width=True,
+                  on_click=make_multi_setter(_reset_view_payload))
     filtered_df = _filter_report_dataframe(df, query)
 
     preset_items = []
@@ -826,21 +830,20 @@ def _render_report_table_workbench(
 
     nav_col1, nav_col2, nav_col3, nav_col4 = st.columns(4)
     with nav_col1:
-        if st.button("首页", key=f"{report_key}_page_first", use_container_width=True, disabled=int(page_number) <= 1):
-            st.session_state[page_number_key] = 1
-            st.rerun()
+        st.button("首页", key=f"{report_key}_page_first", use_container_width=True,
+                  disabled=int(page_number) <= 1, on_click=make_setter(page_number_key, 1))
     with nav_col2:
-        if st.button("上一页", key=f"{report_key}_page_prev", use_container_width=True, disabled=int(page_number) <= 1):
-            st.session_state[page_number_key] = max(int(page_number) - 1, 1)
-            st.rerun()
+        st.button("上一页", key=f"{report_key}_page_prev", use_container_width=True,
+                  disabled=int(page_number) <= 1,
+                  on_click=make_setter(page_number_key, max(int(page_number) - 1, 1)))
     with nav_col3:
-        if st.button("下一页", key=f"{report_key}_page_next", use_container_width=True, disabled=int(page_number) >= total_pages):
-            st.session_state[page_number_key] = min(int(page_number) + 1, total_pages)
-            st.rerun()
+        st.button("下一页", key=f"{report_key}_page_next", use_container_width=True,
+                  disabled=int(page_number) >= total_pages,
+                  on_click=make_setter(page_number_key, min(int(page_number) + 1, total_pages)))
     with nav_col4:
-        if st.button("末页", key=f"{report_key}_page_last", use_container_width=True, disabled=int(page_number) >= total_pages):
-            st.session_state[page_number_key] = total_pages
-            st.rerun()
+        st.button("末页", key=f"{report_key}_page_last", use_container_width=True,
+                  disabled=int(page_number) >= total_pages,
+                  on_click=make_setter(page_number_key, total_pages))
 
     start_index = (int(page_number) - 1) * int(page_size)
     end_index = start_index + int(page_size)
@@ -1082,6 +1085,16 @@ def _get_sampler_label(interfaces, idx: int) -> str:
     )
 
 
+def _decode_csv_bytes(raw: bytes) -> str:
+    """严格解码上传的 CSV：优先 UTF-8(BOM)，回退 GB18030；失败时报错而非静默丢字符。"""
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("CSV 文件编码无法识别，请使用 UTF-8 或 GBK/GB18030 编码保存后重试")
+
+
 def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
     expected_status_mode_map = {
         "使用文档状态码": "document",
@@ -1101,7 +1114,7 @@ def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
     perf_csv_file = st.session_state.get("performance_csv_upload")
     perf_csv_text = st.session_state.get("performance_csv_text", "")
     if perf_csv_file is not None:
-        perf_csv_text = perf_csv_file.getvalue().decode("utf-8-sig", errors="ignore")
+        perf_csv_text = _decode_csv_bytes(perf_csv_file.getvalue())
         csv_source_name = perf_csv_file.name
 
     base_url = _compose_base_url_from_fields()
@@ -1445,10 +1458,11 @@ def _filter_result_tree_rows(tree_rows):
     with filter_col2:
         only_errors = st.checkbox("Errors Only", key="api_perf_tree_only_errors")
     with filter_col3:
-        if st.button("Reset Filter", key="api_perf_tree_reset_filter", use_container_width=True):
-            st.session_state.api_perf_tree_search = ""
-            st.session_state.api_perf_tree_only_errors = False
-            st.rerun()
+        st.button("Reset Filter", key="api_perf_tree_reset_filter", use_container_width=True,
+                  on_click=make_multi_setter({
+                      "api_perf_tree_search": "",
+                      "api_perf_tree_only_errors": False,
+                  }))
 
     filtered_rows = []
     for row in tree_rows:
@@ -1896,7 +1910,11 @@ def _render_csv_panel():
         preview_text = st.session_state.get("performance_csv_text", "")
         upload_file = st.session_state.get("performance_csv_upload")
         if upload_file is not None:
-            preview_text = upload_file.getvalue().decode("utf-8-sig", errors="ignore")
+            try:
+                preview_text = _decode_csv_bytes(upload_file.getvalue())
+            except ValueError as exc:
+                preview_text = ""
+                st.error(str(exc))
         if preview_text.strip():
             st.text_area("Preview", "\n".join(preview_text.strip().splitlines()[:5]), height=140, disabled=True)
 

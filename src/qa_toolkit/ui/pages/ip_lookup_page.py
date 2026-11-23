@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from datetime import datetime
+from typing import List
 
 import pandas as pd
 import streamlit as st
@@ -25,6 +27,33 @@ DEFAULT_STATE = {
     "ip_lookup_asset_result": None,
     "ip_lookup_asset_label": "",
 }
+
+
+def _is_valid_ip_address(value: str) -> bool:
+    """校验获取到的公网 IP 文本，失败文案等非 IP 内容不应回填输入框。"""
+    try:
+        ipaddress.ip_address(str(value or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def _parse_batch_targets(raw_text: str, limit: int = 50) -> List[str]:
+    """解析批量输入：逐行去空白、去重，可选截断。"""
+    lines = [line.strip() for line in str(raw_text or "").splitlines() if line.strip()]
+    targets = list(dict.fromkeys(lines))
+    return targets[:limit] if limit > 0 else targets
+
+
+def _prepare_batch_targets(raw_text: str) -> List[str]:
+    """批量查询前置校验：空输入给出提示并返回空列表，不创建运行记录。"""
+    unique_targets = _parse_batch_targets(raw_text, limit=0)
+    if not unique_targets:
+        render_warning_feedback("请输入至少一个查询目标后再开始批量查询。", title="批量查询输入为空")
+        return []
+    if len(unique_targets) > 50:
+        render_warning_feedback("批量查询建议控制在 50 条以内，本次只会处理前 50 条。", title="批量查询提醒")
+    return unique_targets[:50]
 
 
 def _ensure_defaults() -> None:
@@ -150,8 +179,15 @@ def render_ip_lookup_page() -> None:
             )
         with input_col2:
             if secondary_action_button("获取当前公网 IP", key="ip_lookup_public_ip"):
-                st.session_state["ip_lookup_single_input_pending"] = tool.get_public_ip()
-                st.rerun()
+                public_ip = tool.get_public_ip()
+                if _is_valid_ip_address(public_ip):
+                    st.session_state["ip_lookup_single_input_pending"] = public_ip
+                    st.rerun()
+                else:
+                    render_error_feedback(
+                        "获取当前公网 IP 失败，请检查网络或稍后重试；原输入内容已保留。",
+                        title="获取公网 IP 失败",
+                    )
 
         if primary_action_button("开始单个查询", key="ip_lookup_single_button"):
             single_target = str(st.session_state.ip_lookup_single_input or "").strip()
@@ -186,12 +222,7 @@ def render_ip_lookup_page() -> None:
             height=180,
             placeholder="8.8.8.8\nexample.com\nhttps://www.baidu.com",
         )
-        if primary_action_button("开始批量查询", key="ip_lookup_batch_button"):
-            raw_lines = [line.strip() for line in st.session_state.ip_lookup_batch_text.splitlines() if line.strip()]
-            unique_targets = list(dict.fromkeys(raw_lines))
-            if len(unique_targets) > 50:
-                render_warning_feedback("批量查询建议控制在 50 条以内，本次只会处理前 50 条。", title="批量查询提醒")
-            limited_targets = unique_targets[:50]
+        if primary_action_button("开始批量查询", key="ip_lookup_batch_button") and (limited_targets := _prepare_batch_targets(st.session_state.ip_lookup_batch_text)):
             try:
                 def _batch_query_task(logger):
                     logger(f"开始批量查询，目标数量={len(limited_targets)}。")

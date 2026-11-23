@@ -42,16 +42,29 @@ class FeedbackStore:
             )
             connection.commit()
 
+    @staticmethod
+    def _coerce_rating(value: Any, default: int = 5) -> int:
+        """将评分规范化为 1-5 的整数，非法值回退默认值。"""
+        try:
+            rating = int(value)
+        except (TypeError, ValueError):
+            return default
+        if rating < 1 or rating > 5:
+            return default
+        return rating
+
     def add_feedback(self, feedback: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(feedback, dict):
+            feedback = {}
         payload = {
             "timestamp": feedback.get("timestamp") or datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "type": feedback["type"],
-            "urgency": feedback["urgency"],
-            "rating": int(feedback["rating"]),
-            "content": feedback["content"],
-            "nickname": feedback.get("nickname") or "匿名用户",
+            "type": str(feedback.get("type") or "其他"),
+            "urgency": str(feedback.get("urgency") or "一般"),
+            "rating": self._coerce_rating(feedback.get("rating")),
+            "content": str(feedback.get("content") or ""),
+            "nickname": str(feedback.get("nickname") or "匿名用户"),
             "tool_name": feedback.get("tool_name"),
-            "source": feedback.get("source") or "unknown",
+            "source": str(feedback.get("source") or "unknown"),
             "reaction": feedback.get("reaction"),
         }
 

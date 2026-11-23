@@ -344,6 +344,10 @@ def render_text_comparison_page():
         render_info_feedback("请先输入任意一侧文本，或直接载入示例。", title="等待文本输入")
         return
 
+    # difflib.SequenceMatcher 在大文本上是平方级耗时，超限直接提示，避免每次 rerun 卡死。
+    if max(len(left_text), len(right_text)) > 200_000:
+        st.error("单侧文本超过 20 万字符，diff 计算耗时过长，请截断后再比较。")
+        return
     comparison = compare_texts(
         left_text,
         right_text,

@@ -336,104 +336,107 @@ class SecurityTestTool:
         request_headers = deepcopy(auth_headers or {})
         request_headers.setdefault("Origin", origin.strip() or "https://security-audit.local")
         session = requests.Session()
+        try:
 
-        findings: List[Dict[str, Any]] = []
-        samples: List[Dict[str, Any]] = []
-        request_count = 0
+            findings: List[Dict[str, Any]] = []
+            samples: List[Dict[str, Any]] = []
+            request_count = 0
 
-        if not selected and base_url.strip():
-            selected = [
-                {
-                    "name": "Base URL Root",
-                    "method": "GET",
-                    "path": "/",
-                    "headers": {},
-                    "path_params": {},
-                    "query_params": {},
-                    "body": None,
-                    "request_format": "auto",
-                    "expected_status": 200,
-                }
-            ]
+            if not selected and base_url.strip():
+                selected = [
+                    {
+                        "name": "Base URL Root",
+                        "method": "GET",
+                        "path": "/",
+                        "headers": {},
+                        "path_params": {},
+                        "query_params": {},
+                        "body": None,
+                        "request_format": "auto",
+                        "expected_status": 200,
+                    }
+                ]
 
-        for item in selected:
-            label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
-            url = self._build_full_url(item, base_url, include_query=True)
-            if not url.startswith(("http://", "https://")):
-                findings.append(
-                    self._make_finding(
-                        "medium",
-                        "scope",
-                        "接口缺少可探测的绝对 URL",
-                        label,
-                        url or item.get("path", ""),
-                        "请补充 Base URL，或在接口文档中使用完整 URL，以便执行基线探测。",
-                        "API9:2023",
-                    )
-                )
-                continue
-
-            for probe_method in self._build_probe_methods(item):
-                probe_headers = deepcopy(request_headers)
-                if probe_method == "OPTIONS":
-                    probe_headers.setdefault("Access-Control-Request-Method", item.get("method", "GET"))
-                request_count += 1
-                try:
-                    response = session.request(
-                        method=probe_method,
-                        url=url,
-                        headers=probe_headers,
-                        allow_redirects=False,
-                        timeout=max(float(timeout_seconds), 1.0),
-                        verify=bool(verify_ssl),
-                    )
-                    sample_findings = self._analyze_probe_response(
-                        response=response,
-                        label=label,
-                        url=url,
-                        probe_method=probe_method,
-                        original_method=item.get("method", "GET"),
-                        auth_provided=bool(auth_headers),
-                    )
-                    findings.extend(sample_findings)
-                    samples.append(
-                        {
-                            "Label": label,
-                            "Probe Method": probe_method,
-                            "Status Code": response.status_code,
-                            "Risk Count": len(sample_findings),
-                            "Top Severity": self._top_severity(sample_findings),
-                            "URL": url,
-                            "Response Headers": json.dumps(dict(response.headers or {}), ensure_ascii=False, indent=2),
-                            "Body Preview": (response.text or "")[:800],
-                        }
-                    )
-                except Exception as exc:
+            for item in selected:
+                label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
+                url = self._build_full_url(item, base_url, include_query=True)
+                if not url.startswith(("http://", "https://")):
                     findings.append(
                         self._make_finding(
                             "medium",
-                            "probe_error",
-                            "基线探测请求失败",
+                            "scope",
+                            "接口缺少可探测的绝对 URL",
                             label,
-                            f"{probe_method} {url} -> {exc}",
-                            "确认目标可达、证书配置、超时参数和网络 ACL；如果是内网服务，请在授权环境中执行。",
+                            url or item.get("path", ""),
+                            "请补充 Base URL，或在接口文档中使用完整 URL，以便执行基线探测。",
                             "API9:2023",
                         )
                     )
-                    samples.append(
-                        {
-                            "Label": label,
-                            "Probe Method": probe_method,
-                            "Status Code": 0,
-                            "Risk Count": 1,
-                            "Top Severity": "medium",
-                            "URL": url,
-                            "Response Headers": "{}",
-                            "Body Preview": str(exc),
-                        }
-                    )
+                    continue
 
-        deduped_findings = self._dedupe_findings(findings)
+                for probe_method in self._build_probe_methods(item):
+                    probe_headers = deepcopy(request_headers)
+                    if probe_method == "OPTIONS":
+                        probe_headers.setdefault("Access-Control-Request-Method", item.get("method", "GET"))
+                    request_count += 1
+                    try:
+                        response = session.request(
+                            method=probe_method,
+                            url=url,
+                            headers=probe_headers,
+                            allow_redirects=False,
+                            timeout=max(float(timeout_seconds), 1.0),
+                            verify=bool(verify_ssl),
+                        )
+                        sample_findings = self._analyze_probe_response(
+                            response=response,
+                            label=label,
+                            url=url,
+                            probe_method=probe_method,
+                            original_method=item.get("method", "GET"),
+                            auth_provided=bool(auth_headers),
+                        )
+                        findings.extend(sample_findings)
+                        samples.append(
+                            {
+                                "Label": label,
+                                "Probe Method": probe_method,
+                                "Status Code": response.status_code,
+                                "Risk Count": len(sample_findings),
+                                "Top Severity": self._top_severity(sample_findings),
+                                "URL": url,
+                                "Response Headers": json.dumps(dict(response.headers or {}), ensure_ascii=False, indent=2),
+                                "Body Preview": (response.text or "")[:800],
+                            }
+                        )
+                    except Exception as exc:
+                        findings.append(
+                            self._make_finding(
+                                "medium",
+                                "probe_error",
+                                "基线探测请求失败",
+                                label,
+                                f"{probe_method} {url} -> {exc}",
+                                "确认目标可达、证书配置、超时参数和网络 ACL；如果是内网服务，请在授权环境中执行。",
+                                "API9:2023",
+                            )
+                        )
+                        samples.append(
+                            {
+                                "Label": label,
+                                "Probe Method": probe_method,
+                                "Status Code": 0,
+                                "Risk Count": 1,
+                                "Top Severity": "medium",
+                                "URL": url,
+                                "Response Headers": "{}",
+                                "Body Preview": str(exc),
+                            }
+                        )
+
+            deduped_findings = self._dedupe_findings(findings)
+        finally:
+            session.close()
         return {
             "generated_at": self._now(),
             "summary": self._build_probe_summary(samples, deduped_findings, request_count),
@@ -587,7 +590,7 @@ class SecurityTestTool:
                 },
                 {
                     "Phase": "Baseline Probe",
-                    "Status": "按范围启用" if plan.get("scope", {}).get("target_count", 0) else "待配置",
+                    "Status": "按范围启用" if (plan.get("scope") or {}).get("target_count", 0) else "待配置",
                     "Description": "仅使用 OPTIONS/GET/HEAD 这类低风险请求检查安全基线。",
                     "Checks": "HSTS、X-Content-Type-Options、CSP、CORS、TRACE、Server/X-Powered-By、Cookie Flags、缓存控制、错误回显",
                 },
@@ -1059,7 +1062,7 @@ class SecurityTestTool:
             "body": deepcopy(body),
             "expected_response": deepcopy(interface.get("expected_response") or {}),
             "request_format": str(interface.get("request_format") or "auto").strip() or "auto",
-            "expected_status": int(interface.get("expected_status") or 200),
+            "expected_status": self._to_int(interface.get("expected_status"), 200),
         }
 
     def _build_full_url(self, interface: Dict[str, Any], base_url: str, include_query: bool = True) -> str:
@@ -1082,8 +1085,12 @@ class SecurityTestTool:
         if not query_params:
             return url
         parsed = urlparse(url)
-        existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        existing_query.update({str(key): str(value) for key, value in query_params.items()})
+        # 保留 URL 中同名多值参数（如 ?id=1&id=2），避免 dict() 静默丢值。
+        existing_query: Dict[str, list] = {}
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            existing_query.setdefault(key, []).append(value)
+        for key, value in query_params.items():
+            existing_query[str(key)] = [str(value)]
         return urlunparse(parsed._replace(query=urlencode(existing_query, doseq=True)))
 
     def _build_probe_methods(self, interface: Dict[str, Any]) -> List[str]:
@@ -1138,8 +1145,8 @@ class SecurityTestTool:
         blob = " ".join(
             [
                 str(item.get("description", "") or ""),
-                json.dumps(item.get("body", ""), ensure_ascii=False),
-                json.dumps(item.get("headers", {}), ensure_ascii=False),
+                json.dumps(item.get("body", ""), ensure_ascii=False, default=str),
+                json.dumps(item.get("headers", {}), ensure_ascii=False, default=str),
             ]
         ).lower()
         validation_hints = {"multipart", "size", "mime", "content-type", "virus", "extension", "limit"}
@@ -1446,10 +1453,15 @@ class SecurityTestTool:
 
     def _build_role_comparison_rows(self, role_reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         grouped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
-        role_names = [str(item.get("role", "")) for item in role_reports]
+        # 同名角色直接作为 row 的 key 会互相覆盖，用后缀生成唯一列名保留各自状态码
+        role_columns: List[str] = []
+        used_names: Dict[str, int] = {}
+        for item in role_reports:
+            base_role = str(item.get("role", ""))
+            used_names[base_role] = used_names.get(base_role, 0) + 1
+            role_columns.append(base_role if used_names[base_role] == 1 else f"{base_role}#{used_names[base_role]}")
 
-        for role_report in role_reports:
-            role = str(role_report.get("role", ""))
+        for role_report, role in zip(role_reports, role_columns):
             report = role_report.get("report", {}) or {}
             for sample in list(report.get("samples") or []):
                 key = (
@@ -1471,7 +1483,7 @@ class SecurityTestTool:
         for _, row in grouped.items():
             status_parts = []
             success_roles = []
-            for role in role_names:
+            for role in role_columns:
                 code = int(row.get(role, 0) or 0)
                 status_parts.append(f"{role}:{code}")
                 if self._status_bucket(code) == "allow":
@@ -1480,7 +1492,7 @@ class SecurityTestTool:
             row["Sensitivity"] = sensitivity
             row["Status Pattern"] = " | ".join(status_parts)
             row["Success Roles"] = ", ".join(success_roles) or "无"
-            row["Diversity"] = "有差异" if len({int(row.get(role, 0) or 0) for role in role_names}) > 1 else "一致"
+            row["Diversity"] = "有差异" if len({int(row.get(role, 0) or 0) for role in role_columns}) > 1 else "一致"
             rows.append(row)
 
         rows.sort(key=lambda item: (item.get("Sensitivity", ""), item.get("Label", ""), item.get("Probe Method", "")))
@@ -2057,7 +2069,13 @@ class SecurityTestTool:
         return text
 
     def _yaml_quote(self, value: str) -> str:
-        return str(value).replace("\\", "\\\\").replace('"', '\\"')
+        # 转义反斜杠、双引号、换行与制表符，避免注入额外的 YAML 键值。
+        return (str(value)
+                .replace("\\", "\\\\")
+                .replace('"', '\\"')
+                .replace("\n", "\\n")
+                .replace("\r", "\\r")
+                .replace("\t", "\\t"))
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")

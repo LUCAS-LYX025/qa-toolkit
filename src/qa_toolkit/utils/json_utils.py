@@ -16,6 +16,9 @@ class JSONFileUtils:
     提供JSON比较、键计数和文件名提取等功能
     """
 
+    # 递归遍历深度上限，防止深嵌套或循环引用导致 RecursionError。
+    MAX_TRAVERSAL_DEPTH = 200
+
     def __init__(self):
         """初始化工具类"""
         self.comparison_stats = {
@@ -49,8 +52,14 @@ class JSONFileUtils:
 
         return filename
 
-    def compare_json(self, obj1: Any, obj2: Any, path: str = "") -> List[str]:
-        """比较两个JSON对象的差异"""
+    def compare_json(self, obj1: Any, obj2: Any, path: str = "",
+                     _visited=None, _depth: int = 0) -> List[str]:
+        """比较两个JSON对象的差异（带循环引用与深度上限防护）"""
+        if _visited is None:
+            _visited = set()
+        if _depth > self.MAX_TRAVERSAL_DEPTH:
+            return [f"嵌套层级超过上限 {self.MAX_TRAVERSAL_DEPTH}: {path}"]
+
         differences = []
         self.comparison_stats['keys_compared'] += 1
 
@@ -59,6 +68,12 @@ class JSONFileUtils:
             differences.append(diff_msg)
             self.comparison_stats['differences_count'] += 1
             return differences
+
+        if isinstance(obj1, (dict, list)):
+            pair_key = (id(obj1), id(obj2))
+            if pair_key in _visited:
+                return differences
+            _visited = _visited | {pair_key}
 
         if isinstance(obj1, dict):
             all_keys = set(obj1.keys()) | set(obj2.keys())
@@ -73,7 +88,9 @@ class JSONFileUtils:
                     differences.append(diff_msg)
                     self.comparison_stats['differences_count'] += 1
                 else:
-                    differences.extend(self.compare_json(obj1[key], obj2[key], new_path))
+                    differences.extend(self.compare_json(
+                        obj1[key], obj2[key], new_path, _visited, _depth + 1
+                    ))
         elif isinstance(obj1, list):
             if len(obj1) != len(obj2):
                 diff_msg = f"数组长度不同: {path} ({len(obj1)} vs {len(obj2)})"
@@ -81,7 +98,9 @@ class JSONFileUtils:
                 self.comparison_stats['differences_count'] += 1
             else:
                 for i, (item1, item2) in enumerate(zip(obj1, obj2)):
-                    differences.extend(self.compare_json(item1, item2, f"{path}[{i}]"))
+                    differences.extend(self.compare_json(
+                        item1, item2, f"{path}[{i}]", _visited, _depth + 1
+                    ))
         else:
             if obj1 != obj2:
                 diff_msg = f"值不同: {path} ({obj1} vs {obj2})"
@@ -90,17 +109,27 @@ class JSONFileUtils:
 
         return differences
 
-    def count_keys(self, obj: Any) -> int:
-        """计算JSON对象中的键数量"""
+    def count_keys(self, obj: Any, _visited=None, _depth: int = 0) -> int:
+        """计算JSON对象中的键数量（带循环引用与深度上限防护）"""
+        if _visited is None:
+            _visited = set()
+        if _depth > self.MAX_TRAVERSAL_DEPTH:
+            return 0
+
+        if isinstance(obj, (dict, list)):
+            if id(obj) in _visited:
+                return 0
+            _visited = _visited | {id(obj)}
+
         if isinstance(obj, dict):
             count = len(obj)
             for value in obj.values():
-                count += self.count_keys(value)
+                count += self.count_keys(value, _visited, _depth + 1)
             return count
         elif isinstance(obj, list):
             count = 0
             for item in obj:
-                count += self.count_keys(item)
+                count += self.count_keys(item, _visited, _depth + 1)
             return count
         else:
             return 0
@@ -142,18 +171,33 @@ class JSONFileUtils:
 
         return analysis
 
-    def get_json_depth(self, obj: Any, current_depth: int = 0) -> int:
-        """计算JSON对象的最大深度"""
+    def get_json_depth(self, obj: Any, current_depth: int = 0,
+                       _visited=None) -> int:
+        """计算JSON对象的最大深度（带循环引用与深度上限防护）"""
+        if _visited is None:
+            _visited = set()
+        if current_depth >= self.MAX_TRAVERSAL_DEPTH:
+            return current_depth
+
+        if isinstance(obj, (dict, list)):
+            if id(obj) in _visited:
+                return current_depth
+            _visited = _visited | {id(obj)}
+
         if isinstance(obj, dict):
             if obj:
-                return max(self.get_json_depth(value, current_depth + 1) for value in obj.values())
-            else:
-                return current_depth + 1
+                return max(
+                    self.get_json_depth(value, current_depth + 1, _visited)
+                    for value in obj.values()
+                )
+            return current_depth + 1
         elif isinstance(obj, list):
             if obj:
-                return max(self.get_json_depth(item, current_depth + 1) for item in obj)
-            else:
-                return current_depth + 1
+                return max(
+                    self.get_json_depth(item, current_depth + 1, _visited)
+                    for item in obj
+                )
+            return current_depth + 1
         else:
             return current_depth
 

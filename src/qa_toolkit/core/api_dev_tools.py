@@ -1,5 +1,7 @@
 import json
+import shlex
 import re
+from collections import Counter
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -20,8 +22,14 @@ class InterfaceDevTools:
         target_interfaces: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """对比两份接口定义并输出摘要"""
-        baseline_index = {self._build_interface_key(item): self._normalize_interface(item) for item in baseline_interfaces}
-        target_index = {self._build_interface_key(item): self._build_interface_value(item) for item in target_interfaces}
+        baseline_keys = [self._build_interface_key(item) for item in baseline_interfaces]
+        target_keys = [self._build_interface_key(item) for item in target_interfaces]
+        baseline_index = {key: self._normalize_interface(item) for key, item in zip(baseline_keys, baseline_interfaces)}
+        target_index = {key: self._build_interface_value(item) for key, item in zip(target_keys, target_interfaces)}
+
+        # 同名 method+path 重复定义时原字典推导式会静默覆盖，这里显式识别并统计真实条数
+        baseline_duplicates = sorted(key for key, count in Counter(baseline_keys).items() if count > 1)
+        target_duplicates = sorted(key for key, count in Counter(target_keys).items() if count > 1)
 
         added_keys = sorted(set(target_index) - set(baseline_index))
         removed_keys = sorted(set(baseline_index) - set(target_index))
@@ -56,13 +64,19 @@ class InterfaceDevTools:
 
         return {
             "summary": {
-                "baseline_total": len(baseline_index),
-                "target_total": len(target_index),
+                "baseline_total": len(baseline_interfaces),
+                "target_total": len(target_interfaces),
                 "added_count": len(added),
                 "removed_count": len(removed),
                 "changed_count": len(changed),
                 "unchanged_count": unchanged_count,
                 "high_risk_count": len(high_risk_changes),
+                "baseline_duplicate_count": len(baseline_duplicates),
+                "target_duplicate_count": len(target_duplicates),
+            },
+            "duplicates": {
+                "baseline": baseline_duplicates,
+                "target": target_duplicates,
             },
             "added": added,
             "removed": removed,
@@ -612,7 +626,7 @@ def normalize_path(path):
 def compile_route_pattern(path):
     normalized = normalize_path(path)
     pattern = re.escape(normalized)
-    pattern = re.sub(r"\\\{{[^/]+\\\}}", r"([^/]+)", pattern)
+    pattern = re.sub(r"\\\\{{[^/]+\\}}", r"([^/]+)", pattern)
     return re.compile("^" + pattern + "$")
 
 
@@ -1046,17 +1060,22 @@ if __name__ == "__main__":
             return self._describe_mapping_change(baseline, target)
 
         if isinstance(baseline, list):
-            if baseline and all(isinstance(item, str) for item in baseline):
-                baseline_set = set(baseline)
-                target_set = set(target)
-                added_items = sorted(target_set - baseline_set)
-                removed_items = sorted(baseline_set - target_set)
+            if all(isinstance(item, str) for item in baseline) and all(isinstance(item, str) for item in target):
+                # set 会丢失重复次数，改用 Counter 明确报告新增/删除项及其数量
+                baseline_counter = Counter(baseline)
+                target_counter = Counter(target)
+                added_counter = target_counter - baseline_counter
+                removed_counter = baseline_counter - target_counter
                 parts = []
-                if added_items:
-                    parts.append(f"新增项: {', '.join(added_items)}")
-                if removed_items:
-                    parts.append(f"删除项: {', '.join(removed_items)}")
-                return "; ".join(parts) or "数组内容发生变化", "high" if removed_items else "medium"
+                if added_counter:
+                    parts.append("新增项: " + ", ".join(f"{item}x{count}" for item, count in sorted(added_counter.items())))
+                if removed_counter:
+                    parts.append("删除项: " + ", ".join(f"{item}x{count}" for item, count in sorted(removed_counter.items())))
+                if parts:
+                    return "; ".join(parts), "high" if removed_counter else "medium"
+                if baseline != target:
+                    return "数组顺序发生变化", "low"
+                return "", "low"
 
             if len(baseline) != len(target):
                 return f"数组长度变化: {len(baseline)} -> {len(target)}", "medium"
@@ -1112,8 +1131,12 @@ if __name__ == "__main__":
             return url
 
         parsed = urlparse(url)
-        existing_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-        existing_query.update({str(key): str(value) for key, value in query_params.items()})
+        # 保留 URL 中同名多值参数（如 ?id=1&id=2），避免 dict() 静默丢值。
+        existing_query: Dict[str, list] = {}
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True):
+            existing_query.setdefault(key, []).append(value)
+        for key, value in query_params.items():
+            existing_query[str(key)] = [str(value)]
         return urlunparse(parsed._replace(query=urlencode(existing_query, doseq=True)))
 
     def _render_requests_snippet(
@@ -1217,15 +1240,16 @@ if __name__ == "__main__":
         headers: Dict[str, Any],
         body: Any,
     ) -> str:
-        parts = [f"curl -X {method} {json.dumps(full_url, ensure_ascii=False)}"]
+        # 用 shlex.quote 做 shell 层转义，避免 URL/header 中的 $(...) 与反引号被展开执行。
+        parts = [f"curl -X {shlex.quote(str(method))} {shlex.quote(full_url)}"]
         for key, value in headers.items():
-            parts.append(f"  -H {json.dumps(f'{key}: {value}', ensure_ascii=False)}")
+            parts.append(f"  -H {shlex.quote(f'{key}: {value}')}")
         if body not in (None, "", {}, []):
             if isinstance(body, (dict, list)):
                 payload = json.dumps(body, ensure_ascii=False)
             else:
                 payload = str(body)
-            parts.append(f"  -d {json.dumps(payload, ensure_ascii=False)}")
+            parts.append(f"  -d {shlex.quote(payload)}")
         return " \\\n".join(parts)
 
     def _extract_path_placeholders(self, path: str) -> set:

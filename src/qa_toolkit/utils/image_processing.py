@@ -161,8 +161,9 @@ class ImageProcessor:
         - 如果最低质量仍过大，则逐步缩小尺寸
         - 若启用 exact_padding，在结果小于目标时补齐到精确字节数
         """
-        if target_bytes <= 0:
-            raise ValueError("目标文件大小必须大于 0")
+        # 目标体积必须是正整数，否则二分/缩放边界可能死循环或产生损坏图片。
+        if isinstance(target_bytes, bool) or not isinstance(target_bytes, int) or target_bytes <= 0:
+            raise ValueError("目标文件大小必须是大于 0 的整数")
 
         target_format = output_format.upper()
         best_candidate = None
@@ -203,6 +204,7 @@ class ImageProcessor:
             result_bytes = self.pad_image_to_size(result_bytes, target_bytes)
             padding_applied = True
 
+        target_achieved = len(result_bytes) <= target_bytes
         return {
             "data": result_bytes,
             "image": best_candidate["image"],
@@ -212,6 +214,8 @@ class ImageProcessor:
             "raw_size_bytes": best_candidate["size_bytes"],
             "scale_ratio": best_candidate["scale_ratio"],
             "padding_applied": padding_applied,
+            "target_achieved": target_achieved,
+            "note": "" if target_achieved else "目标体积过小，已返回可达到的最小体积",
         }
 
     def convert_to_multiple_filesizes(self, image, targets, output_format="JPG", **kwargs):
@@ -462,8 +466,9 @@ class ImageProcessor:
 
             return result
 
-        except Exception:
-            return image
+        except Exception as exc:
+            # 水印失败必须对用户可见，不能静默返回“看起来成功”的原图。
+            raise RuntimeError(f"添加水印失败: {exc}") from exc
 
     def _get_available_font(self, font_size):
         """获取可用的字体"""
