@@ -271,6 +271,7 @@ DEFAULT_STATE = {
     "tcg_selected_focus": [],
     "tcg_result_keyword": "",
     "tcg_result_priorities": [],
+    "tcg_result_priorities_signature": [],
     "tcg_ocr_language_label": "中英混合",
     "tcg_ocr_preprocess_mode": "增强文本",
     "tcg_ali_api_key": "",
@@ -640,8 +641,11 @@ def _render_generation_results(generator: TestCaseGenerator) -> None:
     dataframe = pd.DataFrame(normalized_cases)
 
     priorities = sorted({str(item.get("优先级", "")).strip() for item in normalized_cases if item.get("优先级")})
-    if priorities and not st.session_state.tcg_result_priorities:
+    # 用例批次变化后旧优先级可能不在新选项中，直接用它作默认值会抛 StreamlitAPIException。
+    priority_signature = tuple(priorities)
+    if tuple(st.session_state.tcg_result_priorities_signature) != priority_signature:
         st.session_state.tcg_result_priorities = priorities
+        st.session_state.tcg_result_priorities_signature = list(priority_signature)
 
     metric_cols = st.columns(4)
     metric_cols[0].metric("生成用例数", len(normalized_cases))
@@ -658,16 +662,21 @@ def _render_generation_results(generator: TestCaseGenerator) -> None:
             key="tcg_result_priorities",
         )
     with filter_col2:
-        keyword = st.text_input("关键词过滤", key="tcg_result_keyword", placeholder="按用例名称、步骤或预期结果过滤")
+        keyword = st.text_input("关键词过滤", key="tcg_result_keyword", placeholder="按用例 ID、名称、前置条件、步骤或预期结果过滤")
 
     filtered_rows = []
     normalized_keyword = keyword.strip().lower()
+    if not selected_priorities:
+        render_info_feedback("请至少选择一个优先级；取消全部选择时不会展示用例。", title="筛选结果为空")
+        return
     for row in normalized_cases:
-        if selected_priorities and row.get("优先级") not in selected_priorities:
+        if row.get("优先级") not in selected_priorities:
             continue
         haystack = "\n".join(
             [
+                str(row.get("用例ID", "")),
                 str(row.get("用例名称", "")),
+                str(row.get("前置条件", "")),
                 str(row.get("测试步骤", "")),
                 str(row.get("预期结果", "")),
                 str(row.get("备注", "")),
@@ -695,11 +704,13 @@ def _render_generation_results(generator: TestCaseGenerator) -> None:
                 if item.get("备注"):
                     st.write(f"备注: {item['备注']}")
 
+    # 导出内容与当前筛选结果保持一致，避免"看到的"和"导出的"不一致。
     export_buffers = _build_export_buffers(
-        st.session_state.tcg_generated_cases,
+        filtered_rows,
         st.session_state.tcg_composed_requirement,
         generator,
     )
+    st.caption(f"当前导出 {len(filtered_rows)} / {len(normalized_cases)} 条用例（已应用筛选条件）")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     export_col1, export_col2, export_col3, export_col4 = st.columns(4)
     with export_col1:

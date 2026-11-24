@@ -9,10 +9,53 @@ from io import BytesIO
 from pathlib import Path
 import requests
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from qa_toolkit.paths import BIN_DIR
+
+
+MAX_TARGET_CASE_COUNT = 60
+REQUEST_TIMEOUT_SECONDS = 60
+OCR_TIMEOUT_SECONDS = 120
+MAX_OCR_IMAGE_PIXELS = 40_000_000
+
+REQUIRED_API_FIELDS = {
+    "ali": ("api_key",),
+    "openai": ("api_key",),
+    "anthropic": ("api_key", "model_version"),
+    "baidu": ("api_key", "secret_key"),
+    "spark": ("api_key", "model_id"),
+    "glm": ("api_key", "model_version"),
+}
+
+
+def _coerce_target_case_count(value: Any) -> int:
+    """将目标用例数安全转为 [1, 60] 的整数。"""
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError(f"目标用例数必须是整数，收到: {value!r}") from None
+    return max(1, min(count, MAX_TARGET_CASE_COUNT))
+
+
+def _safe_text(value: Any) -> str:
+    """把任意字段转成人类可读文本，避免列表/字典的 Python 字面量出现在界面。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "、".join(_safe_text(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
+def _markdown_cell(value: Any) -> str:
+    """转义 Markdown 表格单元格中的管道符与换行。"""
+    return _safe_text(value).replace("|", "\\|").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
 
 
 class TestCaseGenerator:
@@ -166,6 +209,19 @@ class TestCaseGenerator:
         if language not in self.languages:
             raise ValueError(f"不支持的语言: {language}，支持的语言: {self.languages}")
 
+        if not isinstance(api_config, dict):
+            raise ValueError("API 配置必须是字典类型")
+        missing = [
+            field for field in REQUIRED_API_FIELDS[platform]
+            if not _safe_text(api_config.get(field, "")).strip()
+        ]
+        if missing:
+            raise ValueError(f"{self.supported_platforms[platform]} 缺少必要配置: {', '.join(missing)}")
+
+        if coverage_focus is not None and not isinstance(coverage_focus, (list, tuple, set)):
+            raise ValueError("重点覆盖维度必须是列表类型")
+        normalized_focus = [_safe_text(item) for item in (coverage_focus or [])]
+
         platform_methods = {
             "ali": self._call_ali_api,
             "openai": self._call_openai_api,
@@ -181,8 +237,8 @@ class TestCaseGenerator:
             id_prefix,
             case_style,
             language,
-            max(1, target_case_count),
-            coverage_focus or []
+            _coerce_target_case_count(target_case_count),
+            normalized_focus
         )
 
     def _call_ali_api(self, requirement: str, api_config: Dict, id_prefix: str,
@@ -190,7 +246,7 @@ class TestCaseGenerator:
                       coverage_focus: List[str]) -> List[Dict]:
         """调用阿里云百炼的 OpenAI 兼容 Chat Completions 接口。"""
         headers = {
-            "Authorization": f"Bearer {api_config['api_key']}",
+            "Authorization": f"Bearer {api_config.get('api_key', '')}",
             "Content-Type": "application/json"
         }
         request_url = self._resolve_ali_chat_completion_url(api_config.get("api_base"))
@@ -236,7 +292,7 @@ class TestCaseGenerator:
                          coverage_focus: List[str]) -> List[Dict]:
         """调用OpenAI GPT API"""
         headers = {
-            "Authorization": f"Bearer {api_config['api_key']}",
+            "Authorization": f"Bearer {api_config.get('api_key', '')}",
             "Content-Type": "application/json"
         }
         request_url = self._resolve_chat_completion_url(api_config.get("api_base"))
@@ -284,11 +340,23 @@ class TestCaseGenerator:
 
         # 获取access_token
         def get_access_token(api_key, secret_key):
-            url = f"https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id={api_key}&client_secret={secret_key}"
-            response = requests.post(url)
-            return response.json().get("access_token")
+            query = urlencode({
+                "grant_type": "client_credentials",
+                "client_id": api_key,
+                "client_secret": secret_key,
+            })
+            url = f"https://aip.baidubce.com/oauth/2.0/token?{query}"
+            try:
+                response = requests.post(url, timeout=REQUEST_TIMEOUT_SECONDS)
+                response.raise_for_status()
+                token = response.json().get("access_token")
+            except Exception as exc:
+                raise RuntimeError(f"获取百度 access_token 失败: {exc}") from exc
+            if not token:
+                raise RuntimeError("获取百度 access_token 失败: 响应中没有 access_token，请检查 API Key 与 Secret Key")
+            return token
 
-        access_token = get_access_token(api_config['api_key'], api_config['secret_key'])
+        access_token = get_access_token(api_config.get('api_key', ''), api_config.get('secret_key', ''))
 
         headers = {"Content-Type": "application/json"}
         prompt = self._build_prompt(
@@ -330,7 +398,7 @@ class TestCaseGenerator:
                             coverage_focus: List[str]) -> List[Dict]:
         """调用 Anthropic Claude Messages API。"""
         headers = {
-            "x-api-key": api_config["api_key"],
+            "x-api-key": api_config.get("api_key", ""),
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         }
@@ -390,7 +458,7 @@ class TestCaseGenerator:
                 raise ValueError("讯飞星火API Key不能为空")
 
             # 创建OpenAI客户端
-            client = OpenAI(api_key=api_key, base_url=api_base)
+            client = OpenAI(api_key=api_key, base_url=api_base, timeout=REQUEST_TIMEOUT_SECONDS)
 
             # 构建提示词
             prompt = self._build_prompt(
@@ -413,7 +481,8 @@ class TestCaseGenerator:
                 messages=messages,
                 stream=False,
                 temperature=0.3,
-                max_tokens=4096
+                max_tokens=4096,
+                timeout=REQUEST_TIMEOUT_SECONDS,
                 # 移除 extra_headers 和 extra_body 参数
             )
 
@@ -513,7 +582,7 @@ class TestCaseGenerator:
         focus_items = coverage_focus or ["核心功能", "异常处理", "边界值", "数据校验"]
         focus_text_cn = "\n".join(f"- {item}: {self.coverage_focus_options.get(item, '')}" for item in focus_items)
         focus_text_en = "\n".join(f"- {item}" for item in focus_items)
-        target_case_count = max(1, target_case_count)
+        target_case_count = _coerce_target_case_count(target_case_count)
 
         # 根据语言选择提示词模板
         if language == "英文":
@@ -645,6 +714,9 @@ class TestCaseGenerator:
 
         try:
             with Image.open(BytesIO(image_bytes)) as image:
+                width, height = image.size
+                if width * height > MAX_OCR_IMAGE_PIXELS:
+                    raise RuntimeError(f"图片尺寸过大（{width}x{height}），请先压缩后再识别")
                 processed_image = self._prepare_image_for_ocr(image, preprocess_mode)
                 if self.pytesseract is not None and self.ocr_backend == "pytesseract":
                     try:
@@ -679,6 +751,7 @@ class TestCaseGenerator:
                             capture_output=True,
                             text=True,
                             check=False,
+                            timeout=OCR_TIMEOUT_SECONDS,
                         )
                         if result.returncode != 0:
                             fallback_command = [
@@ -694,6 +767,7 @@ class TestCaseGenerator:
                                 capture_output=True,
                                 text=True,
                                 check=False,
+                                timeout=OCR_TIMEOUT_SECONDS,
                             )
                             if fallback_result.returncode != 0:
                                 stderr = fallback_result.stderr or result.stderr or "未知错误"
@@ -704,6 +778,8 @@ class TestCaseGenerator:
             if not cleaned_text:
                 raise RuntimeError("未识别到有效文字，请尝试更清晰的截图或更换预处理模式。")
             return cleaned_text
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("图片 OCR 识别超时，请尝试更小的图片或原图模式。") from exc
         except Exception as e:
             raise RuntimeError(f"图片 OCR 识别失败: {str(e)}")
 
@@ -735,23 +811,18 @@ class TestCaseGenerator:
         if primary_requirement:
             sections.append(f"需求原文:\n{primary_requirement}")
 
-        if module_name.strip():
-            sections.append(f"所属模块/页面:\n{self.clean_requirement_text(module_name)}")
-
-        if ocr_text.strip():
-            sections.append(f"图片识别补充需求:\n{self.clean_requirement_text(ocr_text)}")
-
-        if business_rules.strip():
-            sections.append(f"业务规则/字段约束:\n{self.clean_requirement_text(business_rules)}")
-
-        if acceptance_criteria.strip():
-            sections.append(f"验收标准/关键成功条件:\n{self.clean_requirement_text(acceptance_criteria)}")
-
-        if out_of_scope.strip():
-            sections.append(f"本次不覆盖范围:\n{self.clean_requirement_text(out_of_scope)}")
-
-        if additional_notes.strip():
-            sections.append(f"补充说明:\n{self.clean_requirement_text(additional_notes)}")
+        optional_sections = [
+            ("module_name", "所属模块/页面", module_name),
+            ("ocr_text", "图片识别补充需求", ocr_text),
+            ("business_rules", "业务规则/字段约束", business_rules),
+            ("acceptance_criteria", "验收标准/关键成功条件", acceptance_criteria),
+            ("out_of_scope", "本次不覆盖范围", out_of_scope),
+            ("additional_notes", "补充说明", additional_notes),
+        ]
+        for _, label, value in optional_sections:
+            normalized = self.clean_requirement_text(_safe_text(value))
+            if normalized:
+                sections.append(f"{label}:\n{normalized}")
 
         return "\n\n".join(sections).strip()
 
@@ -851,7 +922,7 @@ class TestCaseGenerator:
 
     def normalize_case_record(self, case: Dict[str, Any]) -> Dict[str, Any]:
         """将中英文用例字段归一化为便于展示和导出的统一结构。"""
-        priority_value = str(case.get("优先级", case.get("Priority", case.get("优先级别", "中")))).strip()
+        priority_value = _safe_text(case.get("优先级", case.get("Priority", case.get("优先级别", "中")))).strip()
         priority_mapping = {
             "High": "高",
             "Medium": "中",
@@ -910,8 +981,12 @@ class TestCaseGenerator:
                 raise Exception(f"无法从响应中解析出JSON数据: {parse_error or '未找到数组结构'}")
 
             # 标准化测试用例格式
+            valid_cases = [item for item in test_cases if isinstance(item, dict)]
+            if not valid_cases:
+                raise Exception("API 返回的用例列表中不包含有效的对象数据")
+
             standardized_cases = []
-            for i, test_case in enumerate(test_cases):
+            for i, test_case in enumerate(valid_cases):
                 if language == "英文":
                     # 英文输出使用英文字段名
                     standardized_case = {
@@ -964,13 +1039,24 @@ class TestCaseGenerator:
 """
 
         for case in normalized_cases:
-            # 对长文本进行截断处理
-            precondition = str(case['前置条件'])[:50] + "..." if len(str(case['前置条件'])) > 50 else case['前置条件']
-            steps = str(case['测试步骤'])[:80] + "..." if len(str(case['测试步骤'])) > 80 else case['测试步骤']
-            expected = str(case['预期结果'])[:80] + "..." if len(str(case['预期结果'])) > 80 else case['预期结果']
-            case_type = case.get("测试类型", "")
+            # 对长文本进行截断处理，并转义管道符/换行避免破坏表格结构
+            precondition = _safe_text(case['前置条件'])
+            steps = _safe_text(case['测试步骤'])
+            expected = _safe_text(case['预期结果'])
+            precondition = precondition[:50] + "..." if len(precondition) > 50 else precondition
+            steps = steps[:80] + "..." if len(steps) > 80 else steps
+            expected = expected[:80] + "..." if len(expected) > 80 else expected
 
-            md_content += f"| {case['用例ID']} | {case['用例名称']} | {case['优先级']} | {case_type} | {precondition} | {steps} | {expected} |\n"
+            cells = [
+                _markdown_cell(case['用例ID']),
+                _markdown_cell(case['用例名称']),
+                _markdown_cell(case['优先级']),
+                _markdown_cell(case.get("测试类型", "")),
+                _markdown_cell(precondition),
+                _markdown_cell(steps),
+                _markdown_cell(expected),
+            ]
+            md_content += "| " + " | ".join(cells) + " |\n"
 
         md_content += f"\n## 统计信息\n- 总用例数: {len(normalized_cases)}\n- 生成时间: {time.strftime('%Y-%m-%d %H:%M:%S')}"
 
