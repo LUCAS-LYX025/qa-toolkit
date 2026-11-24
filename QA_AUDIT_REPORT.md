@@ -178,3 +178,36 @@
 - 全量 pytest：240 passed
 - e2e（含新增日志分析 3 用例）：9/9 passed
 - 探针复测：13 项实测缺陷全部转绿
+
+---
+
+## 测试用例生成器专项审计（2026-11-24，Issues #119-#132）
+
+以测试专家（功能正确性 / 边界 / 健壮性 / 超时）+ 产品工程师（可用性 / 导出一致性）双视角专项审计，实测确认 14 项问题，全部修复。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 旧优先级残留（#119） | AppTest 注入上次优先级 ['高','中']、新用例只有 '低' → `StreamlitAPIException: The default value '高' is not part of the options`，结果页整页不可用 |
+| 清空优先级过滤（#120） | 多选值设为 [] 后仍展示全部 2 条用例，与用户预期相反 |
+| 畸形用例数据（#121） | `[null, "x", 3, {...}]` → `'NoneType' object has no attribute 'get'`，整批生成作废 |
+| 百度 token（#122） | URL 直接 f-string 拼接密钥，`requests.post(url)` 无超时；密钥含 `&` 即破坏查询串 |
+| 缺 API Key（#123） | `generate_testcases(..., {})` → `KeyError: 'api_key'` |
+| 目标数入参（#124/#125） | 字符串/None → TypeError；`10**9` 原样进入提示词 |
+| compose None（#126） | 可选字段传 None → `AttributeError: 'NoneType' object has no attribute 'strip'` |
+| Markdown 导出（#127） | 用例名 `a|b`、换行文本未转义，表格列错位 |
+| 导出与筛选不一致（#128） | 过滤后仍导出全部用例 |
+| OCR 超时（#129） | tesseract-cli 两次 subprocess.run 均无 timeout |
+
+### 修复方案要点
+
+- UI：优先级 signature 变更时重置过滤值；空优先级视为无匹配；搜索域补用例 ID / 前置条件；导出跟随当前筛选并提示条数。
+- Core：新增 `_coerce_target_case_count`（钳制 [1,60]）、`_safe_text`、`_markdown_cell`；核心层统一校验必填配置；解析跳过非 dict 元素；百度 token 用 `urlencode` + 超时 + 状态检查；OCR / 讯飞客户端加超时与超大图片拦截。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_tcg.py`：14 passed
+- 全量 pytest：254 passed
+- e2e（含新增测试用例生成器 3 用例）：12/12 passed
+- 三个探针复测：全部转绿
