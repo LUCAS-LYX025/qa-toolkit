@@ -211,3 +211,39 @@
 - 全量 pytest：254 passed
 - e2e（含新增测试用例生成器 3 用例）：12/12 passed
 - 三个探针复测：全部转绿
+
+---
+
+## BI 数据分析工具专项审计（2026-11-24，Issues #134-#151）
+
+以测试专家（功能正确性 / 边界 / 健壮性 / 安全 / 性能）+ 产品工程师（可用性 / **拓展性**，不局限于当前业务）双视角专项审计，实测确认 18 项问题（含 4 项拓展性与产品优化），全部修复。PR #152 已合并，`fix/bi-audit` → `master`，合并提交 `a8c9b0d`。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| HTML 报告 XSS（#134） | 列名/单元格含 `<img src=x onerror=alert(1)>` → `to_html(escape=False)` 与 f-string 拼接原样写入报告，打开即触发 JS |
+| 快速过滤正则崩溃（#135） | 筛选值输入 `(` → `re.error: missing ), unterminated subpattern at position 0` |
+| CSV 公式注入（#136） | `=1+1`、`+SUM(A1:A2)`、`@cmd` 三处导出全部原样保留，Excel 打开可执行 |
+| 重复列名崩溃（#137） | `id,id,val,val` → `int(series.notna().sum())` 抛 `TypeError: cannot convert the series to <class 'int'>`，整页不可用 |
+| 数字时间漏识别（#138） | `20260401` / `20260401100000` 列被纯数字规则跳过，`datetime_columns=[]`，趋势分析不可用 |
+| 通过率分母（#139） | 通过/失败/空 → `33.3%（1/3）`，空结果被计入分母，期望 `50.0%（1/2）` |
+| 分号 CSV（#140） | `日期;产品;销售额` 被默认 `sep=','` 读成 1 列 2 行，`sep=None` 嗅探分支永不执行 |
+| code 关键词误匹配（#141） | 无状态码列时把 `area_code` 识别为状态码，输出错误率 0% 与地区编码分布 |
+| 字段搜索崩溃（#150） | 输入 `(` → 字段画像 `str.contains` 正则异常 |
+
+### 修复方案要点
+
+- **安全**：新增 `_html_text()` 统一转义，所有 `to_html` 改 `escape=True`，洞察卡片 / 场景标签 / 建议 / 明细表全部转义；新增 `safe_csv_bytes()`，三处 CSV 导出统一把 `= + - @` 开头的字符串降级为文本；列名重复自动规范化（含 pandas 的 `id.1` 自动改名还原）并在加载提示中说明。
+- **正确性**：通过率按有效结果行计算；`_numeric_datetime_ratio()` 支持 8/14 位数字时间且排除普通 ID；CSV 用 `csv.Sniffer` 识别 `, ; \t |` 并支持界面显式指定编码/分隔符；场景列识别按注册表规则排除 `area_code` / `zip_code` 等干扰词。
+- **健壮性**：字符串过滤默认字面量匹配，正则作为独立“正则匹配”操作符并对非法表达式兜底；`pivot_column_overflow()` 限制列维度唯一值 ≤50；`limit_correlation_columns()` 限制字段数 ≤20 且超过 12 列关闭文本标注；空数据集显示明确空态、不展开分析 Tab。
+- **性能 / 状态一致性**：`cached_analysis_context()` 与 `cached_template_payloads()` 跨 rerun 缓存；`dataset_signature()` 加入内容 SHA-256 摘要，防止同名同大小文件复用旧过滤/校验结果。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/bi_registry.py`，把**场景识别规则、模板、图表类型、聚合函数**做成可注册扩展点：`register_scenario` / `register_template` / `register_chart` / `register_aggregator`。新增业务场景或图表只需注册，不再改 `bi_analysis.py` 的 if/elif；`reset_bi_registry()` 保证测试隔离。导出报告新增“数据源”选择（原始 / 过滤结果 / JSON 展开结果），HTML 报告补齐洞察明细表。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_bi.py`：18 passed（逐条对应 issue）
+- 原 BI 测试：6 passed
+- 全量 pytest：272 passed
+- e2e（新增 `04-bi-analysis.e2e.ts`，含分号 CSV 上传、特殊字符交互、导出数据源）：4/4 passed
+- GitHub：issues #134-#151 全部关闭，仓库 open issues = 0 / closed = 148
