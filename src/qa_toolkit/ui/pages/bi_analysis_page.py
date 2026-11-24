@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict
+import hashlib
+from typing import Any, Dict, Optional
 
 import pandas as pd
 import streamlit as st
@@ -26,6 +27,18 @@ def _ensure_defaults() -> None:
             st.session_state[key] = value
 
 
+def dataset_signature(uploaded_file, sheet_name: str) -> str:
+    """签名带上内容摘要，避免同名同大小的不同文件复用旧分析结果。"""
+    digest = hashlib.sha256(uploaded_file.getvalue()).hexdigest()[:16]
+    return f"{uploaded_file.name}:{getattr(uploaded_file, 'size', 0)}:{sheet_name or ''}:{digest}"
+
+
+@st.cache_data(show_spinner=False, max_entries=3)
+def cached_analysis_context(signature: str, frame: pd.DataFrame) -> Dict[str, Any]:
+    """同一数据集的字段画像/质量诊断只计算一次，跨 rerun 复用。"""
+    return BIAnalyzer().build_analysis_context(frame)
+
+
 def _clear_loaded_dataset(analyzer: BIAnalyzer) -> None:
     st.session_state.bi_loaded_df = None
     st.session_state.bi_loaded_file_name = ""
@@ -34,16 +47,27 @@ def _clear_loaded_dataset(analyzer: BIAnalyzer) -> None:
     analyzer.reset_runtime_state()
 
 
-def _load_dataset(analyzer: BIAnalyzer, uploaded_file, sheet_name: str) -> None:
+def _load_dataset(
+    analyzer: BIAnalyzer,
+    uploaded_file,
+    sheet_name: str,
+    encoding: Optional[str] = None,
+    delimiter: Optional[str] = None,
+) -> None:
     if uploaded_file is None:
         render_warning_feedback("请先上传一个待分析的数据文件。")
         return
 
-    signature = f"{uploaded_file.name}:{getattr(uploaded_file, 'size', 0)}:{sheet_name or ''}"
+    signature = dataset_signature(uploaded_file, sheet_name)
     if signature != st.session_state.bi_loaded_signature:
         analyzer.reset_runtime_state()
 
-    df, message = analyzer.load_data(uploaded_file, sheet_name=sheet_name or None)
+    df, message = analyzer.load_data(
+        uploaded_file,
+        sheet_name=sheet_name or None,
+        encoding=encoding or None,
+        delimiter=delimiter or None,
+    )
     if df is None:
         render_error_feedback(message)
         return
@@ -109,10 +133,15 @@ def render_bi_analysis_page() -> None:
                 key="bi_selected_sheet_name",
             )
 
+    with st.expander("高级解析选项（非标准 CSV）", expanded=False):
+        st.caption("留空时自动识别编码与分隔符；分号、制表符、竖线分隔的文件也可直接上传。")
+        csv_encoding = st.text_input("文件编码", key="bi_csv_encoding", placeholder="例如 gb18030")
+        csv_delimiter = st.text_input("字段分隔符", key="bi_csv_delimiter", placeholder="例如 ; 或 \\t")
+
     action_col1, action_col2, action_col3 = st.columns([1, 1, 3])
     with action_col1:
         if primary_action_button("开始加载数据", key="bi_load_dataset"):
-            _load_dataset(analyzer, uploaded_file, selected_sheet)
+            _load_dataset(analyzer, uploaded_file, selected_sheet, csv_encoding, csv_delimiter)
     with action_col2:
         if secondary_action_button("清空数据", key="bi_clear_dataset"):
             _clear_loaded_dataset(analyzer)
@@ -131,7 +160,12 @@ def render_bi_analysis_page() -> None:
         )
         return
 
-    context = analyzer.build_analysis_context(df)
+    if df.empty:
+        st.warning("当前数据集没有数据行，分析功能暂不可用。请重新加载包含记录的文件。")
+        st.caption(f"识别到字段: {', '.join(str(column) for column in df.columns) or '无'}")
+        return
+
+    context = cached_analysis_context(st.session_state.bi_loaded_signature, df)
     _render_dataset_summary(df, context)
 
     insight_tab, preview_tab, quality_tab, validation_tab, dev_tab, analysis_tab, viz_tab = st.tabs(
