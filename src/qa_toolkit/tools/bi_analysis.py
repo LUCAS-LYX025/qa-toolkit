@@ -1,5 +1,8 @@
+import csv
+import html
 import io
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -15,16 +18,170 @@ from pandas.api.types import (
     is_string_dtype,
 )
 
+from qa_toolkit.core import bi_registry
+
+MAX_PIVOT_COLUMN_CARDINALITY = 50
+MAX_CORRELATION_COLUMNS = 20
+MAX_CORRELATION_TEXT_COLUMNS = 12
+EXCEL_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _html_text(value: Any) -> str:
+    """所有进入 HTML 报告的动态文本都必须先过这里。"""
+    return html.escape(str(value), quote=True)
+
+
+def filter_profile_by_keyword(profile: pd.DataFrame, keyword: str) -> pd.DataFrame:
+    """字段画像搜索按字面量匹配，避免用户输入被当成正则。"""
+    if not keyword or "列名" not in profile.columns:
+        return profile
+    return profile[profile["列名"].str.contains(keyword, case=False, na=False, regex=False)]
+
+
+def safe_csv_bytes(frame: pd.DataFrame) -> bytes:
+    """导出 CSV 时把公式注入载荷降级为普通文本。"""
+    sanitized = frame.copy()
+    for column in sanitized.columns:
+        series = sanitized[column]
+        if is_object_dtype(series) or is_string_dtype(series):
+            sanitized[column] = series.map(
+                lambda value: "'" + value
+                if isinstance(value, str) and value.startswith(EXCEL_FORMULA_PREFIXES)
+                else value
+            )
+    return sanitized.to_csv(index=False).encode("utf-8-sig")
+
+
+def pivot_column_overflow(df: pd.DataFrame, column: Optional[str]) -> Optional[int]:
+    """返回列维度唯一值数（超出上限时），否则返回 None。"""
+    if not column or column == "无":
+        return None
+    if column not in df.columns:
+        return None
+    unique_count = int(df[column].nunique(dropna=True))
+    return unique_count if unique_count > MAX_PIVOT_COLUMN_CARDINALITY else None
+
+
+def limit_correlation_columns(columns: List[str]) -> Tuple[List[str], bool]:
+    """限制相关性分析字段数，返回（可用字段，是否被截断）。"""
+    return columns[:MAX_CORRELATION_COLUMNS], len(columns) > MAX_CORRELATION_COLUMNS
+
+
+def duration_display_value(column: str, value: float) -> Tuple[str, str]:
+    """根据字段名推断耗时单位，返回（展示值，单位）。"""
+    name = str(column).lower()
+    if name.endswith(("ms", "_ms")) or "毫秒" in name:
+        unit = "ms"
+    elif name.endswith(("_s", "秒")) or "秒" in name or name.endswith("seconds"):
+        unit = "s"
+    elif "分钟" in name or name.endswith(("_min", "min")):
+        unit = "min"
+    else:
+        unit = ""
+    display = f"{value:.2f}{' ' + unit if unit else ''}"
+    return display, unit
+
+
+def resolve_export_frame(choice: str, state: Any, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
+    """按用户选择解析导出数据源；结果不可用时回退到原始数据。"""
+    if choice == "过滤结果":
+        candidate = state.get("bi_filtered_preview")
+        if isinstance(candidate, pd.DataFrame) and not candidate.empty:
+            return candidate, choice
+    if choice == "JSON 展开结果":
+        candidate = state.get("bi_expanded_json_df")
+        if isinstance(candidate, pd.DataFrame) and not candidate.empty:
+            return candidate, choice
+    return df, "原始数据"
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def cached_template_payloads(template_name: str) -> Tuple[bytes, bytes, str]:
+    """模板内容是静态的，缓存三种格式的字节流，避免每次 rerun 重复序列化。"""
+    frame = bi_registry.build_template_frame(template_name)
+    excel_buffer = io.BytesIO()
+    frame.to_excel(excel_buffer, index=False, engine="openpyxl")
+    return (
+        excel_buffer.getvalue(),
+        frame.to_csv(index=False).encode("utf-8-sig"),
+        frame.to_json(orient="records", force_ascii=False, indent=2),
+    )
+
+
+def default_template_frames() -> Dict[str, Tuple[str, pd.DataFrame]]:
+    """内置模板定义，供注册表延迟加载。"""
+    return {
+        "通用销售分析": (
+            "适合业务报表、经营分析和透视练习。",
+            pd.DataFrame({
+                "日期": ["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04"],
+                "产品": ["产品A", "产品B", "产品A", "产品C"],
+                "销售额": [1500.0, 2300.5, 1800.0, 2788.0],
+                "数量": [10, 15, 12, 20],
+                "地区": ["北京", "上海", "广州", "深圳"],
+                "客户评分": [4.5, 4.2, 4.7, 4.3],
+                "渠道": ["直营", "代理", "直营", "电商"],
+            }),
+        ),
+        "开发接口日志": (
+            "适合开发、自测和接口日志排障。",
+            pd.DataFrame({
+                "request_time": ["2026-04-01 10:00:01", "2026-04-01 10:00:03", "2026-04-01 10:00:05", "2026-04-01 10:00:07"],
+                "service": ["user-api", "order-api", "user-api", "payment-api"],
+                "endpoint": ["/api/v1/users", "/api/v1/orders", "/api/v1/users/{id}", "/api/v1/payments"],
+                "status_code": [200, 500, 200, 504],
+                "response_ms": [86, 1280, 93, 3012],
+                "trace_id": ["T1001", "T1002", "T1003", "T1004"],
+                "payload": [
+                    "{\"userId\": 1001, \"channel\": \"ios\"}",
+                    "{\"orderId\": 9001, \"channel\": \"web\"}",
+                    "{\"userId\": 1002, \"channel\": \"android\"}",
+                    "{\"paymentId\": 88, \"channel\": \"miniapp\"}",
+                ],
+            }),
+        ),
+        "测试执行结果": (
+            "适合测试结果汇总、缺陷分布和通过率分析。",
+            pd.DataFrame({
+                "执行日期": ["2026-04-01", "2026-04-01", "2026-04-02", "2026-04-02"],
+                "模块": ["登录", "支付", "搜索", "支付"],
+                "用例ID": ["TC-001", "TC-015", "TC-032", "TC-016"],
+                "执行结果": ["通过", "失败", "通过", "阻塞"],
+                "优先级": ["P0", "P1", "P1", "P0"],
+                "执行人": ["张三", "李四", "王五", "李四"],
+                "缺陷数": [0, 1, 0, 0],
+                "耗时分钟": [5, 12, 4, 15],
+            }),
+        ),
+        "大数据埋点事件": (
+            "适合事件日志、用户行为和分桶聚合分析。",
+            pd.DataFrame({
+                "event_time": ["2026-04-01 08:00:00", "2026-04-01 08:00:03", "2026-04-01 08:00:08", "2026-04-01 08:00:15"],
+                "event_name": ["app_start", "page_view", "click_button", "purchase"],
+                "user_id": [10001, 10001, 10002, 10003],
+                "session_id": ["S-001", "S-001", "S-002", "S-003"],
+                "platform": ["ios", "ios", "android", "web"],
+                "province": ["北京", "北京", "上海", "广东"],
+                "duration_ms": [1200, 340, 95, 2210],
+                "properties": [
+                    "{\"page\": \"home\", \"ab_bucket\": \"A\"}",
+                    "{\"page\": \"detail\", \"ab_bucket\": \"A\"}",
+                    "{\"button\": \"buy_now\", \"ab_bucket\": \"B\"}",
+                    "{\"sku\": \"SKU-100\", \"ab_bucket\": \"A\"}",
+                ],
+            }),
+        ),
+    }
+
 
 class BIAnalyzer:
     def __init__(self):
         self.supported_formats = [".csv", ".xlsx", ".xls", ".json"]
         self.template_descriptions = {
-            "通用销售分析": "适合业务报表、经营分析和透视练习。",
-            "开发接口日志": "适合开发、自测和接口日志排障。",
-            "测试执行结果": "适合测试结果汇总、缺陷分布和通过率分析。",
-            "大数据埋点事件": "适合事件日志、用户行为和分桶聚合分析。",
+            name: bi_registry.template_description(name)
+            for name in bi_registry.template_names()
         }
+        self.column_rename_notes: List[str] = []
         self.bi_state_keys = [
             "bi_validation_report",
             "bi_filtered_preview",
@@ -63,16 +220,13 @@ class BIAnalyzer:
         )
         st.caption(self.template_descriptions[selected_template])
 
-        template_df = self.get_template_dataframe(selected_template)
-        excel_buffer = io.BytesIO()
-        template_df.to_excel(excel_buffer, index=False, engine="openpyxl")
-        excel_buffer.seek(0)
+        excel_payload, csv_payload, json_payload = cached_template_payloads(selected_template)
 
         col1, col2, col3 = st.columns(3)
         with col1:
             st.download_button(
                 label="📊 Excel模板",
-                data=excel_buffer.getvalue(),
+                data=excel_payload,
                 file_name=f"{selected_template}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -80,7 +234,7 @@ class BIAnalyzer:
         with col2:
             st.download_button(
                 label="📁 CSV模板",
-                data=template_df.to_csv(index=False).encode("utf-8-sig"),
+                data=csv_payload,
                 file_name=f"{selected_template}.csv",
                 mime="text/csv",
                 use_container_width=True,
@@ -88,78 +242,15 @@ class BIAnalyzer:
         with col3:
             st.download_button(
                 label="📋 JSON模板",
-                data=template_df.to_json(orient="records", force_ascii=False, indent=2),
+                data=json_payload,
                 file_name=f"{selected_template}.json",
                 mime="application/json",
                 use_container_width=True,
             )
 
     def get_template_dataframe(self, template_name: str) -> pd.DataFrame:
-        """生成内置模板数据。"""
-        if template_name == "开发接口日志":
-            return pd.DataFrame({
-                "request_time": [
-                    "2026-04-01 10:00:01",
-                    "2026-04-01 10:00:03",
-                    "2026-04-01 10:00:05",
-                    "2026-04-01 10:00:07",
-                ],
-                "service": ["user-api", "order-api", "user-api", "payment-api"],
-                "endpoint": ["/api/v1/users", "/api/v1/orders", "/api/v1/users/{id}", "/api/v1/payments"],
-                "status_code": [200, 500, 200, 504],
-                "response_ms": [86, 1280, 93, 3012],
-                "trace_id": ["T1001", "T1002", "T1003", "T1004"],
-                "payload": [
-                    "{\"userId\": 1001, \"channel\": \"ios\"}",
-                    "{\"orderId\": 9001, \"channel\": \"web\"}",
-                    "{\"userId\": 1002, \"channel\": \"android\"}",
-                    "{\"paymentId\": 88, \"channel\": \"miniapp\"}",
-                ],
-            })
-
-        if template_name == "测试执行结果":
-            return pd.DataFrame({
-                "执行日期": ["2026-04-01", "2026-04-01", "2026-04-02", "2026-04-02"],
-                "模块": ["登录", "支付", "搜索", "支付"],
-                "用例ID": ["TC-001", "TC-015", "TC-032", "TC-016"],
-                "执行结果": ["通过", "失败", "通过", "阻塞"],
-                "优先级": ["P0", "P1", "P1", "P0"],
-                "执行人": ["张三", "李四", "王五", "李四"],
-                "缺陷数": [0, 1, 0, 0],
-                "耗时分钟": [5, 12, 4, 15],
-            })
-
-        if template_name == "大数据埋点事件":
-            return pd.DataFrame({
-                "event_time": [
-                    "2026-04-01 08:00:00",
-                    "2026-04-01 08:00:03",
-                    "2026-04-01 08:00:08",
-                    "2026-04-01 08:00:15",
-                ],
-                "event_name": ["app_start", "page_view", "click_button", "purchase"],
-                "user_id": [10001, 10001, 10002, 10003],
-                "session_id": ["S-001", "S-001", "S-002", "S-003"],
-                "platform": ["ios", "ios", "android", "web"],
-                "province": ["北京", "北京", "上海", "广东"],
-                "duration_ms": [1200, 340, 95, 2210],
-                "properties": [
-                    "{\"page\": \"home\", \"ab_bucket\": \"A\"}",
-                    "{\"page\": \"detail\", \"ab_bucket\": \"A\"}",
-                    "{\"button\": \"buy_now\", \"ab_bucket\": \"B\"}",
-                    "{\"sku\": \"SKU-100\", \"ab_bucket\": \"A\"}",
-                ],
-            })
-
-        return pd.DataFrame({
-            "日期": ["2026-04-01", "2026-04-02", "2026-04-03", "2026-04-04"],
-            "产品": ["产品A", "产品B", "产品A", "产品C"],
-            "销售额": [1500.0, 2300.5, 1800.0, 2788.0],
-            "数量": [10, 15, 12, 20],
-            "地区": ["北京", "上海", "广州", "深圳"],
-            "客户评分": [4.5, 4.2, 4.7, 4.3],
-            "渠道": ["直营", "代理", "直营", "电商"],
-        })
+        """生成模板数据，实际来源由注册表决定，方便接入新场景模板。"""
+        return bi_registry.build_template_frame(template_name)
 
     def get_excel_sheet_names(self, uploaded_file) -> List[str]:
         """读取 Excel 工作表名称。"""
@@ -169,14 +260,20 @@ class BIAnalyzer:
         except Exception:
             return []
 
-    def load_data(self, uploaded_file, sheet_name: Optional[str] = None) -> Tuple[Optional[pd.DataFrame], str]:
-        """加载数据文件。"""
+    def load_data(
+        self,
+        uploaded_file,
+        sheet_name: Optional[str] = None,
+        encoding: Optional[str] = None,
+        delimiter: Optional[str] = None,
+    ) -> Tuple[Optional[pd.DataFrame], str]:
+        """加载数据文件；编码与分隔符可由用户显式指定以适配非标数据源。"""
         file_name = uploaded_file.name.lower()
         file_bytes = uploaded_file.getvalue()
 
         try:
             if file_name.endswith(".csv"):
-                df = self._load_csv_bytes(file_bytes)
+                df = self._load_csv_bytes(file_bytes, delimiter=delimiter, encoding=encoding)
             elif file_name.endswith((".xlsx", ".xls")):
                 df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=sheet_name or 0)
             elif file_name.endswith(".json"):
@@ -185,21 +282,47 @@ class BIAnalyzer:
                 return None, "不支持的文件格式"
 
             df = self._normalize_dataframe(df)
+            rename_note = (
+                f"（已自动重命名重复列: {', '.join(self.column_rename_notes)}）"
+                if self.column_rename_notes else ""
+            )
             if df.empty:
-                return df, "数据加载成功，但当前文件没有可分析的行记录"
-            return df, "数据加载成功"
+                return df, f"数据加载成功，但当前文件没有可分析的行记录{rename_note}"
+            return df, f"数据加载成功{rename_note}"
         except Exception as exc:
             return None, f"数据加载失败: {exc}"
 
-    def _load_csv_bytes(self, file_bytes: bytes) -> pd.DataFrame:
+    def _detect_csv_delimiter(self, file_bytes: bytes) -> Optional[str]:
+        """从样本嗅探常见分隔符；首行不存在该分隔符时视为不可靠。"""
+        sample = file_bytes[:65536].decode("utf-8", errors="ignore")
+        first_line = sample.splitlines()[0] if sample.splitlines() else ""
+        try:
+            delimiter = csv.Sniffer().sniff(sample, delimiters=",;\t|").delimiter
+        except (csv.Error, ValueError):
+            return None
+        return delimiter if delimiter in first_line else None
+
+    def _load_csv_bytes(
+        self,
+        file_bytes: bytes,
+        delimiter: Optional[str] = None,
+        encoding: Optional[str] = None,
+    ) -> pd.DataFrame:
         last_error: Optional[Exception] = None
-        for encoding in ["utf-8", "utf-8-sig", "gb18030", "gbk"]:
-            for read_kwargs in [
-                {"encoding": encoding},
-                {"encoding": encoding, "sep": None, "engine": "python"},
-            ]:
+        detected = self._detect_csv_delimiter(file_bytes) if not delimiter else delimiter
+        encodings = [encoding] if encoding else ["utf-8", "utf-8-sig", "gb18030", "gbk"]
+        read_variants = [
+            {"sep": detected or ","},
+            {"sep": None, "engine": "python"},
+        ]
+        for current_encoding in encodings:
+            for read_kwargs in read_variants:
                 try:
-                    return pd.read_csv(io.BytesIO(file_bytes), **read_kwargs)
+                    return pd.read_csv(
+                        io.BytesIO(file_bytes),
+                        encoding=current_encoding,
+                        **read_kwargs,
+                    )
                 except Exception as exc:
                     last_error = exc
         raise last_error or ValueError("CSV 读取失败")
@@ -215,7 +338,32 @@ class BIAnalyzer:
 
     def _normalize_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         normalized = df.copy()
-        normalized.columns = [str(column).strip() for column in normalized.columns]
+        original_columns = [str(column).strip() for column in normalized.columns]
+        renamed: List[str] = []
+        # pandas 读 CSV 时会把重复表头自动改成 id.1 / id.2，先还原成可识别的重复名。
+        restored_columns: List[str] = []
+        for column in original_columns:
+            match = re.fullmatch(r"(.+)\.(\d+)", column)
+            if match and match.group(1) in original_columns:
+                new_name = f"{match.group(1)}__{int(match.group(2)) + 1}"
+                restored_columns.append(new_name)
+                renamed.append(f"{column} → {new_name}")
+            else:
+                restored_columns.append(column)
+
+        seen: Dict[str, int] = {}
+        final_columns: List[str] = []
+        for column in restored_columns:
+            if column in seen:
+                seen[column] += 1
+                new_name = f"{column}__{seen[column] + 1}"
+                final_columns.append(new_name)
+                renamed.append(f"{column} → {new_name}")
+            else:
+                seen[column] = 1
+                final_columns.append(column)
+        normalized.columns = final_columns
+        self.column_rename_notes = renamed
         normalized = normalized.replace(r"^\s*$", np.nan, regex=True)
         return normalized
 
@@ -267,6 +415,8 @@ class BIAnalyzer:
 
             sample = non_null.astype(str).head(200)
             if sample.str.fullmatch(r"\d+").mean() > 0.9:
+                if self._numeric_datetime_ratio(sample) >= threshold:
+                    columns.append(column)
                 continue
 
             parsed = self.safe_to_datetime(sample)
@@ -274,6 +424,24 @@ class BIAnalyzer:
             if success_ratio >= threshold:
                 columns.append(column)
         return columns
+
+    def _numeric_datetime_ratio(self, sample: pd.Series) -> float:
+        """识别 YYYYMMDD / YYYYMMDDHHMMSS 这类纯数字时间，排除普通 ID 列。"""
+        if sample.empty:
+            return 0.0
+        candidates = sample[sample.str.fullmatch(r"\d{8}|\d{14}")]
+        if candidates.empty:
+            return 0.0
+
+        def parse(value: str):
+            try:
+                fmt = "%Y%m%d%H%M%S" if len(value) == 14 else "%Y%m%d"
+                return pd.to_datetime(value, format=fmt)
+            except (ValueError, TypeError):
+                return pd.NaT
+
+        parsed = candidates.map(parse)
+        return float(parsed.notna().sum() / len(sample))
 
     def safe_to_datetime(self, series: pd.Series) -> pd.Series:
         """统一处理 mixed datetime 字符串，避免推断格式时重复告警。"""
@@ -330,24 +498,43 @@ class BIAnalyzer:
         df: pd.DataFrame,
         keywords: List[str],
         numeric_only: bool = False,
+        excluded_keywords: Optional[List[str]] = None,
     ) -> Optional[str]:
         normalized_keywords = [self.normalize_lookup_name(keyword) for keyword in keywords]
+        excluded = [self.normalize_lookup_name(keyword) for keyword in (excluded_keywords or [])]
+
+        def eligible(column: Any) -> bool:
+            normalized = self.normalize_lookup_name(column)
+            if any(word in normalized for word in excluded):
+                return False
+            return not numeric_only or is_numeric_dtype(df[column])
 
         for column in df.columns:
-            if numeric_only and not is_numeric_dtype(df[column]):
-                continue
-            normalized_column = self.normalize_lookup_name(column)
-            if normalized_column in normalized_keywords:
+            if eligible(column) and self.normalize_lookup_name(column) in normalized_keywords:
                 return column
 
         for column in df.columns:
-            if numeric_only and not is_numeric_dtype(df[column]):
-                continue
             normalized_column = self.normalize_lookup_name(column)
-            if any(keyword in normalized_column for keyword in normalized_keywords):
+            if eligible(column) and any(keyword in normalized_column for keyword in normalized_keywords):
                 return column
 
         return None
+
+    def _column_for_scenario(
+        self,
+        df: pd.DataFrame,
+        scenario_name: str,
+        fallback_keywords: List[str],
+        numeric_only: bool = False,
+    ) -> Optional[str]:
+        """场景列识别走注册表；没有对应规则时回退到内置关键词。"""
+        rule = next(
+            (item for item in bi_registry.scenario_rules() if item.name == scenario_name),
+            None,
+        )
+        if rule is None:
+            return self.find_first_matching_column(df, fallback_keywords, numeric_only=numeric_only)
+        return bi_registry.find_registered_columns(df, rule, self.normalize_lookup_name)
 
     def _recommend_column_role(
         self,
@@ -496,7 +683,9 @@ class BIAnalyzer:
         datetime_columns = context["datetime_columns"]
         quality_report = context["quality_report"]
 
-        result_column = self.find_first_matching_column(df, ["执行结果", "结果", "result", "case_status", "status_text"])
+        result_column = self._column_for_scenario(
+            df, "测试执行", ["执行结果", "结果", "result", "case_status", "status_text"]
+        )
         defect_column = self.find_first_matching_column(df, ["缺陷数", "bug数", "缺陷", "bug_count", "defect_count"], numeric_only=True)
         module_column = self.find_first_matching_column(df, ["模块", "module", "feature", "业务线", "project"])
         duration_column = self.find_first_matching_column(
@@ -507,12 +696,14 @@ class BIAnalyzer:
 
         if result_column:
             scenarios.append("测试执行")
-            result_series = df[result_column].astype(str).str.strip().str.lower()
+            raw_results = df[result_column]
+            valid_mask = raw_results.notna() & (raw_results.astype(str).str.strip() != "")
+            result_series = raw_results[valid_mask].astype(str).str.strip().str.lower()
             pass_mask = result_series.str.contains("通过|pass|passed|success|成功", regex=True, na=False)
             fail_mask = result_series.str.contains("失败|fail|failed|error|阻塞|blocked", regex=True, na=False)
             pass_count = int(pass_mask.sum())
             fail_count = int(fail_mask.sum())
-            total_count = max(int(result_series.notna().sum()), 1)
+            total_count = max(len(result_series), 1)
             cards.append({
                 "label": "通过率",
                 "value": f"{(pass_count / total_count) * 100:.1f}%",
@@ -527,7 +718,12 @@ class BIAnalyzer:
                 highlights.append("检测到失败或阻塞记录，建议在测试校验页继续筛选失败模块和重复主键。")
             if module_column:
                 summary_df = (
-                    pd.DataFrame({"模块": df[module_column], "结果": result_series, "通过": pass_mask, "失败": fail_mask})
+                    pd.DataFrame({
+                        "模块": df.loc[result_series.index, module_column],
+                        "结果": result_series,
+                        "通过": pass_mask,
+                        "失败": fail_mask,
+                    })
                     .groupby("模块", dropna=False)
                     .agg(执行总数=("结果", "count"), 通过数=("通过", "sum"), 失败数=("失败", "sum"))
                     .reset_index()
@@ -547,7 +743,9 @@ class BIAnalyzer:
                 "detail": defect_column,
             })
 
-        status_column = self.find_first_matching_column(df, ["status_code", "http_status", "状态码", "响应码", "code"])
+        status_column = self._column_for_scenario(
+            df, "开发日志", ["status_code", "http_status", "状态码", "响应码", "code"]
+        )
         endpoint_column = self.find_first_matching_column(df, ["endpoint", "path", "uri", "api", "接口"])
         service_column = self.find_first_matching_column(df, ["service", "服务", "应用", "app", "system"])
 
@@ -585,15 +783,21 @@ class BIAnalyzer:
                     "durationms",
                 }:
                     scenarios.append("开发日志")
+                p95_value, duration_unit = duration_display_value(
+                    duration_column, float(duration_series.quantile(0.95))
+                )
+                p99_value, _ = duration_display_value(
+                    duration_column, float(duration_series.quantile(0.99))
+                )
                 cards.append({
                     "label": "P95",
-                    "value": f"{duration_series.quantile(0.95):.2f}",
-                    "detail": duration_column,
+                    "value": p95_value,
+                    "detail": f"{duration_column}（{duration_unit or '原单位'}）",
                 })
                 cards.append({
                     "label": "P99",
-                    "value": f"{duration_series.quantile(0.99):.2f}",
-                    "detail": duration_column,
+                    "value": p99_value,
+                    "detail": f"{duration_column}（{duration_unit or '原单位'}）",
                 })
 
                 group_column = endpoint_column or service_column
@@ -608,7 +812,9 @@ class BIAnalyzer:
                     slow_df.columns = [group_column, "样本数", "平均耗时", "最大耗时"]
                     tables.append({"title": "慢接口 / 服务 Top 10", "data": slow_df})
 
-        event_column = self.find_first_matching_column(df, ["event_name", "event", "事件", "action", "埋点"])
+        event_column = self._column_for_scenario(
+            df, "埋点事件", ["event_name", "event", "事件", "action", "埋点"]
+        )
         user_column = self.find_first_matching_column(df, ["user_id", "uid", "member_id", "用户id", "userid"])
         session_column = self.find_first_matching_column(df, ["session_id", "session", "会话id", "sessionid"])
         platform_column = self.find_first_matching_column(df, ["platform", "渠道", "channel", "os", "端"])
@@ -660,10 +866,8 @@ class BIAnalyzer:
                 )
                 tables.append({"title": "平台事件分布", "data": platform_distribution})
 
-        amount_column = self.find_first_matching_column(
-            df,
-            ["销售额", "金额", "gmv", "revenue", "amount", "total_amount"],
-            numeric_only=True,
+        amount_column = self._column_for_scenario(
+            df, "业务分析", ["销售额", "金额", "gmv", "revenue", "amount", "total_amount"], numeric_only=True
         )
         if amount_column:
             scenarios.append("业务分析")
@@ -774,8 +978,7 @@ class BIAnalyzer:
         with st.expander("字段画像", expanded=False):
             profile_df = context["column_profile"]
             display_profile = profile_df
-            if column_keyword:
-                display_profile = profile_df[profile_df["列名"].str.contains(column_keyword, case=False, na=False)]
+            display_profile = filter_profile_by_keyword(profile_df, column_keyword)
             st.dataframe(display_profile, use_container_width=True, hide_index=True)
 
     def sample_dataframe(self, df: pd.DataFrame, preview_mode: str, preview_rows: int) -> pd.DataFrame:
@@ -1080,7 +1283,7 @@ class BIAnalyzer:
                 st.dataframe(filtered_df.head(preview_rows), use_container_width=True, hide_index=True)
                 st.download_button(
                     label="下载过滤结果 CSV",
-                    data=filtered_df.to_csv(index=False).encode("utf-8-sig"),
+                    data=safe_csv_bytes(filtered_df),
                     file_name="bi_filtered_result.csv",
                     mime="text/csv",
                     use_container_width=True,
@@ -1112,7 +1315,7 @@ class BIAnalyzer:
                     st.dataframe(expanded_df, use_container_width=True, hide_index=True)
                     st.download_button(
                         label="下载展开结果 CSV",
-                        data=expanded_df.to_csv(index=False).encode("utf-8-sig"),
+                        data=safe_csv_bytes(expanded_df),
                         file_name="bi_expanded_json.csv",
                         mime="text/csv",
                         use_container_width=True,
@@ -1122,7 +1325,7 @@ class BIAnalyzer:
     def get_filter_operators(self, series: pd.Series) -> List[str]:
         if is_numeric_dtype(series):
             return ["等于", "大于", "大于等于", "小于", "小于等于", "为空", "不为空"]
-        return ["包含", "等于", "开头为", "结尾为", "为空", "不为空"]
+        return ["包含", "等于", "开头为", "结尾为", "正则匹配", "为空", "不为空"]
 
     def apply_quick_filter(
         self,
@@ -1152,8 +1355,10 @@ class BIAnalyzer:
                 mask = numeric_series >= numeric_value
             elif operator == "小于":
                 mask = numeric_series < numeric_value
-            else:
+            elif operator == "小于等于":
                 mask = numeric_series <= numeric_value
+            else:
+                return df.iloc[0:0]
             return df[mask.fillna(False)]
 
         string_series = series.astype(str)
@@ -1163,8 +1368,13 @@ class BIAnalyzer:
             mask = string_series.str.startswith(raw_value, na=False)
         elif operator == "结尾为":
             mask = string_series.str.endswith(raw_value, na=False)
+        elif operator == "正则匹配":
+            try:
+                mask = string_series.str.contains(raw_value, case=False, na=False, regex=True)
+            except re.error:
+                return df.iloc[0:0]
         else:
-            mask = string_series.str.contains(raw_value, case=False, na=False)
+            mask = string_series.str.contains(raw_value, case=False, na=False, regex=False)
         return df[mask.fillna(False)]
 
     def expand_json_column(
@@ -1285,6 +1495,11 @@ class BIAnalyzer:
         if len(selected_columns) < 2:
             st.info("请至少选择 2 个字段。")
             return
+        selected_columns, truncated = limit_correlation_columns(selected_columns)
+        if truncated:
+            st.warning(
+                f"相关性分析最多展示 {MAX_CORRELATION_COLUMNS} 个字段，已截取前 {MAX_CORRELATION_COLUMNS} 个。"
+            )
 
         corr_matrix = df[selected_columns].corr(method=corr_method)
         fig = px.imshow(
@@ -1292,7 +1507,7 @@ class BIAnalyzer:
             title=f"相关性热力图 ({corr_method})",
             aspect="auto",
             color_continuous_scale="RdBu_r",
-            text_auto=".2f",
+            text_auto=".2f" if len(selected_columns) <= MAX_CORRELATION_TEXT_COLUMNS else False,
         )
         st.plotly_chart(fig, use_container_width=True)
         st.dataframe(corr_matrix, use_container_width=True)
@@ -1328,10 +1543,18 @@ class BIAnalyzer:
                 key="bi_pivot_value",
             )
 
-        agg_func = st.selectbox("聚合函数", ["sum", "mean", "count", "min", "max"], key="bi_pivot_agg")
+        agg_func = st.selectbox("聚合函数", bi_registry.aggregator_names(), key="bi_pivot_agg")
 
         if not row_dimensions:
             st.info("请至少选择一个行维度。")
+            return
+
+        overflow = pivot_column_overflow(df, column_dimension)
+        if overflow is not None:
+            st.warning(
+                f"列维度「{column_dimension}」有 {overflow:,} 个唯一值，超过 "
+                f"{MAX_PIVOT_COLUMN_CARDINALITY} 个上限。请先分桶或改用低基数字段。"
+            )
             return
 
         try:
@@ -1342,7 +1565,7 @@ class BIAnalyzer:
                 metric_name = "__record_count__"
                 effective_agg = "sum"
             else:
-                effective_agg = agg_func
+                effective_agg = bi_registry.resolve_aggregator(agg_func)
 
             pivot_df = pd.pivot_table(
                 working_df,
@@ -1395,7 +1618,7 @@ class BIAnalyzer:
         with col3:
             freq = st.selectbox("聚合频率", ["D", "W", "M", "Q", "Y"], key="bi_ts_freq")
         with col4:
-            agg_func = st.selectbox("聚合方式", ["sum", "mean", "count", "max", "min"], key="bi_ts_agg")
+            agg_func = st.selectbox("聚合方式", bi_registry.aggregator_names(), key="bi_ts_agg")
 
         split_options = ["无"] + [column for column in dimension_columns if column != date_column]
         split_by = st.selectbox("分组维度", split_options, key="bi_ts_split")
@@ -1414,7 +1637,7 @@ class BIAnalyzer:
                 effective_agg = "sum"
             else:
                 value_name = value_column
-                effective_agg = agg_func
+                effective_agg = bi_registry.resolve_aggregator(agg_func)
 
             if split_by == "无":
                 resampled = (
@@ -1470,7 +1693,7 @@ class BIAnalyzer:
 
         chart_type = st.selectbox(
             "图表类型",
-            ["柱状图", "折线图", "散点图", "箱线图", "面积图", "饼图"],
+            bi_registry.chart_names(),
             key="bi_chart_type",
         )
         col1, col2, col3, col4 = st.columns(4)
@@ -1481,7 +1704,7 @@ class BIAnalyzer:
         with col3:
             color_axis = st.selectbox("颜色分组", ["无"] + dimension_columns, key="bi_chart_color")
         with col4:
-            agg_func = st.selectbox("聚合方式", ["sum", "mean", "count", "max", "min"], key="bi_chart_agg")
+            agg_func = st.selectbox("聚合方式", bi_registry.aggregator_names(), key="bi_chart_agg")
 
         top_n = st.slider("展示 Top N", 3, 50, 15, key="bi_chart_top_n")
 
@@ -1496,20 +1719,18 @@ class BIAnalyzer:
                 chart_type=chart_type,
             )
 
-            if chart_type == "柱状图":
-                fig = px.bar(chart_df, x=plot_x, y=plot_y, color=color_axis if color_axis != "无" else None)
-            elif chart_type == "折线图":
-                fig = px.line(chart_df, x=plot_x, y=plot_y, color=color_axis if color_axis != "无" else None, markers=True)
-            elif chart_type == "散点图":
-                fig = px.scatter(chart_df, x=plot_x, y=plot_y, color=color_axis if color_axis != "无" else None)
-            elif chart_type == "箱线图":
-                fig = px.box(chart_df, x=plot_x, y=plot_y, color=color_axis if color_axis != "无" else None)
-            elif chart_type == "面积图":
-                fig = px.area(chart_df, x=plot_x, y=plot_y, color=color_axis if color_axis != "无" else None)
-            else:
-                fig = px.pie(chart_df, names=plot_x, values=plot_y, color=color_axis if color_axis != "无" else None)
+            fig = bi_registry.build_chart(
+                chart_type,
+                chart_df,
+                x=plot_x,
+                y=plot_y,
+                color=None if color_axis == "无" else color_axis,
+            )
 
-            fig.update_layout(title=f"{plot_y} 按 {plot_x} 分析")
+            display_y = "记录数" if plot_y == "__record_count__" else plot_y
+            fig.update_layout(title=f"{display_y} 按 {plot_x} 分析")
+            if plot_y == "__record_count__":
+                fig.update_yaxes(title_text="记录数")
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(chart_df.head(100), use_container_width=True, hide_index=True)
         except Exception as exc:
@@ -1532,7 +1753,7 @@ class BIAnalyzer:
             effective_agg = "sum"
         else:
             y_name = y_axis
-            effective_agg = agg_func
+            effective_agg = bi_registry.resolve_aggregator(agg_func)
 
         if chart_type == "散点图" and y_axis != "记录数":
             sampled_df = working_df[[x_axis, y_name] + ([color_axis] if color_axis else [])].dropna().head(5000)
@@ -1549,26 +1770,35 @@ class BIAnalyzer:
         return chart_df, x_axis, y_name
 
     def export_report(self, df: pd.DataFrame, context: Dict[str, Any]):
-        """导出分析报告。"""
+        """导出分析报告，数据源可跟随当前过滤 / JSON 展开结果。"""
         st.subheader("💾 导出分析报告")
         report_type = st.selectbox("报告格式", ["Excel", "CSV", "HTML"], key="bi_report_type")
+        source_choice = st.selectbox(
+            "导出数据源",
+            ["原始数据", "过滤结果", "JSON 展开结果"],
+            key="bi_report_source",
+        )
 
         if st.button("生成报告", key="bi_generate_report"):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            insights = self.build_scenario_insights(df, context)
+            source_df, resolved_choice = resolve_export_frame(source_choice, st.session_state, df)
+            if resolved_choice != source_choice:
+                st.caption(f"当前没有可导出的{source_choice}，已回退到原始数据。")
+            source_context = context if source_df is df else self.build_analysis_context(source_df)
+            insights = self.build_scenario_insights(source_df, source_context)
             if report_type == "Excel":
                 output = io.BytesIO()
                 with pd.ExcelWriter(output, engine="openpyxl") as writer:
-                    df.to_excel(writer, sheet_name="原始数据", index=False)
-                    context["column_profile"].to_excel(writer, sheet_name="字段画像", index=False)
-                    quality_issues = context["quality_report"]["issues"]
+                    source_df.to_excel(writer, sheet_name="原始数据", index=False)
+                    source_context["column_profile"].to_excel(writer, sheet_name="字段画像", index=False)
+                    quality_issues = source_context["quality_report"]["issues"]
                     if not quality_issues.empty:
                         quality_issues.to_excel(writer, sheet_name="质量问题", index=False)
-                    numeric_columns = context["numeric_columns"]
+                    numeric_columns = source_context["numeric_columns"]
                     if numeric_columns:
-                        df[numeric_columns].describe().to_excel(writer, sheet_name="统计信息")
+                        source_df[numeric_columns].describe().to_excel(writer, sheet_name="统计信息")
                         if len(numeric_columns) >= 2:
-                            df[numeric_columns].corr().to_excel(writer, sheet_name="相关性分析")
+                            source_df[numeric_columns].corr().to_excel(writer, sheet_name="相关性分析")
                     if insights["cards"]:
                         pd.DataFrame(insights["cards"]).to_excel(writer, sheet_name="场景洞察", index=False)
                     if insights["tables"]:
@@ -1590,13 +1820,13 @@ class BIAnalyzer:
             elif report_type == "CSV":
                 st.download_button(
                     label="📥 下载 CSV 数据",
-                    data=df.to_csv(index=False).encode("utf-8-sig"),
+                    data=safe_csv_bytes(source_df),
                     file_name=f"BI原始数据_{timestamp}.csv",
                     mime="text/csv",
                     use_container_width=True,
                 )
             else:
-                html_report = self.generate_html_report(df, context, insights=insights)
+                html_report = self.generate_html_report(source_df, source_context, insights=insights)
                 st.download_button(
                     label="📥 下载 HTML 报告",
                     data=html_report,
@@ -1618,16 +1848,23 @@ class BIAnalyzer:
         profile_df = context["column_profile"].head(20)
         issues_df = context["quality_report"]["issues"].head(20)
 
-        profile_html = profile_df.to_html(index=False, escape=False) if not profile_df.empty else "<p>暂无字段画像。</p>"
-        issues_html = issues_df.to_html(index=False, escape=False) if not issues_df.empty else "<p>暂无明显质量问题。</p>"
+        profile_html = profile_df.to_html(index=False, escape=True) if not profile_df.empty else "<p>暂无字段画像。</p>"
+        issues_html = issues_df.to_html(index=False, escape=True) if not issues_df.empty else "<p>暂无明显质量问题。</p>"
         cards_html = "".join(
-            f"<div class='metric'><div class='label'>{card['label']}</div><div class='value'>{card['value']}</div><div class='detail'>{card['detail']}</div></div>"
+            f"<div class='metric'><div class='label'>{_html_text(card['label'])}</div>"
+            f"<div class='value'>{_html_text(card['value'])}</div>"
+            f"<div class='detail'>{_html_text(card['detail'])}</div></div>"
             for card in insights["cards"]
         ) or "<p>暂无场景洞察。</p>"
-        scenario_tags = " / ".join(insights["scenarios"]) if insights["scenarios"] else "未识别"
+        scenario_tags = " / ".join(_html_text(tag) for tag in insights["scenarios"]) if insights["scenarios"] else "未识别"
         highlights_html = "".join(
-            f"<li>{highlight}</li>" for highlight in insights["highlights"]
+            f"<li>{_html_text(highlight)}</li>" for highlight in insights["highlights"]
         ) or "<li>暂无额外建议。</li>"
+        tables_html = "".join(
+            f"<h3>{_html_text(table['title'])}</h3>"
+            + table["data"].head(20).to_html(index=False, escape=True)
+            for table in insights.get("tables", [])
+        ) or "<p>暂无洞察明细。</p>"
 
         return f"""
         <!DOCTYPE html>
@@ -1688,8 +1925,13 @@ class BIAnalyzer:
                 </div>
 
                 <div class="section">
+                    <h2>洞察明细</h2>
+                    {tables_html}
+                </div>
+
+                <div class="section">
                     <h2>原始数据预览（前 10 行）</h2>
-                    {df.head(10).to_html(index=False, escape=False)}
+                    {df.head(10).to_html(index=False, escape=True)}
                 </div>
             </div>
         </body>
