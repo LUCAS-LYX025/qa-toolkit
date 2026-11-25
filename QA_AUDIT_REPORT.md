@@ -562,7 +562,7 @@
 - 对象：`src/qa_toolkit/core/api_performance_tool.py`（PerformanceTestTool 全量执行引擎：计划构建 / 虚拟用户 / 采样 / 统计 / HTML 报告 / CSV 参数化 / URL 构造）+ `src/qa_toolkit/ui/pages/api_performance_page.py`（JMeter 风格页面：Test Plan 树 / HTTP Request Defaults / Thread Group / CSV / Transaction / Assertion / Timer / Listener Dock / 下载中心）。
 - 方式：候选问题写成 `.qa-audit/perf_repro.py` 实测坐实（fake clock 跑 duration 模式、mock upload、构造畸形 URL、CSV 公式注入、HTML 注入、worker 抛异常），确认 20 项后提交 GitHub Issues #312-#331；新增 e2e 回归 `13-api-performance.e2e.ts` 时又暴露 1 项边界缺陷，追加提交 #332，共 **21 项**。
 - 视角：测试专家关注正确性（统计口径、并发异常、CSV 语义、URL 构造）、安全性（SSRF、注入、上传清理）、边界与大数据；产品工程师关注**拓展性、易用性**（注册式扩展点、状态反馈、文字摘要、口径说明），不局限于当前业务。
-- 修复分支 `fix/api-performance-audit`，PR 合并至 `master`；e2e 全套 52/52 通过。
+- 修复分支 `fix/api-performance-audit`（commit `22e37b2`），PR #333 已合并至 `master`（merge commit `017f2d6`）；e2e 全套 52/52 通过。
 
 ### 关键实测证据（修复前）
 
