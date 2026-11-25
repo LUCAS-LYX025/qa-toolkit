@@ -3084,21 +3084,21 @@ PRESET_SIZES = {
 
 # 在文件开头添加预定义模式和语言模板
 PREDEFINED_PATTERNS = {
-    "中文字符": r"[\u4e00-\u9fa5]",
+    "中文字符": r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\U00020000-\U000323af]",
     "双字节字符": r"[^\x00-\xff]",
     "空白行": r"\n\s*\r",
     "Email地址": r"\w[-\w.+]*@([A-Za-z0-9][-A-Za-z0-9]+\.)+[A-Za-z]{2,14}",
-    "网址URL": r"[a-zA-z]+://[^\s]*",
+    "网址URL": r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s]*",
     "手机(国内)": r"0?(13|14|15|17|18|19)[0-9]{9}",
     "固话号码(国内)": r"[0-9-()（）]{7,18}",
     "负浮点数": r"-([1-9]\d*\.\d*|0\.\d*[1-9]\d*)",
-    "匹配整数": r"-?[1-9]\d*",
+    "匹配整数": r"-?(?:0|[1-9]\d*)",
     "正浮点数": r"[1-9]\d*\.\d*|0\.\d*[1-9]\d*",
     "腾讯QQ号": r"[1-9]([0-9]{5,11})",
     "邮政编码": r"\d{6}",
     "IP地址": r"(25[0-5]|2[0-4]\d|[0-1]\d{2}|[1-9]?\d)\.(25[0-5]|2[0-4]\d|[0-1]\d{2}|[1-9]?\d)\.(25[0-5]|2[0-4]\d|[0-1]\d{2}|[1-9]?\d)\.(25[0-5]|2[0-4]\d|[0-1]\d{2}|[1-9]?\d)",
-    "身份证号": r"\d{17}[\d|x]|\d{15}",
-    "格式日期": r"\d{4}(-|/|.)\d{1,2}\1\d{1,2}",
+    "身份证号": r"(?:\d{17}[\dXx]|\d{15})(?![\dXx|])",
+    "格式日期": r"\d{4}([-/.])\d{1,2}\1\d{1,2}",
     "正整数": r"[1-9]\d*",
     "负整数": r"-[1-9]\d*",
     "用户名": r"[A-Za-z0-9_\-\u4e00-\u9fa5]+"
@@ -3106,45 +3106,59 @@ PREDEFINED_PATTERNS = {
 
 LANGUAGE_TEMPLATES = {
     "JavaScript": {
-        "match": "const regex = /{pattern}/{flags};\nconst matches = text.match(regex);",
+        "match_all": "const regex = /{pattern}/{flags};\nconst matches = text.match(regex) || [];",
+        "match_first": "const regex = /{pattern}/{flags};\nconst result = regex.exec(text);",
+        "match": "const regex = /{pattern}/{flags};\nconst matches = text.match(regex) || [];",
         "test": "const regex = /{pattern}/{flags};\nconst result = regex.test(text);",
-        "replace": "const regex = /{pattern}/{flags};\nconst result = text.replace(regex, '{replacement}');",
+        "replace": "const regex = /{pattern}/{flags};\nconst result = text.replace(regex, {replacement});",
         "flags": {"g": "g", "i": "i", "m": "m"}
     },
     "Python": {
-        "match": "import re\npattern = r'{pattern}'\nmatches = re.findall(pattern, text, flags={flags_value})",
-        "test": "import re\npattern = r'{pattern}'\nresult = re.search(pattern, text, flags={flags_value})",
-        "replace": "import re\npattern = r'{pattern}'\nresult = re.sub(pattern, '{replacement}', text, flags={flags_value})",
+        "match_all": "import re\npattern = {pattern}\nmatches = re.findall(pattern, text, flags={flags_value})",
+        "match_first": "import re\npattern = {pattern}\nresult = re.search(pattern, text, flags={flags_value})",
+        "match": "import re\npattern = {pattern}\nmatches = re.findall(pattern, text, flags={flags_value})",
+        "test": "import re\npattern = {pattern}\nresult = re.search(pattern, text, flags={flags_value})",
+        "replace": "import re\npattern = {pattern}\nresult = re.sub(pattern, {replacement}, text, flags={flags_value})",
         "flags": {"re.IGNORECASE": "i", "re.MULTILINE": "m", "re.DOTALL": "s"}
     },
     "PHP": {
+        "match_all": "$pattern = '/{pattern}/{flags}';\npreg_match_all($pattern, $text, $matches);",
+        "match_first": "$pattern = '/{pattern}/{flags}';\n$result = preg_match($pattern, $text, $matches);",
         "match": "$pattern = '/{pattern}/{flags}';\npreg_match_all($pattern, $text, $matches);",
         "test": "$pattern = '/{pattern}/{flags}';\n$result = preg_match($pattern, $text);",
         "replace": "$pattern = '/{pattern}/{flags}';\n$result = preg_replace($pattern, '{replacement}', $text);",
         "flags": {"i": "i", "m": "m", "s": "s"}
     },
     "Java": {
-        "match": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nwhile(matcher.find()) {{\n    // 处理匹配\n}}",
+        "match_all": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nwhile (matcher.find()) {{\n    // 处理匹配\n}}",
+        "match_first": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nboolean found = matcher.find();",
+        "match": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nwhile (matcher.find()) {{\n    // 处理匹配\n}}",
         "test": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nboolean result = matcher.find();",
         "replace": "import java.util.regex.*;\nPattern pattern = Pattern.compile(\"{pattern}\", {flags});\nMatcher matcher = pattern.matcher(text);\nString result = matcher.replaceAll(\"{replacement}\");",
         "flags": {"Pattern.CASE_INSENSITIVE": "i", "Pattern.MULTILINE": "m", "Pattern.DOTALL": "s"}
     },
     "Go": {
+        "match_all": "import \"regexp\"\npattern := regexp.MustCompile(`{pattern}`)\nmatches := pattern.FindAllString(text, -1)",
+        "match_first": "import \"regexp\"\npattern := regexp.MustCompile(`{pattern}`)\nresult := pattern.FindString(text)",
         "match": "import \"regexp\"\npattern := regexp.MustCompile(`{pattern}`)\nmatches := pattern.FindAllString(text, -1)",
         "test": "import \"regexp\"\npattern := regexp.MustCompile(`{pattern}`)\nresult := pattern.MatchString(text)",
         "replace": "import \"regexp\"\npattern := regexp.MustCompile(`{pattern}`)\nresult := pattern.ReplaceAllString(text, \"{replacement}\")",
         "flags": {"i": "(?i)", "m": "(?m)", "s": "(?s)"}
     },
     "C#": {
+        "match_all": "using System.Text.RegularExpressions;\nRegex pattern = new Regex(@\"{pattern}\", {flags});\nMatchCollection matches = pattern.Matches(text);",
+        "match_first": "using System.Text.RegularExpressions;\nRegex pattern = new Regex(@\"{pattern}\", {flags});\nMatch match = pattern.Match(text);",
         "match": "using System.Text.RegularExpressions;\nRegex pattern = new Regex(@\"{pattern}\", {flags});\nMatchCollection matches = pattern.Matches(text);",
         "test": "using System.Text.RegularExpressions;\nRegex pattern = new Regex(@\"{pattern}\", {flags});\nbool result = pattern.IsMatch(text);",
         "replace": "using System.Text.RegularExpressions;\nRegex pattern = new Regex(@\"{pattern}\", {flags});\nstring result = pattern.Replace(text, \"{replacement}\");",
         "flags": {"RegexOptions.IgnoreCase": "i", "RegexOptions.Multiline": "m", "RegexOptions.Singleline": "s"}
     },
     "Ruby": {
+        "match_all": "pattern = /{pattern}/{flags}\nmatches = text.scan(pattern)",
+        "match_first": "pattern = /{pattern}/{flags}\nresult = pattern.match(text)",
         "match": "pattern = /{pattern}/{flags}\nmatches = text.scan(pattern)",
         "test": "pattern = /{pattern}/{flags}\nresult = !!(text =~ pattern)",
-        "replace": "pattern = /{pattern}/{flags}\nresult = text.gsub(pattern, '{replacement}')",
+        "replace": "pattern = /{pattern}/{flags}\nresult = text.gsub(pattern, {replacement})",
         "flags": {"i": "i", "m": "m"}
     }
 }

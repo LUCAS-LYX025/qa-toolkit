@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import difflib
+import hashlib
 import html
+import json
 import re
 from time import perf_counter
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from qa_toolkit.config.constants import LANGUAGE_TEMPLATES
+from qa_toolkit.core.regex_registry import get_code_language, get_field_extractors
+
+try:  # regex 模块提供方法级 timeout，缺失时退回标准库（静态风险提示仍有效）
+    import regex as _regex_engine
+except ImportError:  # pragma: no cover - 取决于部署环境
+    _regex_engine = None
+
+_REGEX_ERROR = getattr(_regex_engine, "error", re.error) if _regex_engine else re.error
 
 _VISIBLE_FLAG_ITEMS: Sequence[Tuple[str, int, str]] = (
     ("忽略大小写", re.IGNORECASE, "i"),
@@ -18,6 +27,51 @@ _TOKEN_PATTERN = re.compile(r"\d+|[A-Za-z]+|[\u4e00-\u9fff]+|\s+|[_-]+|[^A-Za-z0
 
 # 单次分析最多保留的匹配记录数，避免海量匹配拖垮页面。
 MAX_MATCH_RECORDS = 5000
+# 执行超时与文本上限：拒绝服务保护，统一由核心层执行，页面层不再各自硬编码。
+DEFAULT_TIMEOUT_MS = 2000
+MAX_TEXT_CHARS = 100_000
+# 高亮窗口参数可由 configure_highlight 调整。
+HIGHLIGHT_CONTEXT_CHARS = 40
+HIGHLIGHT_MAX_WINDOWS = 6
+
+
+def configure_highlight(*, context_chars: Optional[int] = None, max_windows: Optional[int] = None) -> None:
+    """配置长文本高亮的上下文长度与窗口数量。"""
+    global HIGHLIGHT_CONTEXT_CHARS, HIGHLIGHT_MAX_WINDOWS
+    if context_chars is not None:
+        if not isinstance(context_chars, int) or context_chars < 0:
+            raise ValueError("context_chars 必须是非负整数")
+        HIGHLIGHT_CONTEXT_CHARS = context_chars
+    if max_windows is not None:
+        if not isinstance(max_windows, int) or max_windows < 1:
+            raise ValueError("max_windows 必须是正整数")
+        HIGHLIGHT_MAX_WINDOWS = max_windows
+
+
+def build_input_signature(
+    pattern: str,
+    text: str,
+    *,
+    flags: int,
+    global_match: bool,
+    replacement: Optional[str],
+    replace_all: bool,
+    context_chars: int,
+    max_windows: int,
+) -> str:
+    """计算结果签名：输入任一变化即可判定展示中的结果已过期。"""
+    payload = {
+        "pattern": pattern,
+        "text": text,
+        "flags": flags,
+        "global_match": bool(global_match),
+        "replacement": replacement,
+        "replace_all": bool(replace_all),
+        "context_chars": context_chars,
+        "max_windows": max_windows,
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()[:16]
 
 
 def build_regex_flags(
@@ -54,13 +108,22 @@ def _position_to_line_column(text: str, offset: int) -> Tuple[int, int]:
     return line, column
 
 
-def _summarize_groups(match: re.Match[str]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+def _summarize_groups(match: Any) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     indexed_groups = [{"index": index, "value": value} for index, value in enumerate(match.groups(), start=1)]
     named_groups = {name: value for name, value in match.groupdict().items()}
     return indexed_groups, named_groups
 
 
-def _excerpt_text(text: str, spans: Sequence[Tuple[int, int]], *, context_chars: int = 40, max_windows: int = 6) -> Tuple[str, List[Tuple[int, int]], bool]:
+def _excerpt_text(
+    text: str,
+    spans: Sequence[Tuple[int, int]],
+    *,
+    context_chars: Optional[int] = None,
+    max_windows: Optional[int] = None,
+) -> Tuple[str, List[Tuple[int, int]], bool]:
+    context_chars = HIGHLIGHT_CONTEXT_CHARS if context_chars is None else context_chars
+    max_windows = HIGHLIGHT_MAX_WINDOWS if max_windows is None else max_windows
+
     if len(text) <= 4000 or not spans:
         return text, list(spans), False
 
@@ -96,8 +159,16 @@ def _excerpt_text(text: str, spans: Sequence[Tuple[int, int]], *, context_chars:
     return "".join(parts), new_spans, inserted_gap
 
 
-def highlight_regex_matches(text: str, spans: Sequence[Tuple[int, int]]) -> str:
-    excerpt, excerpt_spans, truncated = _excerpt_text(text, spans)
+def highlight_regex_matches(
+    text: str,
+    spans: Sequence[Tuple[int, int]],
+    *,
+    context_chars: Optional[int] = None,
+    max_windows: Optional[int] = None,
+) -> str:
+    excerpt, excerpt_spans, truncated = _excerpt_text(
+        text, spans, context_chars=context_chars, max_windows=max_windows
+    )
 
     if not excerpt_spans:
         return (
@@ -121,7 +192,8 @@ def highlight_regex_matches(text: str, spans: Sequence[Tuple[int, int]]) -> str:
     if cursor < len(excerpt):
         parts.append(html.escape(excerpt[cursor:]))
 
-    title = "高亮预览（已截取匹配附近上下文）" if truncated else "高亮预览"
+    effective_windows = HIGHLIGHT_MAX_WINDOWS if max_windows is None else max_windows
+    title = f"高亮预览（已截取前 {effective_windows} 个匹配窗口的上下文）" if truncated else "高亮预览"
     return (
         "<div style='padding:14px;border:1px solid #dbeafe;border-radius:12px;background:#f8fafc;'>"
         f"<div style='font-size:12px;font-weight:700;color:#1d4ed8;margin-bottom:8px;'>{title}</div>"
@@ -131,7 +203,7 @@ def highlight_regex_matches(text: str, spans: Sequence[Tuple[int, int]]) -> str:
     )
 
 
-def _build_match_records(matches: Iterable[re.Match[str]], text: str) -> List[Dict[str, Any]]:
+def _build_match_records(matches: Iterable[Any], text: str) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     for index, match in enumerate(matches, start=1):
         start = match.start()
@@ -166,6 +238,14 @@ def _build_unique_rows(records: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]
     ]
 
 
+def safe_csv_cell(value: Any) -> str:
+    """防止 Excel / WPS 把用户内容当作公式执行。"""
+    text = "" if value is None else str(value)
+    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
+        return "'" + text
+    return text
+
+
 def build_replacement_diff(original_text: str, replaced_text: str, *, context_lines: int = 2) -> str:
     diff_lines = list(
         difflib.unified_diff(
@@ -186,23 +266,39 @@ def detect_regex_risks(
     text_length: int = 0,
     global_match: bool = True,
 ) -> List[Dict[str, str]]:
+    """静态风险提示：与运行时超时保护互补，提示里给出可执行的改写建议。"""
     warnings: List[Dict[str, str]] = []
+    timeout_hint = f"页面已启用 {DEFAULT_TIMEOUT_MS} 毫秒执行超时保护。"
 
-    if re.search(r"\((?:[^()\\]|\\.)*[+*](?:[^()\\]|\\.)*\)\s*(?:[+*]|\{\d*,?\d*\})", pattern):
+    nested_quantifier = re.compile(
+        r"\((?:[^()\\]|\\.)*?(?:[+*]|\{\d+(?:,\d*)?\})(?:[^()\\]|\\.)*?\)"
+        r"\s*(?:[+*]|\{\d+(?:,\d*)?\})"
+    )
+    if nested_quantifier.search(pattern):
         warnings.append(
             {
                 "level": "warning",
                 "title": "疑似嵌套量词",
-                "message": "表达式里存在重复组再叠加重复次数，复杂文本下可能触发灾难性回溯。",
+                "message": "分组内部已有重复量词，外层又重复匹配，长文本下可能触发灾难性回溯。建议合并量词或加锚点；" + timeout_hint,
             }
         )
 
-    if re.search(r"\((?:[^()\\]|\\.)*\|(?:[^()\\]|\\.)+\)\s*(?:[+*]|\{\d*,?\d*\})", pattern):
+    repeated_alternation = re.compile(
+        r"\(([^()]*\|[^()]*)\)\s*(?:[+*]|\{\d+(?:,\d*)?\})"
+    )
+    overlap_match = repeated_alternation.search(pattern)
+    if overlap_match:
+        branches = [branch.strip() for branch in overlap_match.group(1).split("|") if branch.strip()]
+        first_chars = {branch[0] for branch in branches if branch and branch[0].isalnum()}
+        overlapping = len(branches) >= 2 and len(first_chars) == 1
         warnings.append(
             {
                 "level": "warning",
-                "title": "分支回溯成本较高",
-                "message": "带有 alternation 的分组又被重复匹配，长文本下可能明显变慢。",
+                "title": "重复分支存在重叠前缀" if overlapping else "分支回溯成本较高",
+                "message": (
+                    "重复分组内的分支共享相同前缀（如 a / aa），长文本上会指数级回溯；建议合并分支、提取公共前缀或加锚点。"
+                    if overlapping else "带 alternation 的分组又被重复匹配，长文本下可能明显变慢。"
+                ) + timeout_hint,
             }
         )
 
@@ -217,9 +313,8 @@ def detect_regex_risks(
 
     if global_match:
         try:
-            compiled = re.compile(pattern)
-            zero_width = compiled.match("") and compiled.match("").end() == 0
-            if zero_width:
+            compiled = _compile_pattern(pattern, 0)
+            if compiled.search("") or compiled.match(""):
                 warnings.append(
                     {
                         "level": "info",
@@ -227,7 +322,7 @@ def detect_regex_risks(
                         "message": "全局匹配时可能出现大量零宽匹配，结果数量会快速放大。",
                     }
                 )
-        except re.error:
+        except (re.error, _REGEX_ERROR):
             pass
 
     if len(pattern) >= 120:
@@ -242,23 +337,44 @@ def detect_regex_risks(
     return warnings
 
 
+def _compile_pattern(pattern: str, flags: int) -> Any:
+    if _regex_engine is not None:
+        return _regex_engine.compile(pattern, flags)
+    return re.compile(pattern, flags)
+
+
+def _iter_matches(compiled: Any, text: str, timeout_seconds: Optional[float]) -> Iterable[Any]:
+    if _regex_engine is not None and timeout_seconds is not None:
+        return compiled.finditer(text, timeout=timeout_seconds)
+    return compiled.finditer(text)
+
+
+def _subn(compiled: Any, replacement: str, text: str, count: int, timeout_seconds: Optional[float]) -> Tuple[str, int]:
+    if _regex_engine is not None and timeout_seconds is not None:
+        return compiled.subn(replacement, text, count=count, timeout=timeout_seconds)
+    return compiled.subn(replacement, text, count=count)
+
+
+def _count_total_matches(compiled: Any, text: str, timeout_seconds: Optional[float]) -> Optional[int]:
+    try:
+        return sum(1 for _ in _iter_matches(compiled, text, timeout_seconds))
+    except TimeoutError:
+        return None
+
+
 def suggest_field_patterns(text: str, field_name: str) -> List[Dict[str, Any]]:
     normalized_field = field_name.strip()
     if not text or not normalized_field:
         return []
 
-    escaped = re.escape(normalized_field)
-    candidates: List[Tuple[str, str]] = [
-        ("JSON 字符串字段", rf'"{escaped}"\s*:\s*"([^"]*)"'),
-        ("JSON 通用字段", rf'"{escaped}"\s*:\s*([^,\}}\]\s]+)'),
-        ("Query / 表单参数", rf"(?:^|[?&]){escaped}=([^&\s]+)"),
-        ("日志或 KV 字段", rf"(?:^|[\s,;]){escaped}\s*[:=]\s*([^\s,;]+)"),
-    ]
-
     suggestions: List[Dict[str, Any]] = []
-    seen_patterns = set()
-    for label, candidate in candidates:
-        if candidate in seen_patterns:
+    seen_patterns: Set[str] = set()
+    for extractor in get_field_extractors().values():
+        try:
+            candidate = extractor.build(text, normalized_field)
+        except (re.error, ValueError):
+            continue
+        if not candidate or candidate in seen_patterns:
             continue
         seen_patterns.add(candidate)
 
@@ -273,10 +389,11 @@ def suggest_field_patterns(text: str, field_name: str) -> List[Dict[str, Any]]:
         normalized_matches = [match if isinstance(match, str) else match[0] for match in matches]
         suggestions.append(
             {
-                "label": label,
+                "label": extractor.description or extractor.name,
                 "pattern": candidate,
                 "match_count": len(normalized_matches),
                 "sample_values": normalized_matches[:5],
+                "extractor": extractor.name,
             }
         )
 
@@ -291,16 +408,23 @@ def analyze_regex(
     ignore_case: bool = False,
     multiline: bool = False,
     dotall: bool = False,
-    replacement: str | None = None,
-    replace_all: bool | None = None,
+    replacement: Optional[str] = None,
+    replace_all: Optional[bool] = None,
+    timeout_ms: Optional[int] = DEFAULT_TIMEOUT_MS,
+    context_chars: Optional[int] = None,
+    max_windows: Optional[int] = None,
 ) -> Dict[str, Any]:
     flags = build_regex_flags(ignore_case=ignore_case, multiline=multiline, dotall=dotall)
+    effective_context = HIGHLIGHT_CONTEXT_CHARS if context_chars is None else context_chars
+    effective_windows = HIGHLIGHT_MAX_WINDOWS if max_windows is None else max_windows
+    signature = build_input_signature(
+        pattern, text, flags=flags, global_match=global_match,
+        replacement=replacement, replace_all=bool(replace_all) if replace_all is not None else global_match,
+        context_chars=effective_context, max_windows=effective_windows,
+    )
+    timeout_seconds = None if timeout_ms is None else max(timeout_ms, 1) / 1000.0
 
-    start_time = perf_counter()
-    try:
-        compiled = re.compile(pattern, flags)
-    except re.error as exc:
-        error_message = f"正则表达式错误: {exc}"
+    def _failure(title: str, message: str, elapsed: float) -> Dict[str, Any]:
         return {
             "pattern": pattern,
             "flags": flags,
@@ -308,32 +432,58 @@ def analyze_regex(
             "global_match": global_match,
             "match_count": 0,
             "has_match": False,
+            "total_match_count": 0,
+            "truncated": False,
             "unique_match_count": 0,
             "zero_length_match_count": 0,
             "group_count": 0,
             "named_group_names": [],
-            "execution_ms": round((perf_counter() - start_time) * 1000, 3),
-            "risk_warnings": [
-                {"level": "error", "title": "正则表达式无效", "message": error_message}
-            ],
-            "error": error_message,
+            "execution_ms": round(elapsed, 3),
+            "risk_warnings": [{"level": "error", "title": title, "message": message}],
+            "error": message,
             "matches": [],
             "unique_matches": [],
-            "preview_html": highlight_regex_matches(text, []),
+            "preview_html": highlight_regex_matches(
+                text, [], context_chars=effective_context, max_windows=effective_windows
+            ),
             "replacement": None,
+            "signature": signature,
         }
 
-    match_objects = []
+    start_time = perf_counter()
+    try:
+        compiled = _compile_pattern(pattern, flags)
+    except (re.error, _REGEX_ERROR) as exc:
+        error_message = f"正则表达式错误: {exc}"
+        return _failure("正则表达式无效", error_message, (perf_counter() - start_time) * 1000)
+
+    if len(text) > MAX_TEXT_CHARS:
+        message = f"测试文本超过 {MAX_TEXT_CHARS} 字符，请截断后再运行以避免页面卡死。"
+        return _failure("文本过长", message, 0.0)
+
+    match_objects: List[Any] = []
     truncated = False
-    if global_match:
-        for match in compiled.finditer(text):
-            match_objects.append(match)
-            if len(match_objects) >= MAX_MATCH_RECORDS:
-                truncated = True
-                break
-    else:
-        first_match = compiled.search(text)
-        match_objects = [first_match] if first_match else []
+    try:
+        if global_match:
+            for match in _iter_matches(compiled, text, timeout_seconds):
+                match_objects.append(match)
+                if len(match_objects) >= MAX_MATCH_RECORDS:
+                    truncated = True
+                    break
+        else:
+            first_match = (
+                compiled.search(text, timeout=timeout_seconds)
+                if _regex_engine is not None and timeout_seconds is not None
+                else compiled.search(text)
+            )
+            match_objects = [first_match] if first_match else []
+    except TimeoutError:
+        message = (
+            f"表达式执行超时（超过 {DEFAULT_TIMEOUT_MS if timeout_ms is None else timeout_ms} 毫秒），"
+            "疑似灾难性回溯，已中止。请检查嵌套量词或重叠分支后重试。"
+        )
+        return _failure("执行超时", message, (perf_counter() - start_time) * 1000)
+
     elapsed_ms = (perf_counter() - start_time) * 1000
 
     records = _build_match_records(match_objects, text)
@@ -347,7 +497,16 @@ def analyze_regex(
     replacement_result = None
     if replacement is not None:
         replace_limit = 0 if replace_all else 1
-        replaced_text, replacement_count = compiled.subn(replacement, text, count=replace_limit)
+        try:
+            replaced_text, replacement_count = _subn(
+                compiled, replacement, text, replace_limit, timeout_seconds
+            )
+        except TimeoutError:
+            message = (
+                f"替换阶段执行超时（超过 {DEFAULT_TIMEOUT_MS if timeout_ms is None else timeout_ms} 毫秒），"
+                "疑似灾难性回溯，已中止。请检查表达式后重试。"
+            )
+            return _failure("替换执行超时", message, (perf_counter() - start_time) * 1000)
         replacement_result = {
             "text": replaced_text,
             "count": replacement_count,
@@ -356,12 +515,19 @@ def analyze_regex(
         }
 
     risk_warnings = detect_regex_risks(pattern, text_length=len(text), global_match=global_match)
+
+    total_match_count: Optional[int] = len(records)
     if truncated:
+        total_match_count = _count_total_matches(compiled, text, timeout_seconds)
+        total_display = str(total_match_count) if total_match_count is not None else "超过"
         risk_warnings.append(
             {
                 "level": "warning",
                 "title": "匹配结果已截断",
-                "message": f"匹配数量超过 {MAX_MATCH_RECORDS} 条，仅展示前 {MAX_MATCH_RECORDS} 条。",
+                "message": (
+                    f"匹配数量超过 {MAX_MATCH_RECORDS} 条（共 {total_display} 条），"
+                    f"仅展示前 {MAX_MATCH_RECORDS} 条；唯一值指标基于截断样本。"
+                ),
             }
         )
 
@@ -372,7 +538,10 @@ def analyze_regex(
         "global_match": global_match,
         "match_count": len(records),
         "has_match": bool(records),
+        "total_match_count": total_match_count,
+        "truncated": truncated,
         "unique_match_count": len(unique_rows),
+        "unique_match_count_is_partial": truncated,
         "zero_length_match_count": zero_length_matches,
         "group_count": compiled.groups,
         "named_group_names": list(compiled.groupindex.keys()),
@@ -380,9 +549,24 @@ def analyze_regex(
         "risk_warnings": risk_warnings,
         "matches": records,
         "unique_matches": unique_rows,
-        "preview_html": highlight_regex_matches(text, spans),
+        "preview_html": highlight_regex_matches(
+            text, spans, context_chars=effective_context, max_windows=effective_windows
+        ),
         "replacement": replacement_result,
+        "signature": signature,
     }
+
+
+def parse_example_items(examples: str) -> List[str]:
+    raw = (examples or "").strip()
+    if not raw:
+        return []
+    if "\n" in raw or "\r" in raw:
+        return [item.strip() for item in re.split(r"[\r\n]+", raw) if item.strip()]
+    # 千分位数字（1,000 / 1,000,000）是单个示例，不应被逗号切开。
+    if re.fullmatch(r"\d{1,3}(?:,\d{3})+", raw):
+        return [raw]
+    return [item.strip() for item in re.split(r"[,，]+", raw) if item.strip()]
 
 
 def _build_length_pattern(charset: str, values: Sequence[str]) -> str:
@@ -471,10 +655,6 @@ def _build_prefix_suffix_pattern(examples: Sequence[str]) -> str:
     return re.escape(examples[0])
 
 
-def parse_example_items(examples: str) -> List[str]:
-    return [item.strip() for item in re.split(r"[\n,，]+", examples or "") if item.strip()]
-
-
 def generate_regex_from_examples(text: str, examples: str) -> str:
     del text
     example_list = parse_example_items(examples)
@@ -509,27 +689,49 @@ def build_regex_code(
     operation_type: str,
     selected_flags: Sequence[str],
     replacement: str = "",
+    global_match: bool = True,
 ) -> Dict[str, Any]:
-    language_config = LANGUAGE_TEMPLATES[target_language]
-    template_key = "match" if operation_type == "匹配" else "test" if operation_type == "测试" else "replace"
-    template = language_config[template_key]
-    language_flags = language_config["flags"]
+    """按注册的语言规格生成代码：转义、flags、匹配范围都由扩展点决定。"""
+    spec = get_code_language(target_language)
 
-    effective_pattern = pattern
-    if target_language == "Go":
-        inline_flags = "".join(language_flags[flag] for flag in selected_flags)
-        effective_pattern = inline_flags + pattern
-        flag_payload = inline_flags
-    elif target_language in {"Python", "Java", "C#"}:
-        flag_payload = " | ".join(selected_flags) if selected_flags else "0"
+    if operation_type == "匹配":
+        template_key = "match_all" if global_match else "match_first"
+        if template_key not in spec.templates:
+            template_key = "match"
+    elif operation_type == "测试":
+        template_key = "test"
     else:
-        flag_payload = "".join(language_flags[flag] for flag in selected_flags)
+        template_key = "replace"
+    template = spec.templates[template_key]
+
+    selected = list(selected_flags or [])
+    effective_pattern = pattern
+
+    if spec.inline_flags:
+        inline_flags = "".join(spec.flags.get(flag, "") for flag in selected)
+        if inline_flags:
+            # 内联 flag 必须对整个表达式生效，否则 (?i)cat|dog 只影响左分支。
+            effective_pattern = inline_flags + "(?:" + pattern + ")"
+        flag_payload = inline_flags
+    elif spec.flag_style == "named":
+        flag_payload = " | ".join(selected) if selected else "0"
+    else:
+        flag_payload = "".join(spec.flags.get(flag, "") for flag in selected)
+
+    if (
+        spec.global_flag
+        and global_match
+        and operation_type in {"匹配", "替换"}
+        and spec.global_flag not in selected
+        and spec.flag_style != "named"
+    ):
+        flag_payload += spec.global_flag
 
     generated_code = template.format(
-        pattern=effective_pattern,
+        pattern=spec.escape_pattern(effective_pattern),
         flags=flag_payload,
         flags_value=flag_payload,
-        replacement=replacement,
+        replacement=spec.escape_replacement(replacement),
     )
 
     return {
@@ -538,4 +740,5 @@ def build_regex_code(
         "code": generated_code,
         "pattern": effective_pattern,
         "flags": flag_payload,
+        "global_match": bool(global_match),
     }

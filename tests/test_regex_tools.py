@@ -83,7 +83,7 @@ def test_build_regex_code_supports_go_inline_flags_and_python_flag_payload():
         selected_flags=["re.IGNORECASE", "re.MULTILINE"],
     )
 
-    assert "regexp.MustCompile(`(?i)(?m)trace-\\d+`)" in go_code["code"]
+    assert "regexp.MustCompile(`(?i)(?m)(?:trace-\\d+)`)" in go_code["code"]
     assert "re.IGNORECASE | re.MULTILINE" in python_code["code"]
     assert "re.search" in python_code["code"]
 
