@@ -283,3 +283,39 @@
 - 全量 pytest：288 passed
 - e2e（新增 `05-text-comparison.e2e.ts`，空态 / 示例 / 扩展规则 / 动态导出）：4/4 passed
 - GitHub：issues #153-#168 全部关闭，open issues = 0
+
+---
+
+## 字数统计工具专项审计（2026-11-25，Issues #170-#187）
+
+以测试专家（正确性 / Unicode / 边界 / 安全）+ 产品工程师（易用性 / **拓展性**，不局限于当前业务）双视角专项审计，实测确认 18 项问题并全部修复。PR #188 已合并，`fix/wc-audit` → `master`，合并提交 `e698f20`。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| CJK 扩展区漏计（#170） | `analyze_text('𠀀𠀁𠀂')` → chinese_chars=0、latin_letters=3，生僻字/古字被误判成英文字母 |
+| emoji 高估（#171） | `👍🏽👨‍👩‍👧‍👦🇨🇳` → other_chars=11，ZWJ/肤色/国旗按码点累加 |
+| 全角空格漏计（#172） | `spaces=0`、`total_chars_no_spaces=5`（应为 3），中文排版全角空格被算进正文 |
+| NFC/NFD 分裂（#173） | 同一 `café` 的两种 Unicode 形式 → `[('caf',1),('cafe',1)]` |
+| 非 ASCII 词截断（#175） | `ÄPFEL Straße café naïve` → `['pfel','stra','caf','na','ve']`，俄语整词丢弃 |
+| 零宽字符不可见（#174） | `ab\u200bcd\ufeffef` 报 8 字符，界面只见 6 个 |
+| 口径误导（#176） | 中文连写 `需求说明接口文档测试总结` → 单词数=1、阅读单元=12，三套口径无说明 |
+| 注入（#178/#179） | 来源名 `[假来源](javascript:alert(1))` 原样写入 Markdown；来源换行可伪造 TXT 统计行 |
+| CSV 乱码（#180） | 导出无 BOM，Excel 打开中文乱码；公式前缀未降级 |
+
+### 修复方案要点
+
+- **Unicode 正确性**：字符分类改为注册式规则，CJK 覆盖扩展 A-G，emoji 独立成类（含 ZWJ/肤色/国旗），全角空格/NBSP 计入 spaces；默认 NFC 归一化；`casefold()` + Unicode 分词器让重音/西里尔词完整提取；零宽/BOM 单独计数并给出诊断建议。
+- **口径清晰化**：区分「空格分词数 / 阅读单元 / 拉丁词数」并加可展开的口径说明；高频词与重复词统一按 `most_common` 排序；内置中英文停用词表。
+- **安全与导出**：Markdown 来源/关键词转义反引号、方括号、HTML；TXT 来源/建议换行折叠成单行防伪造；CSV 加 UTF-8 BOM 并把 `= + - @` 前缀降级为文本；TXT/MD 报告同样加 BOM。
+- **易用性**：新增 emoji、不可见字符、其他字符维度展示；阅读速度、长行阈值、追加停用词做成侧栏可配置项；100 万字符上限保护；统计结果按「文本+配置快照」跨 rerun 缓存。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/text_analysis_registry.py`，把**字符分类规则、分词器、停用词、阅读速度、长行阈值、Unicode 归一化方式**做成可注册配置点（`register_character_class` 支持 priority 插队、`register_tokenizer`、`configure_settings`、`configure_stopwords`）。新增业务统计维度或语言支持只需注册，不再改 `text_analysis.py` 的逐字符扫描逻辑；`reset_text_analysis_registry()` 保证测试隔离。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_wc.py`：18 passed（逐条对应 issue）
+- 原字数统计测试：7 passed
+- 全量 pytest：306 passed
+- e2e（新增 `06-word-counter.e2e.ts`，空态 / 示例 / Unicode 特殊字符 / 高级配置与导出）：4/4 passed
+- GitHub：issues #170-#187 全部关闭，仓库 open issues = 0 / closed = 182
