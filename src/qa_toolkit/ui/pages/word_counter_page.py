@@ -9,6 +9,12 @@ import plotly.express as px
 import streamlit as st
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
+from qa_toolkit.core.text_analysis_registry import (
+    configure_settings,
+    configure_stopwords,
+    settings,
+    stopwords,
+)
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.utils.text_analysis import (
     DEFAULT_SAMPLE_TEXT,
@@ -19,7 +25,40 @@ from qa_toolkit.utils.text_analysis import (
     decode_uploaded_text,
     export_rows,
     preprocess_text,
+    sanitize_report_text,
 )
+
+
+@st.cache_data(show_spinner=False, max_entries=6)
+def _cached_analyze(text: str, ignore_case: bool, config_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    """同文本+同配置的统计结果跨 rerun 缓存，避免大文本每次重扫。"""
+    configure_settings(**config_snapshot["settings"])
+    configure_stopwords(config_snapshot["stopwords"])
+    return analyze_text(text, ignore_case=ignore_case)
+
+
+def _analysis_config_snapshot() -> Dict[str, Any]:
+    return {"settings": settings(), "stopwords": sorted(stopwords())}
+
+
+def _markdown_text(value: Any) -> str:
+    """Markdown 报告动态文本转义：先折叠换行，再转义反引号/链接语法与 HTML。"""
+    import html
+    text = sanitize_report_text(value).replace("`", "\\`").replace("*", "\\*")
+    text = text.replace("[", "\\[").replace("]", "\\]").replace("<", "&lt;").replace(">", "&gt;")
+    return html.escape(text, quote=False)
+
+
+def _safe_csv_bytes(rows: List[Dict[str, Any]]) -> bytes:
+    """CSV 导出：UTF-8 BOM 兼容 Excel；= + - @ 前缀降级为文本防公式注入。"""
+    safe_rows = []
+    for row in rows:
+        safe_rows.append({
+            key: ("'" + value if isinstance(value, str) and value[:1] in ("=", "+", "-", "@") else value)
+            for key, value in row.items()
+        })
+    csv_text = pd.DataFrame(safe_rows).to_csv(index=False)
+    return ("\ufeff" + csv_text).encode("utf-8")
 
 
 DEFAULT_STATE = {
@@ -67,17 +106,21 @@ def _render_progress(label: str, current: int, target: int):
 
 def _build_markdown_report(payload: Dict[str, Any]) -> str:
     top_keywords = payload.get("top_keywords", [])
-    keyword_lines = "\n".join(f"- `{item['keyword']}`: {item['count']}" for item in top_keywords[:10]) or "- 无"
+    keyword_lines = "\n".join(
+        f"- `{_markdown_text(item['keyword'])}`: {item['count']}" for item in top_keywords[:10]
+    ) or "- 无"
     suggestion_lines = "\n".join(
-        f"- **{item['title']}**: {item['message']}"
+        f"- **{_markdown_text(item['title'])}**: {_markdown_text(item['message'])}"
         for item in payload.get("suggestions", [])
     ) or "- 无"
-    preprocess_lines = "\n".join(f"- {line}" for line in payload.get("preprocess", {}).get("changes", [])) or "- 未启用预处理"
+    preprocess_lines = "\n".join(
+        f"- {_markdown_text(line)}" for line in payload.get("preprocess", {}).get("changes", [])
+    ) or "- 未启用预处理"
 
     return f"""# 文本统计报告
 
 - 生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-- 来源: {payload.get("source", "手动输入")}
+- 来源: {_markdown_text(payload.get("source", "手动输入"))}
 
 ## 基础统计
 
@@ -119,7 +162,7 @@ def _render_summary_metrics(analysis: Dict[str, Any]):
     metrics_row1[0].metric("字符数（含空格）", f"{basic['total_chars']:,}")
     metrics_row1[1].metric("字符数（不含空格）", f"{basic['total_chars_no_spaces']:,}")
     metrics_row1[2].metric("字符数（不含空白）", f"{basic['total_chars_no_whitespace']:,}")
-    metrics_row1[3].metric("单词数", f"{basic['total_words']:,}")
+    metrics_row1[3].metric("空格分词数", f"{basic['total_words']:,}")
     metrics_row1[4].metric("阅读单元", f"{basic['reading_units']:,}")
     metrics_row1[5].metric("段落数", f"{basic['total_paragraphs']:,}")
 
@@ -127,7 +170,17 @@ def _render_summary_metrics(analysis: Dict[str, Any]):
     metrics_row2[0].metric("总行数", f"{basic['total_lines']:,}")
     metrics_row2[1].metric("非空行", f"{basic['non_empty_lines']:,}")
     metrics_row2[2].metric("句子数", f"{basic['total_sentences']:,}")
-    metrics_row2[3].metric("英文词数", f"{basic['latin_words']:,}")
+    metrics_row2[3].metric("拉丁词数", f"{basic['latin_words']:,}")
+
+    with st.expander("各项口径说明（中文文本请重点看这里）", expanded=False):
+        st.markdown(
+            "- **字符数（含空格）**：文本全部字符，含空格、换行、标点、emoji 与不可见字符。\n"
+            "- **字符数（不含空格）**：剔除所有可见空白（含全角空格、NBSP），保留换行与制表。\n"
+            "- **字符数（不含空白）**：再剔除换行、制表等所有空白与不可见字符。\n"
+            "- **空格分词数**：按空白切分，中文连写会被算作 1 个词，仅适合英文/带空格文本写作目标管理。\n"
+            "- **阅读单元**：每个表意文字 + 每个拉丁词各算 1，阅读时长按此口径估算，更适合中文。\n"
+            "- **拉丁词数**：Unicode 拉丁字母词（支持 café/ÄPFEL 等重音写法），不含中日韩文字。"
+        )
 
 
 def _render_key_findings(analysis: Dict[str, Any], preprocess_result: Dict[str, Any]):
@@ -158,12 +211,18 @@ def _render_overview_tab(analysis: Dict[str, Any]):
 
     st.markdown("### 字符类型")
     char_cols = st.columns(6)
-    char_cols[0].metric("非中文字母", f"{char_types['latin_letters']:,}")
-    char_cols[1].metric("数字", f"{char_types['digits']:,}")
-    char_cols[2].metric("标点", f"{char_types['punctuation']:,}")
-    char_cols[3].metric("空格", f"{char_types['spaces']:,}")
-    char_cols[4].metric("中文字符", f"{char_types['chinese_chars']:,}")
-    char_cols[5].metric("换行/制表", f"{char_types['tabs'] + char_types['newlines']:,}")
+    char_cols[0].metric("中文字", f"{char_types['chinese_chars']:,}")
+    char_cols[1].metric("非中文字母", f"{char_types['latin_letters']:,}")
+    char_cols[2].metric("数字", f"{char_types['digits']:,}")
+    char_cols[3].metric("标点", f"{char_types['punctuation']:,}")
+    char_cols[4].metric("空格", f"{char_types['spaces']:,}")
+    char_cols[5].metric("Emoji", f"{char_types.get('emoji', 0):,}")
+
+    char_cols2 = st.columns(4)
+    char_cols2[0].metric("换行/制表", f"{char_types['tabs'] + char_types['newlines']:,}")
+    char_cols2[1].metric("不可见字符", f"{char_types.get('invisible_chars', 0):,}")
+    char_cols2[2].metric("其他字符", f"{char_types.get('other_chars', 0):,}")
+    char_cols2[3].metric("空白字符总数", f"{char_types['whitespace_chars']:,}")
 
     st.markdown("### 文本质量")
     quality_cols = st.columns(5)
@@ -334,7 +393,7 @@ def _render_export_tab(
     with col2:
         st.download_button(
             "导出 CSV",
-            data=pd.DataFrame(csv_rows).to_csv(index=False),
+            data=_safe_csv_bytes(csv_rows),
             file_name="文本统计报告.csv",
             mime="text/csv",
             use_container_width=True,
@@ -342,7 +401,7 @@ def _render_export_tab(
     with col3:
         st.download_button(
             "导出 TXT",
-            data=text_report,
+            data=("\ufeff" + text_report).encode("utf-8"),
             file_name="文本统计报告.txt",
             mime="text/plain",
             use_container_width=True,
@@ -350,7 +409,7 @@ def _render_export_tab(
     with col4:
         st.download_button(
             "导出 Markdown",
-            data=markdown_report,
+            data=("\ufeff" + markdown_report).encode("utf-8"),
             file_name="文本统计报告.md",
             mime="text/markdown",
             use_container_width=True,
@@ -391,6 +450,37 @@ def render_word_counter_page():
     st.sidebar.markdown("### 统计选项")
     show_charts = st.sidebar.checkbox("显示图表", key="word_counter_show_charts")
     ignore_case = st.sidebar.checkbox("关键词忽略大小写", key="word_counter_ignore_case")
+
+    # 拓展口径：阅读速度、长行阈值、自定义停用词，改动进入缓存快照自动触发重算。
+    with st.sidebar.expander("高级统计口径（可拓展）", expanded=False):
+        reading_speed = st.number_input(
+            "阅读速度（每分钟）",
+            min_value=1,
+            value=int(settings().get("reading_speed_per_minute", 220)),
+            key="word_counter_reading_speed",
+            help="中文常用 300-500 字/分钟，英文常用 200-250 词/分钟。",
+        )
+        long_line_threshold = st.number_input(
+            "长行预警阈值（字符）",
+            min_value=1,
+            value=int(settings().get("long_line_threshold", 40)),
+            key="word_counter_long_line_threshold",
+        )
+        extra_stopwords = st.text_input(
+            "追加停用词（空格分隔）",
+            value="",
+            key="word_counter_extra_stopwords",
+            help="例如：需求 测试 备注；会与内置中英文停用词合并。",
+        )
+    configure_settings(
+        reading_speed_per_minute=reading_speed,
+        long_line_threshold=long_line_threshold,
+    )
+    from qa_toolkit.core.text_analysis_registry import DEFAULT_STOPWORDS
+    configure_stopwords(set(DEFAULT_STOPWORDS), append=False)
+    extra_terms = [w for w in extra_stopwords.split() if w]
+    if extra_terms:
+        configure_stopwords(extra_terms, append=True)
 
     st.sidebar.markdown("### 预处理")
     trim_edges = st.sidebar.checkbox("清理每行首尾空白", key="word_counter_trim_edges")
@@ -460,10 +550,14 @@ def render_word_counter_page():
     )
 
     analysis_source_text = preprocess_result["text"] if preprocess_result["changed"] else text_input
-    analysis = analyze_text(
+    # 大文本保护：超限直接提示，避免百万字符全量扫描卡死页面。
+    if len(analysis_source_text) > 1_000_000:
+        st.error("文本超过 100 万字符，统计耗时过长，请拆分后再分析。")
+        return
+    analysis = _cached_analyze(
         analysis_source_text,
-        ignore_case=ignore_case,
-        repeated_keyword_threshold=2,
+        ignore_case,
+        _analysis_config_snapshot(),
     )
 
     _render_summary_metrics(analysis)
