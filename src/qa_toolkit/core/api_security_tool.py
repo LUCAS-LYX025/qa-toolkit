@@ -1,79 +1,46 @@
+"""面向授权目标的接口安全测试工具（注册式规则引擎）。
+
+所有检测规则、词表、OWASP 清单、严重级别、角色等级、状态码分桶、探测策略、
+Nuclei 模板、导出清洗器与运行上限均来自 ``core/api_security_registry.py``。
+新增一条检查/换 OWASP 版本/自定义敏感字段/自定义角色等级只需调用注册接口，
+无需修改本文件。
+"""
+from __future__ import annotations
+
+import hashlib
 import json
+import re
+import time
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
 import requests
+
+from qa_toolkit.core import api_security_registry as sec_registry
+
+
+def _finding_kwargs(item: Dict[str, Any], default_target: str = "") -> Dict[str, Any]:
+    """把注册式规则输出的大写键 finding 映射为 _make_finding 的小写参数。"""
+    return {
+        "severity": item.get("Severity", "info"),
+        "category": item.get("Category", ""),
+        "title": item.get("Title", ""),
+        "target": item.get("Target", default_target),
+        "evidence": item.get("Evidence", ""),
+        "recommendation": item.get("Recommendation", ""),
+        "owasp": item.get("OWASP", ""),
+        "error_type": item.get("error_type", ""),
+    }
 
 
 class SecurityTestTool:
     """面向授权目标的接口安全测试工具."""
 
-    HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-    MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-    AUTH_HEADER_NAMES = {
-        "authorization",
-        "cookie",
-        "x-api-key",
-        "api-key",
-        "token",
-        "access-token",
-        "x-token",
-        "jwt",
-    }
-    HIGH_SENSITIVE_KEYS = {
-        "password",
-        "pwd",
-        "secret",
-        "private_key",
-        "privatekey",
-        "client_secret",
-    }
-    MEDIUM_SENSITIVE_KEYS = {
-        "token",
-        "access_token",
-        "refresh_token",
-        "api_key",
-        "apikey",
-        "session",
-        "cookie",
-        "credential",
-        "authorization",
-    }
-    ADMIN_HINTS = {"admin", "internal", "debug", "system", "ops", "manage", "config"}
-    FILE_HINTS = {"upload", "file", "image", "avatar", "attachment", "import"}
-    SSRF_HINTS = {"url", "uri", "callback", "redirect", "returnurl", "return_url", "webhook", "endpoint"}
-    LIST_HINTS = {"list", "search", "query", "export", "all", "batch", "report"}
-    CACHE_HINTS = {"login", "token", "session", "profile", "user", "me", "auth", "password"}
-    PUBLIC_HINTS = {"login", "signin", "signup", "register", "health", "ping", "captcha", "public", "openapi", "swagger"}
-    OBJECT_ID_HINTS = {"id", "user_id", "tenant_id", "account_id", "order_id", "resource_id", "item_id"}
-    BUSINESS_HINTS = {"payment", "pay", "refund", "withdraw", "coupon", "order", "invoice", "wallet", "settlement"}
-    ERROR_MARKERS = {
-        "exception",
-        "traceback",
-        "stack trace",
-        "sql syntax",
-        "syntax error",
-        "mysql",
-        "postgres",
-        "ora-",
-        "nullpointerexception",
-        "debug",
-        " at ",
-    }
-    OWASP_ITEMS = [
-        ("API1:2023", "Broken Object Level Authorization", "校验对象 ID、资源 ID、租户 ID 访问是否越权"),
-        ("API2:2023", "Broken Authentication", "复核登录、Token、会话续期和失效机制"),
-        ("API3:2023", "Broken Object Property Level Authorization", "检查响应和请求对象字段是否存在越权读写"),
-        ("API4:2023", "Unrestricted Resource Consumption", "确认分页、限流、批量接口和导出接口的资源控制"),
-        ("API5:2023", "Broken Function Level Authorization", "检查高权限功能接口是否做角色/功能级鉴权"),
-        ("API6:2023", "Unrestricted Access to Sensitive Business Flows", "复核注册、登录、找回密码、领券等关键业务流"),
-        ("API7:2023", "Server Side Request Forgery", "检查 URL、回调、Webhook、跳转类参数是否可被滥用"),
-        ("API8:2023", "Security Misconfiguration", "检查协议、头部、CORS、Cookie、错误泄露和方法暴露"),
-        ("API9:2023", "Improper Inventory Management", "确认接口清单、版本、测试环境和废弃接口治理"),
-        ("API10:2023", "Unsafe Consumption of APIs", "检查第三方 API、上游依赖、Webhook 和外部服务调用"),
-    ]
+    # ------------------------------------------------------------------
+    # 计划构建
+    # ------------------------------------------------------------------
 
     def build_security_plan(
         self,
@@ -84,12 +51,32 @@ class SecurityTestTool:
         timeout_seconds: float = 15.0,
         verify_ssl: bool = True,
         origin: str = "https://security-audit.local",
+        allow_private_targets: Optional[bool] = None,
+        probe_strategy: str = "safe_baseline",
     ) -> Dict[str, Any]:
-        normalized = self._select_interfaces(interfaces, selected_indexes)
+        limits = sec_registry.get_security_limits()
+        normalized, select_warnings = self._select_interfaces(interfaces, selected_indexes)
+        ok_origin, origin_error = sec_registry.sanitize_header_value(origin)
+        clean_origin = str(origin or "").strip() if ok_origin else limits.default_origin
+        cleaned_headers, header_warnings = sec_registry.validate_request_headers(auth_headers or {})
+        timeout = sec_registry.clamp_float(
+            timeout_seconds, 15.0, limits.min_timeout_seconds, limits.max_timeout_seconds
+        )
+        warnings: List[str] = list(select_warnings) + list(header_warnings)
+        if not ok_origin:
+            warnings.append(f"Origin 非法，已回落到默认值: {origin_error}")
+
         targets = []
         for index, item in enumerate(normalized, start=1):
             url = self._build_full_url(item, base_url, include_query=True)
-            probe_methods = self._build_probe_methods(item)
+            probe_methods = sec_registry.get_probe_methods(item.get("method"), probe_strategy)
+            url_ok, url_error = sec_registry.validate_target_url(
+                url if url.startswith(("http://", "https://")) else "",
+                allow_private=allow_private_targets,
+            )
+            unresolved = self._unresolved_template_vars(url)
+            if unresolved:
+                warnings.append(f"{item.get('method', 'GET')} {item.get('path', '/')} 存在未解析变量: {', '.join(unresolved)}")
             targets.append(
                 {
                     "index": index,
@@ -99,11 +86,15 @@ class SecurityTestTool:
                     "path": item.get("path", "/"),
                     "url": url,
                     "probe_methods": probe_methods,
-                    "has_visible_auth": self._has_visible_auth(item.get("headers", {}), auth_headers or {}),
+                    "has_visible_auth": sec_registry.has_visible_auth(item.get("headers", {}), cleaned_headers),
+                    "target_valid": bool(url_ok),
+                    "target_error": url_error,
                 }
             )
 
-        if not targets and base_url.strip():
+        if not targets and str(base_url or "").strip():
+            root_url = str(base_url).strip().rstrip("/") + "/"
+            root_ok, root_error = sec_registry.validate_target_url(root_url, allow_private=allow_private_targets)
             targets.append(
                 {
                     "index": 1,
@@ -111,13 +102,37 @@ class SecurityTestTool:
                     "label": "GET /",
                     "method": "GET",
                     "path": "/",
-                    "url": base_url.strip().rstrip("/") + "/",
-                    "probe_methods": ["OPTIONS", "GET"],
-                    "has_visible_auth": self._has_visible_auth({}, auth_headers or {}),
+                    "url": root_url,
+                    "probe_methods": sec_registry.get_probe_methods("GET", probe_strategy),
+                    "has_visible_auth": sec_registry.has_visible_auth({}, cleaned_headers),
+                    "target_valid": bool(root_ok),
+                    "target_error": root_error,
                 }
             )
 
-        return {
+        scope = {
+            "base_url": str(base_url or "").strip(),
+            "interface_count": len(normalized),
+            "target_count": len(targets),
+            "timeout_seconds": timeout,
+            "verify_ssl": bool(verify_ssl) if verify_ssl is not None else limits.verify_ssl_by_default,
+            "origin": clean_origin or limits.default_origin,
+            "auth_headers": cleaned_headers,
+            "allow_private_targets": bool(
+                limits.allow_private_targets if allow_private_targets is None else allow_private_targets
+            ),
+            "follow_redirects": limits.follow_redirects_by_default,
+            "probe_strategy": probe_strategy,
+            "limits": {
+                "max_interfaces": limits.max_interfaces,
+                "max_roles": limits.max_roles,
+                "max_requests": limits.max_requests,
+                "max_timeout_seconds": limits.max_timeout_seconds,
+                "max_total_seconds": limits.max_total_seconds,
+                "max_response_bytes": limits.max_response_bytes,
+            },
+        }
+        plan = {
             "created_at": self._now(),
             "plan_name": "API Security Assessment Plan",
             "strategy": [
@@ -126,24 +141,21 @@ class SecurityTestTool:
                 "OWASP API Top 10 清单: 结合自动发现和人工复核步骤输出测试剧本与回归清单",
             ],
             "tool_inspirations": [
-                "OWASP WSTG",
-                "OWASP API Security Top 10 2023",
-                "OWASP ZAP Passive/Active Scan Policy",
-                "Burp Scanner Crawl + Audit + 自定义检查",
-                "Nuclei 模板化与回归思路",
+                "OWASP WSTG", "OWASP API Security Top 10 2023", "OWASP ZAP Passive/Active Scan Policy",
+                "Burp Scanner Crawl + Audit + 自定义检查", "Nuclei 模板化与回归思路",
             ],
-            "scope": {
-                "base_url": base_url.strip(),
-                "interface_count": len(normalized),
-                "target_count": len(targets),
-                "timeout_seconds": max(float(timeout_seconds), 1.0),
-                "verify_ssl": bool(verify_ssl),
-                "origin": origin.strip() or "https://security-audit.local",
-                "auth_headers": auth_headers or {},
-            },
+            "scope": scope,
             "targets": targets,
             "safety_notice": "仅用于已获授权的目标；当前实现默认不发送破坏性 payload，也不会主动执行注入、爆破、越权利用等攻击动作。",
+            "warnings": warnings,
+            "config_snapshot": self._config_snapshot(base_url, selected_indexes, cleaned_headers, timeout, verify_ssl, clean_origin, probe_strategy),
         }
+        plan["input_signature"] = self._signature(plan["config_snapshot"])
+        return plan
+
+    # ------------------------------------------------------------------
+    # 被动审计
+    # ------------------------------------------------------------------
 
     def analyze_interfaces(
         self,
@@ -151,176 +163,43 @@ class SecurityTestTool:
         base_url: str = "",
         selected_indexes: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
-        selected = self._select_interfaces(interfaces, selected_indexes)
+        selected, warnings = self._select_interfaces(interfaces, selected_indexes)
         findings: List[Dict[str, Any]] = []
         per_interface: List[Dict[str, Any]] = []
 
         for item in selected:
-            item_findings: List[Dict[str, Any]] = []
             label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
             full_url = self._build_full_url(item, base_url, include_query=True)
-            method = item.get("method", "GET")
-            description_blob = " ".join(
-                [
-                    str(item.get("name", "") or ""),
-                    str(item.get("description", "") or ""),
-                    str(item.get("path", "") or ""),
-                ]
-            ).lower()
-
-            if full_url.startswith("http://"):
-                item_findings.append(
-                    self._make_finding(
-                        "high",
-                        "transport",
-                        "接口作用域使用明文 HTTP",
-                        label,
-                        full_url,
-                        "生产或准生产接口建议统一使用 HTTPS，并确认网关强制跳转和 HSTS 策略。",
-                        "API8:2023",
-                    )
-                )
-
-            if method in self.MUTATING_METHODS and not self._has_visible_auth(item.get("headers", {})):
-                item_findings.append(
-                    self._make_finding(
-                        "medium",
-                        "auth_review",
-                        "变更类接口未在文档中体现鉴权信息",
-                        label,
-                        "请求头中未发现 Authorization/Cookie/API Key 一类的显式鉴权线索。",
-                        "确认该接口是否通过网关、签名、环境默认头或会话态进行保护，并在测试计划中覆盖 401/403 场景。",
-                        "API5:2023",
-                    )
-                )
-
-            if any(hint in description_blob for hint in self.ADMIN_HINTS) and not self._has_visible_auth(item.get("headers", {})):
-                item_findings.append(
-                    self._make_finding(
-                        "high",
-                        "admin_review",
-                        "管理/内部接口缺少显式鉴权提示",
-                        label,
-                        item.get("path", ""),
-                        "优先验证角色鉴权、功能级授权和环境隔离，避免内部接口被普通账号调用。",
-                        "API5:2023",
-                    )
-                )
-
-            sensitive_url_keys = self._match_sensitive_keys(item.get("query_params", {}), item.get("path_params", {}))
-            if sensitive_url_keys:
-                item_findings.append(
-                    self._make_finding(
-                        "medium",
-                        "sensitive_url",
-                        "URL 中出现敏感参数",
-                        label,
-                        ", ".join(sensitive_url_keys),
-                        "避免把口令、Token、Session、密钥等敏感数据放入 path/query，优先改为安全头或请求体。",
-                        "API8:2023",
-                    )
-                )
-
-            response_sensitive = self._detect_sensitive_response(item.get("expected_response"))
-            if response_sensitive:
-                severity = "high" if response_sensitive["high_hits"] else "medium"
-                item_findings.append(
-                    self._make_finding(
-                        severity,
-                        "sensitive_response",
-                        "响应样例包含敏感字段",
-                        label,
-                        ", ".join(response_sensitive["high_hits"] + response_sensitive["medium_hits"]),
-                        "复核这些字段是否应脱敏、按角色裁剪，或仅在服务端内部保留。",
-                        "API3:2023",
-                    )
-                )
-
-            error_leak_markers = self._find_error_leaks(item.get("expected_response"))
-            if error_leak_markers:
-                item_findings.append(
-                    self._make_finding(
-                        "medium",
-                        "error_leak",
-                        "响应样例存在错误栈/调试信息泄露迹象",
-                        label,
-                        ", ".join(error_leak_markers[:5]),
-                        "建议统一错误码和错误文案输出，不返回堆栈、SQL 语句、框架路径或调试上下文。",
-                        "API8:2023",
-                    )
-                )
-
-            if self._looks_like_upload(item) and not self._has_upload_validation_hint(item):
-                item_findings.append(
-                    self._make_finding(
-                        "low",
-                        "upload_review",
-                        "上传接口未体现类型/大小校验要求",
-                        label,
-                        item.get("description", "") or item.get("path", ""),
-                        "建议补充 MIME、扩展名、大小、病毒扫描和存储隔离等校验要求。",
-                        "API8:2023",
-                    )
-                )
-
-            ssrf_keys = self._match_ssrf_keys(item)
-            if ssrf_keys:
-                item_findings.append(
-                    self._make_finding(
-                        "medium",
-                        "ssrf_review",
-                        "接口存在 URL/回调类参数，需要做 SSRF 审计",
-                        label,
-                        ", ".join(ssrf_keys),
-                        "重点复核协议白名单、域名/IP 限制、重定向跟随、内网地址访问和 DNS 重绑定防护。",
-                        "API7:2023",
-                    )
-                )
-
-            if self._looks_like_bulk_endpoint(item) and not self._has_resource_control_hint(item):
-                item_findings.append(
-                    self._make_finding(
-                        "low",
-                        "resource_control",
-                        "批量/列表接口未体现分页或资源控制线索",
-                        label,
-                        item.get("path", ""),
-                        "建议补充分页、限流、速率限制、批量大小和导出权限控制要求。",
-                        "API4:2023",
-                    )
-                )
-
-            if not str(item.get("description", "") or "").strip():
-                item_findings.append(
-                    self._make_finding(
-                        "info",
-                        "inventory",
-                        "接口缺少描述信息",
-                        label,
-                        item.get("path", ""),
-                        "建议补齐接口用途、所属系统、鉴权方式和废弃状态，便于清单治理和安全回归。",
-                        "API9:2023",
-                    )
-                )
-
+            raw_findings = sec_registry.evaluate_passive_rules(item, label, full_url)
+            item_findings = [self._make_finding(**_finding_kwargs(item, label)) for item in raw_findings]
+            unresolved = self._unresolved_template_vars(full_url)
+            if unresolved:
+                warnings.append(f"{label} 存在未解析变量: {', '.join(unresolved)}")
             findings.extend(item_findings)
             per_interface.append(
                 {
                     "Label": label,
-                    "Method": method,
+                    "Method": item.get("method", "GET"),
                     "Path": item.get("path", ""),
                     "Risk Count": len(item_findings),
-                    "Top Severity": self._top_severity(item_findings),
+                    "Top Severity": sec_registry.top_severity(item_findings),
                 }
             )
 
         deduped_findings = self._dedupe_findings(findings)
-        return {
+        result = {
             "generated_at": self._now(),
             "summary": self._build_summary(len(selected), deduped_findings),
             "findings": deduped_findings,
             "per_interface": per_interface,
+            "warnings": warnings,
         }
+        result["text_summary"] = sec_registry.build_text_summary(result["summary"])
+        return result
+
+    # ------------------------------------------------------------------
+    # 基线探测
+    # ------------------------------------------------------------------
 
     def run_baseline_probe(
         self,
@@ -331,118 +210,161 @@ class SecurityTestTool:
         verify_ssl: bool = True,
         timeout_seconds: float = 15.0,
         origin: str = "https://security-audit.local",
+        allow_private_targets: Optional[bool] = None,
+        probe_strategy: str = "safe_baseline",
     ) -> Dict[str, Any]:
-        selected = self._select_interfaces(interfaces, selected_indexes)
-        request_headers = deepcopy(auth_headers or {})
-        request_headers.setdefault("Origin", origin.strip() or "https://security-audit.local")
+        limits = sec_registry.get_security_limits()
+        selected, warnings = self._select_interfaces(interfaces, selected_indexes)
+        timeout = sec_registry.clamp_float(
+            timeout_seconds, 15.0, limits.min_timeout_seconds, limits.max_timeout_seconds
+        )
+        ok_origin, origin_error = sec_registry.sanitize_header_value(origin)
+        if not ok_origin:
+            warnings.append(f"Origin 非法，已回落到默认值: {origin_error}")
+            origin = limits.default_origin
+        _, header_warnings = sec_registry.validate_request_headers(auth_headers or {})
+        warnings.extend(header_warnings)
+        auth_provided = bool(auth_headers)
+
+        if not selected and str(base_url or "").strip():
+            selected = [{
+                "name": "Base URL Root", "method": "GET", "path": "/", "headers": {},
+                "path_params": {}, "query_params": {}, "body": None,
+                "request_format": "auto", "expected_status": 200,
+            }]
+
+        findings: List[Dict[str, Any]] = []
+        samples: List[Dict[str, Any]] = []
+        request_count = 0
+        blocked = 0
+        truncated_bytes = 0
+        error_counts: Dict[str, int] = {}
         session = requests.Session()
+        started = time.monotonic()
         try:
-
-            findings: List[Dict[str, Any]] = []
-            samples: List[Dict[str, Any]] = []
-            request_count = 0
-
-            if not selected and base_url.strip():
-                selected = [
-                    {
-                        "name": "Base URL Root",
-                        "method": "GET",
-                        "path": "/",
-                        "headers": {},
-                        "path_params": {},
-                        "query_params": {},
-                        "body": None,
-                        "request_format": "auto",
-                        "expected_status": 200,
-                    }
-                ]
-
             for item in selected:
+                if request_count >= limits.max_requests:
+                    warnings.append(f"已达到最大请求数 {limits.max_requests}，剩余目标未探测")
+                    break
+                if time.monotonic() - started > limits.max_total_seconds:
+                    warnings.append(f"已达到总时长上限 {limits.max_total_seconds}s，剩余目标未探测")
+                    break
+
                 label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
                 url = self._build_full_url(item, base_url, include_query=True)
                 if not url.startswith(("http://", "https://")):
-                    findings.append(
-                        self._make_finding(
-                            "medium",
-                            "scope",
-                            "接口缺少可探测的绝对 URL",
-                            label,
-                            url or item.get("path", ""),
-                            "请补充 Base URL，或在接口文档中使用完整 URL，以便执行基线探测。",
-                            "API9:2023",
-                        )
-                    )
+                    findings.append(self._make_finding(
+                        "medium", "scope", "接口缺少可探测的绝对 URL", label,
+                        url or str(item.get("path", "")),
+                        "请补充 Base URL，或在接口文档中使用完整 URL，以便执行基线探测。", "API9:2023"))
+                    continue
+                url_ok, url_error = sec_registry.validate_target_url(url, allow_private=allow_private_targets)
+                if not url_ok:
+                    blocked += 1
+                    findings.append(self._make_finding(
+                        "high", "blocked_target", "目标地址未通过安全校验，已阻止探测", label,
+                        url_error or url,
+                        "仅探测已授权的公网目标；如需测试内网服务请显式开启「允许内网/本地目标」。", "API8:2023"))
                     continue
 
-                for probe_method in self._build_probe_methods(item):
-                    probe_headers = deepcopy(request_headers)
-                    if probe_method == "OPTIONS":
-                        probe_headers.setdefault("Access-Control-Request-Method", item.get("method", "GET"))
+                for probe_method in sec_registry.get_probe_methods(item.get("method"), probe_strategy):
+                    if request_count >= limits.max_requests:
+                        break
+                    if time.monotonic() - started > limits.max_total_seconds:
+                        break
+                    probe_headers, probe_warnings = sec_registry.build_probe_headers(
+                        auth_headers, origin, probe_method, str(item.get("method") or "GET")
+                    )
+                    for warn in probe_warnings:
+                        if warn not in warnings:
+                            warnings.append(warn)
                     request_count += 1
                     try:
                         response = session.request(
-                            method=probe_method,
-                            url=url,
-                            headers=probe_headers,
-                            allow_redirects=False,
-                            timeout=max(float(timeout_seconds), 1.0),
-                            verify=bool(verify_ssl),
+                            method=probe_method, url=url, headers=probe_headers,
+                            allow_redirects=limits.follow_redirects_by_default,
+                            timeout=timeout,
+                            verify=bool(verify_ssl) if verify_ssl is not None else limits.verify_ssl_by_default,
+                            stream=True,
                         )
-                        sample_findings = self._analyze_probe_response(
-                            response=response,
-                            label=label,
-                            url=url,
-                            probe_method=probe_method,
-                            original_method=item.get("method", "GET"),
-                            auth_provided=bool(auth_headers),
+                        body, was_truncated = self._read_response_body(response, limits.max_response_bytes)
+                        if was_truncated:
+                            truncated_bytes += 1
+                        body_for_rules = body[: limits.max_body_preview_chars]
+                        status_code = sec_registry.to_int(getattr(response, "status_code", 0), 0)
+                        headers = {str(k): str(v) for k, v in dict(getattr(response, "headers", {}) or {}).items()}
+                        lower_headers = {str(k).lower(): str(v) for k, v in headers.items()}
+                        ctx = sec_registry.ProbeContext(
+                            headers=headers, lower_headers=lower_headers, status_code=status_code,
+                            body_preview=body_for_rules, url=url, label=label,
+                            probe_method=probe_method, original_method=str(item.get("method") or "GET"),
+                            auth_provided=auth_provided,
                         )
+                        sample_findings = [
+                            self._make_finding(**_finding_kwargs(x, label))
+                            for x in sec_registry.evaluate_probe_rules(ctx)
+                        ]
                         findings.extend(sample_findings)
-                        samples.append(
-                            {
-                                "Label": label,
-                                "Probe Method": probe_method,
-                                "Status Code": response.status_code,
-                                "Risk Count": len(sample_findings),
-                                "Top Severity": self._top_severity(sample_findings),
-                                "URL": url,
-                                "Response Headers": json.dumps(dict(response.headers or {}), ensure_ascii=False, indent=2),
-                                "Body Preview": (response.text or "")[:800],
-                            }
-                        )
+                        samples.append({
+                            "Label": label, "Probe Method": probe_method,
+                            "Status Code": status_code, "Risk Count": len(sample_findings),
+                            "Top Severity": sec_registry.top_severity(sample_findings),
+                            "URL": url,
+                            "Response Headers": json.dumps(headers, ensure_ascii=False, indent=2),
+                            "Body Preview": body[: limits.max_sample_preview_chars],
+                            "error_type": "",
+                            "truncated": bool(was_truncated),
+                        })
                     except Exception as exc:
-                        findings.append(
-                            self._make_finding(
-                                "medium",
-                                "probe_error",
-                                "基线探测请求失败",
-                                label,
-                                f"{probe_method} {url} -> {exc}",
-                                "确认目标可达、证书配置、超时参数和网络 ACL；如果是内网服务，请在授权环境中执行。",
-                                "API9:2023",
-                            )
-                        )
-                        samples.append(
-                            {
-                                "Label": label,
-                                "Probe Method": probe_method,
-                                "Status Code": 0,
-                                "Risk Count": 1,
-                                "Top Severity": "medium",
-                                "URL": url,
-                                "Response Headers": "{}",
-                                "Body Preview": str(exc),
-                            }
-                        )
-
-            deduped_findings = self._dedupe_findings(findings)
+                        error_type = self._classify_probe_error(exc)
+                        error_counts[error_type] = error_counts.get(error_type, 0) + 1
+                        findings.append(self._make_finding(
+                            "medium", "probe_error", f"基线探测请求失败（{error_type}）", label,
+                            f"{probe_method} {url} -> {type(exc).__name__}: {exc}",
+                            "确认目标可达、证书配置、超时参数和网络 ACL；如果是内网服务，请在授权环境中执行。",
+                            "API9:2023", error_type=error_type))
+                        samples.append({
+                            "Label": label, "Probe Method": probe_method, "Status Code": 0,
+                            "Risk Count": 1, "Top Severity": "medium", "URL": url,
+                            "Response Headers": "{}", "Body Preview": str(exc),
+                            "error_type": error_type, "truncated": False,
+                        })
         finally:
             session.close()
-        return {
+
+        for error_type, count in sorted(error_counts.items()):
+            warnings.append(
+                f"探测请求失败 {count} 次（{error_type}）；失败样本已标记 error_type，"
+                "请检查目标可达性、证书、超时与网络 ACL 后再复测"
+            )
+        if blocked:
+            warnings.append(f"{blocked} 个目标未通过安全校验（内网/协议/userinfo），已阻止探测")
+        deduped_findings = self._dedupe_findings(findings)
+        truncation = {
+            "interfaces_total": len(interfaces or []),
+            "interfaces_selected": len(selected),
+            "requests_sent": request_count,
+            "requests_limit": limits.max_requests,
+            "blocked_targets": blocked,
+            "truncated_responses": truncated_bytes,
+            "body_preview_chars": limits.max_body_preview_chars,
+            "sample_preview_chars": limits.max_sample_preview_chars,
+            "elapsed_seconds": round(time.monotonic() - started, 3),
+        }
+        result = {
             "generated_at": self._now(),
             "summary": self._build_probe_summary(samples, deduped_findings, request_count),
             "findings": deduped_findings,
             "samples": samples,
+            "warnings": warnings,
+            "truncation": truncation,
         }
+        result["text_summary"] = sec_registry.build_text_summary(result["summary"])
+        return result
+
+    # ------------------------------------------------------------------
+    # 多角色回归
+    # ------------------------------------------------------------------
 
     def run_role_batch_regression(
         self,
@@ -453,96 +375,93 @@ class SecurityTestTool:
         verify_ssl: bool = True,
         timeout_seconds: float = 15.0,
         origin: str = "https://security-audit.local",
+        allow_private_targets: Optional[bool] = None,
+        probe_strategy: str = "safe_baseline",
     ) -> Dict[str, Any]:
-        normalized_profiles = self._normalize_role_profiles(role_profiles)
+        limits = sec_registry.get_security_limits()
+        normalized_profiles, warnings = self._normalize_role_profiles(role_profiles)
         role_reports = []
         flat_samples = []
         role_summaries = []
+        estimated = len(normalized_profiles) * max(1, len(interfaces or [])) * limits.max_probes_per_interface
+        if estimated > limits.max_requests:
+            warnings.append(
+                f"预估请求数 {estimated} 超过上限 {limits.max_requests}；"
+                "已按每轮请求上限截断，建议缩小接口/角色范围"
+            )
 
         for profile in normalized_profiles:
             report = self.run_baseline_probe(
-                interfaces=interfaces,
-                base_url=base_url,
-                selected_indexes=selected_indexes,
-                auth_headers=profile.get("headers", {}),
-                verify_ssl=verify_ssl,
-                timeout_seconds=timeout_seconds,
-                origin=origin,
+                interfaces=interfaces, base_url=base_url, selected_indexes=selected_indexes,
+                auth_headers=profile.get("headers", {}), verify_ssl=verify_ssl,
+                timeout_seconds=timeout_seconds, origin=origin,
+                allow_private_targets=allow_private_targets, probe_strategy=probe_strategy,
             )
             role_reports.append({"role": profile.get("role", ""), "headers": profile.get("headers", {}), "report": report})
-            role_summaries.append(
-                {
+            role_summaries.append({
+                "Role": profile.get("role", ""),
+                "Header Keys": ", ".join(sorted((profile.get("headers") or {}).keys())) or "无",
+                "Requests": report.get("summary", {}).get("request_count", 0),
+                "Findings": report.get("summary", {}).get("finding_count", 0),
+                "High": report.get("summary", {}).get("high", 0),
+                "Medium": report.get("summary", {}).get("medium", 0),
+            })
+            for sample in list(report.get("samples") or []):
+                flat_samples.append({
                     "Role": profile.get("role", ""),
                     "Header Keys": ", ".join(sorted((profile.get("headers") or {}).keys())) or "无",
-                    "Requests": report.get("summary", {}).get("request_count", 0),
-                    "Findings": report.get("summary", {}).get("finding_count", 0),
-                    "High": report.get("summary", {}).get("high", 0),
-                    "Medium": report.get("summary", {}).get("medium", 0),
-                }
-            )
-            for sample in list(report.get("samples") or []):
-                flat_samples.append(
-                    {
-                        "Role": profile.get("role", ""),
-                        "Header Keys": ", ".join(sorted((profile.get("headers") or {}).keys())) or "无",
-                        **sample,
-                    }
-                )
+                    **sample,
+                })
+            for warn in report.get("warnings", []):
+                text = f"[{profile.get('role', '')}] {warn}"
+                if text not in warnings:
+                    warnings.append(text)
 
         comparison_rows = self._build_role_comparison_rows(role_reports)
         comparison_findings = self._analyze_role_comparison_rows(comparison_rows)
         deduped_findings = self._dedupe_findings(comparison_findings)
         summary = self._build_summary(len(comparison_rows), deduped_findings)
-        summary.update(
-            {
-                "role_count": len(normalized_profiles),
-                "comparison_count": len(comparison_rows),
-            }
-        )
-        return {
+        summary.update({"role_count": len(normalized_profiles), "comparison_count": len(comparison_rows)})
+        result = {
             "generated_at": self._now(),
             "roles": [
-                {
-                    "Role": profile.get("role", ""),
-                    "Header Keys": list(sorted((profile.get("headers") or {}).keys())),
-                }
-                for profile in normalized_profiles
+                {"Role": p.get("role", ""), "Header Keys": list(sorted((p.get("headers") or {}).keys()))}
+                for p in normalized_profiles
             ],
             "summary": summary,
             "role_summaries": role_summaries,
             "samples": flat_samples,
             "comparisons": comparison_rows,
             "findings": deduped_findings,
+            "warnings": warnings,
         }
+        result["text_summary"] = sec_registry.build_text_summary(summary)
+        return result
+
+    # ------------------------------------------------------------------
+    # OWASP 清单 / 扫描策略 / 权限矩阵
+    # ------------------------------------------------------------------
 
     def build_owasp_checklist(
         self,
         passive_report: Optional[Dict[str, Any]] = None,
         probe_report: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        passive_findings = list((passive_report or {}).get("findings") or [])
-        probe_findings = list((probe_report or {}).get("findings") or [])
-        all_findings = passive_findings + probe_findings
-
+        all_findings = list((passive_report or {}).get("findings") or []) + list((probe_report or {}).get("findings") or [])
         checklist = []
-        for code, title, focus in self.OWASP_ITEMS:
-            related = [item for item in all_findings if str(item.get("OWASP", "")).startswith(code)]
+        for item in sec_registry.get_owasp_items():
+            related = [f for f in all_findings if item.code in sec_registry.match_owasp_codes(f.get("OWASP", ""))]
             if related:
                 status = "重点关注"
-            elif code in {"API7:2023", "API8:2023", "API9:2023"}:
+            elif item.auto_baseline:
                 status = "已纳入自动基线"
             else:
                 status = "手工复核"
-            checklist.append(
-                {
-                    "OWASP": code,
-                    "Category": title,
-                    "Status": status,
-                    "Auto Findings": len(related),
-                    "Focus": focus,
-                    "Manual Validation": self._manual_validation_text(code),
-                }
-            )
+            checklist.append({
+                "OWASP": item.code, "Category": item.title, "Status": status,
+                "Auto Findings": len(related), "Focus": item.focus,
+                "Manual Validation": item.manual,
+            })
         return checklist
 
     def build_scan_policy(
@@ -551,77 +470,50 @@ class SecurityTestTool:
         passive_report: Optional[Dict[str, Any]] = None,
         probe_report: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        passive_report = passive_report or {}
-        probe_report = probe_report or {}
-        passive_summary = passive_report.get("summary", {})
-        probe_summary = probe_report.get("summary", {})
+        passive_summary = (passive_report or {}).get("summary", {})
+        probe_summary = (probe_report or {}).get("summary", {})
+        scope = plan.get("scope") or {}
         return {
             "generated_at": self._now(),
             "policy_name": "API Security Baseline Policy",
-            "mode": "safe-baseline",
+            "mode": scope.get("probe_strategy", "safe_baseline"),
             "inspirations": [
-                {
-                    "Tool": "Burp Scanner",
-                    "Capability": "基于范围、登录态和审计配置组织扫描任务",
-                    "Mapped Module": "范围选择、鉴权头配置、基线探测动作编排",
-                },
-                {
-                    "Tool": "OWASP ZAP",
-                    "Capability": "被动扫描、规则阈值、扫描策略和安全基线告警",
-                    "Mapped Module": "被动审计、头部/CORS/Cookie/错误泄露基线探测",
-                },
-                {
-                    "Tool": "OWASP WSTG / API Top 10",
-                    "Capability": "测试方法论、风险清单和人工复核路径",
-                    "Mapped Module": "OWASP 清单、安全测试剧本、人工验证建议",
-                },
-                {
-                    "Tool": "Nuclei",
-                    "Capability": "模板化回归、批量执行、持续集成输出",
-                    "Mapped Module": "报告打包、JSON/Markdown 导出、回归清单沉淀",
-                },
+                {"Tool": "Burp Scanner", "Capability": "基于范围、登录态和审计配置组织扫描任务",
+                 "Mapped Module": "范围选择、鉴权头配置、基线探测动作编排"},
+                {"Tool": "OWASP ZAP", "Capability": "被动扫描、规则阈值、扫描策略和安全基线告警",
+                 "Mapped Module": "被动审计、头部/CORS/Cookie/错误泄露基线探测"},
+                {"Tool": "OWASP WSTG / API Top 10", "Capability": "测试方法论、风险清单和人工复核路径",
+                 "Mapped Module": "OWASP 清单、安全测试剧本、人工验证建议"},
+                {"Tool": "Nuclei", "Capability": "模板化回归、批量执行、持续集成输出",
+                 "Mapped Module": "报告打包、JSON/Markdown 导出、回归清单沉淀"},
             ],
             "phases": [
-                {
-                    "Phase": "Passive Review",
-                    "Status": "启用",
-                    "Description": "不发请求或不改变目标状态，先对接口文档、样例和参数进行静态审计。",
-                    "Checks": "协议、显式鉴权、敏感字段、错误泄露、上传校验、SSRF 参数、资源控制、接口清单完整性",
-                },
-                {
-                    "Phase": "Baseline Probe",
-                    "Status": "按范围启用" if (plan.get("scope") or {}).get("target_count", 0) else "待配置",
-                    "Description": "仅使用 OPTIONS/GET/HEAD 这类低风险请求检查安全基线。",
-                    "Checks": "HSTS、X-Content-Type-Options、CSP、CORS、TRACE、Server/X-Powered-By、Cookie Flags、缓存控制、错误回显",
-                },
-                {
-                    "Phase": "Manual Validation",
-                    "Status": "建议执行",
-                    "Description": "针对自动化难覆盖的权限、业务流、对象级授权进行人工复核。",
-                    "Checks": "BOLA/BFLA、对象属性级授权、敏感业务流、第三方 API 信任边界、鉴权失效与会话管理",
-                },
+                {"Phase": "Passive Review", "Status": "启用",
+                 "Description": "不发请求或不改变目标状态，先对接口文档、样例和参数进行静态审计。",
+                 "Checks": "协议、显式鉴权、敏感字段、错误泄露、上传校验、SSRF 参数、资源控制、接口清单完整性"},
+                {"Phase": "Baseline Probe", "Status": "按范围启用" if scope.get("target_count", 0) else "待配置",
+                 "Description": "仅使用 OPTIONS/GET/HEAD 这类低风险请求检查安全基线。",
+                 "Checks": "HSTS、X-Content-Type-Options、CSP、CORS、TRACE、Server/X-Powered-By、Cookie Flags、缓存控制、错误回显"},
+                {"Phase": "Manual Validation", "Status": "建议执行",
+                 "Description": "针对自动化难覆盖的权限、业务流、对象级授权进行人工复核。",
+                 "Checks": "BOLA/BFLA、对象属性级授权、敏感业务流、第三方 API 信任边界、鉴权失效与会话管理"},
             ],
             "guardrails": [
                 "仅用于已授权目标；默认不执行注入、爆破、越权利用、批量 fuzz 和高风险主动攻击。",
                 "基线探测默认不发送破坏性 payload，仅复用目标原有 GET/HEAD/OPTIONS 能力。",
                 "活动扫描不能替代人工权限测试，涉及对象级授权和业务流风险时必须人工复核。",
+                "默认拦截内网/回环/链路本地/元数据地址，默认关闭重定向、默认开启 SSL 校验。",
+                f"运行上限：接口 {scope.get('limits', {}).get('max_interfaces', '-')} / "
+                f"角色 {scope.get('limits', {}).get('max_roles', '-')} / "
+                f"请求 {scope.get('limits', {}).get('max_requests', '-')}。",
             ],
             "coverage": [
-                {
-                    "Area": "被动审计发现",
-                    "Value": passive_summary.get("finding_count", 0),
-                    "Notes": f"High {passive_summary.get('high', 0)} / Medium {passive_summary.get('medium', 0)}",
-                },
-                {
-                    "Area": "基线探测发现",
-                    "Value": probe_summary.get("finding_count", 0),
-                    "Notes": f"Requests {probe_summary.get('request_count', 0)} / Success {probe_summary.get('success_rate', 0)}%",
-                },
-                {
-                    "Area": "OWASP API Top 10",
-                    "Value": len(self.OWASP_ITEMS),
-                    "Notes": "结合自动发现与人工复核输出清单",
-                },
+                {"Area": "被动审计发现", "Value": passive_summary.get("finding_count", 0),
+                 "Notes": f"High {passive_summary.get('high', 0)} / Medium {passive_summary.get('medium', 0)}"},
+                {"Area": "基线探测发现", "Value": probe_summary.get("finding_count", 0),
+                 "Notes": f"Requests {probe_summary.get('request_count', 0)} / Success {probe_summary.get('success_rate', 0)}%"},
+                {"Area": "OWASP API Top 10", "Value": len(sec_registry.get_owasp_items()),
+                 "Notes": "结合自动发现与人工复核输出清单"},
             ],
         }
 
@@ -631,10 +523,14 @@ class SecurityTestTool:
         selected_indexes: Optional[List[int]] = None,
         roles: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        selected = self._select_interfaces(interfaces, selected_indexes)
-        normalized_roles = [item for item in (roles or ["匿名用户", "普通用户", "管理员", "跨租户用户"]) if str(item).strip()]
+        limits = sec_registry.get_security_limits()
+        selected, warnings = self._select_interfaces(interfaces, selected_indexes)
+        normalized_roles = [str(item).strip() for item in (roles or []) if str(item).strip()]
         if not normalized_roles:
             normalized_roles = ["匿名用户", "普通用户", "管理员", "跨租户用户"]
+        if len(normalized_roles) > limits.max_roles:
+            warnings.append(f"角色数 {len(normalized_roles)} 超过上限 {limits.max_roles}，已截断")
+            normalized_roles = normalized_roles[: limits.max_roles]
 
         matrix_rows: List[Dict[str, Any]] = []
         interface_rows: List[Dict[str, Any]] = []
@@ -643,15 +539,13 @@ class SecurityTestTool:
         for item in selected:
             label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
             risk = self._classify_authorization_risk(item)
-            object_related = self._has_object_reference(item)
-            public_endpoint = self._looks_public_endpoint(item)
-            admin_endpoint = self._looks_admin_endpoint(item)
-            business_endpoint = self._looks_business_endpoint(item)
-            write_endpoint = str(item.get("method", "GET")).upper() in self.MUTATING_METHODS
-
+            object_related = sec_registry.has_object_reference(item)
+            public_endpoint = sec_registry.looks_public_endpoint(item)
+            admin_endpoint = sec_registry.looks_admin_endpoint(item)
+            business_endpoint = sec_registry.looks_business_endpoint(item)
+            write_endpoint = str(item.get("method", "GET")).upper() in sec_registry.get_mutating_methods()
             if risk == "high":
                 high_risk_count += 1
-
             checks = []
             if object_related:
                 checks.append("替换对象 ID/tenant_id 做越权验证")
@@ -664,51 +558,35 @@ class SecurityTestTool:
             if not checks:
                 checks.append("验证匿名、普通用户和管理员的访问边界")
 
-            interface_rows.append(
-                {
-                    "Label": label,
-                    "Risk": risk,
-                    "Public Hint": "是" if public_endpoint else "否",
-                    "Object Reference": "是" if object_related else "否",
-                    "Admin/Biz Hint": "是" if admin_endpoint or business_endpoint else "否",
-                    "Checks": "；".join(checks),
-                }
-            )
-
+            interface_rows.append({
+                "Label": label, "Risk": risk,
+                "Public Hint": "是" if public_endpoint else "否",
+                "Object Reference": "是" if object_related else "否",
+                "Admin/Biz Hint": "是" if admin_endpoint or business_endpoint else "否",
+                "Checks": "；".join(checks),
+            })
             for role in normalized_roles:
                 should_access, expected = self._role_expectation(
-                    role,
-                    item,
-                    risk,
-                    public_endpoint,
-                    admin_endpoint,
-                    object_related,
+                    role, item, risk, public_endpoint, admin_endpoint, object_related
                 )
-                matrix_rows.append(
-                    {
-                        "Label": label,
-                        "Method": item.get("method", "GET"),
-                        "Path": item.get("path", ""),
-                        "Role": role,
-                        "Risk": risk,
-                        "Should Access": should_access,
-                        "Expected Result": expected,
-                        "Checks": "；".join(checks),
-                    }
-                )
-
+                matrix_rows.append({
+                    "Label": label, "Method": item.get("method", "GET"), "Path": item.get("path", ""),
+                    "Role": role, "Risk": risk, "Should Access": should_access,
+                    "Expected Result": expected, "Checks": "；".join(checks),
+                })
         return {
             "generated_at": self._now(),
             "roles": normalized_roles,
             "summary": {
-                "interface_count": len(selected),
-                "role_count": len(normalized_roles),
-                "scenario_count": len(matrix_rows),
-                "high_risk_interfaces": high_risk_count,
+                "interface_count": len(selected), "role_count": len(normalized_roles),
+                "scenario_count": len(matrix_rows), "high_risk_interfaces": high_risk_count,
             },
-            "interfaces": interface_rows,
-            "matrix": matrix_rows,
+            "interfaces": interface_rows, "matrix": matrix_rows, "warnings": warnings,
         }
+
+    # ------------------------------------------------------------------
+    # Nuclei 模板
+    # ------------------------------------------------------------------
 
     def build_nuclei_template_pack(
         self,
@@ -717,68 +595,84 @@ class SecurityTestTool:
         origin: str = "https://security-audit.local",
         auth_headers: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        selected = self._select_interfaces(interfaces, selected_indexes)
+        limits = sec_registry.get_security_limits()
+        selected, warnings = self._select_interfaces(interfaces, selected_indexes)
         paths: List[str] = []
         for item in selected:
-            path = self._normalize_template_path(item.get("path") or "/")
+            path = sec_registry.normalize_template_path(item.get("path") or "/")
             if path not in paths:
                 paths.append(path)
-
         if not paths:
             paths = ["/"]
 
-        options_paths = paths[:25]
+        options_paths = paths[: limits.max_template_paths]
         get_paths = []
         for item in selected:
             if str(item.get("method") or "GET").upper() in {"GET", "HEAD", "OPTIONS"}:
-                path = self._normalize_template_path(item.get("path") or "/")
+                path = sec_registry.normalize_template_path(item.get("path") or "/")
                 if path not in get_paths:
                     get_paths.append(path)
         if not get_paths:
-            get_paths = options_paths[:10]
+            get_paths = options_paths[: min(10, limits.max_template_paths)]
         else:
-            get_paths = get_paths[:25]
+            get_paths = get_paths[: limits.max_template_paths]
 
         sensitive_paths = []
         for item in selected:
             label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
-            path = self._normalize_template_path(item.get("path") or "/")
-            if self._looks_sensitive_runtime_target(label, path) and path not in sensitive_paths:
+            path = sec_registry.normalize_template_path(item.get("path") or "/")
+            if sec_registry.looks_sensitive_runtime_target(label, path) and path not in sensitive_paths:
                 sensitive_paths.append(path)
         if not sensitive_paths:
-            sensitive_paths = get_paths[:10]
+            sensitive_paths = get_paths[: min(10, limits.max_sensitive_template_paths)]
         else:
-            sensitive_paths = sensitive_paths[:20]
+            sensitive_paths = sensitive_paths[: limits.max_sensitive_template_paths]
 
-        header_variables = self._build_template_header_variables(auth_headers or {})
-        templates = [
-            {
-                "file_name": "api-security-headers-baseline.yaml",
-                "name": "API Security Headers Baseline",
-                "content": self._build_nuclei_headers_template(get_paths, origin, header_variables),
-            },
-            {
-                "file_name": "api-cors-methods-exposure.yaml",
-                "name": "API CORS And Method Exposure",
-                "content": self._build_nuclei_options_template(options_paths, origin, header_variables),
-            },
-            {
-                "file_name": "api-sensitive-cache-review.yaml",
-                "name": "API Sensitive Cache Review",
-                "content": self._build_nuclei_cache_template(sensitive_paths, origin, header_variables),
-            },
-        ]
+        _, header_warnings = sec_registry.validate_request_headers(auth_headers or {})
+        warnings.extend(header_warnings)
+        clean_headers, _ = sec_registry.validate_request_headers(auth_headers or {})
+        header_variables = sec_registry.build_template_header_variables(clean_headers)
+        path_sets = {"headers": get_paths, "options": options_paths, "cache": sensitive_paths}
+        ok_origin, origin_error = sec_registry.sanitize_header_value(origin)
+        if not ok_origin:
+            warnings.append(f"Origin 非法，已回落到默认值: {origin_error}")
+            origin = limits.default_origin
+        templates = []
+        for spec in sec_registry.get_nuclei_templates():
+            selected_paths = path_sets.get(spec.key, options_paths)
+            templates.append({
+                "file_name": spec.file_name, "name": spec.name,
+                "content": spec.builder(selected_paths, origin, header_variables),
+                "path_count": len(selected_paths),
+            })
+        truncation = {
+            "paths_total": len(paths),
+            "paths_kept": len(options_paths),
+            "get_paths_kept": len(get_paths),
+            "sensitive_paths_kept": len(sensitive_paths),
+            "max_template_paths": limits.max_template_paths,
+            "max_sensitive_template_paths": limits.max_sensitive_template_paths,
+        }
+        if len(paths) > len(options_paths):
+            warnings.append(
+                f"Nuclei 模板路径已截断：共 {len(paths)} 条，保留 {len(options_paths)} 条"
+            )
         return {
             "generated_at": self._now(),
-            "template_count": len(templates),
-            "path_count": len(paths),
+            "template_count": len(templates), "path_count": len(paths),
             "templates": templates,
             "notes": [
                 "模板只使用 GET/OPTIONS 的低风险请求，适合做安全基线回归。",
                 "默认不会写入真实 Token/Cookie；如果目标需要认证，请在执行前补充占位变量。",
                 "模板更适合发现配置型问题，不能替代人工权限测试和业务流安全测试。",
+                "header 名已做 RFC 7230 白名单校验，变量名带唯一后缀，避免 YAML 注入与变量覆盖。",
             ],
+            "truncation": truncation, "warnings": warnings,
         }
+
+    # ------------------------------------------------------------------
+    # 风险看板 / 回归套件 / 剧本 / 报告打包
+    # ------------------------------------------------------------------
 
     def build_risk_dashboard(
         self,
@@ -787,18 +681,37 @@ class SecurityTestTool:
         role_regression: Optional[Dict[str, Any]] = None,
         authorization_matrix: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        passive_findings = [dict(item, Source="被动审计") for item in list((passive_report or {}).get("findings") or [])]
-        probe_findings = [dict(item, Source="基线探测") for item in list((probe_report or {}).get("findings") or [])]
-        role_findings = [dict(item, Source="多角色回归") for item in list((role_regression or {}).get("findings") or [])]
-        all_findings = passive_findings + probe_findings + role_findings
+        sources = [
+            ("被动审计", (passive_report or {}).get("findings") or []),
+            ("基线探测", (probe_report or {}).get("findings") or []),
+            ("多角色回归", (role_regression or {}).get("findings") or []),
+        ]
+        seen: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+        duplicate_count = 0
+        for source, findings in sources:
+            for item in findings:
+                key = (
+                    str(item.get("Category", "")), str(item.get("Title", "")),
+                    str(item.get("Target", "")), str(item.get("Evidence", "")),
+                )
+                merged = dict(item)
+                merged["Sources"] = [source]
+                if key in seen:
+                    duplicate_count += 1
+                    existing = seen[key]
+                    sources_list = list(existing.get("Sources") or [])
+                    if source not in sources_list:
+                        sources_list.append(source)
+                    existing["Sources"] = sources_list
+                    existing["Source"] = " + ".join(sources_list)
+                    continue
+                merged["Source"] = source
+                seen[key] = merged
+        all_findings = list(seen.values())
 
         summary = {
-            "finding_count": len(all_findings),
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "info": 0,
-            "role_findings": len(role_findings),
+            "finding_count": len(all_findings), "high": 0, "medium": 0, "low": 0, "info": 0,
+            "role_findings": len(sources[2][1]), "duplicate_merged": duplicate_count,
             "auth_high_risk_interfaces": int((authorization_matrix or {}).get("summary", {}).get("high_risk_interfaces", 0)),
         }
         for item in all_findings:
@@ -809,33 +722,20 @@ class SecurityTestTool:
         category_groups = self._group_findings(all_findings, key="Category")
         owasp_groups = self._group_findings(all_findings, key="OWASP")
         target_groups = self._group_findings(all_findings, key="Target", limit=12)
-
-        overview = []
-        for item in category_groups[:12]:
-            overview.append(
-                {
-                    "Severity": item.get("Top Severity", "info"),
-                    "Source": item.get("Top Source", ""),
-                    "Category": item.get("Group", ""),
-                    "Count": item.get("Count", 0),
-                    "Highlights": item.get("Highlights", ""),
-                }
-            )
-
-        auth_focus = []
-        for item in list((authorization_matrix or {}).get("interfaces") or []):
-            if str(item.get("Risk", "")).lower() == "high":
-                auth_focus.append(item)
-
-        return {
-            "generated_at": self._now(),
-            "summary": summary,
-            "issue_overview": overview,
-            "category_groups": category_groups,
-            "owasp_groups": owasp_groups,
-            "target_groups": target_groups,
-            "auth_focus": auth_focus[:12],
+        overview = [{
+            "Severity": item.get("Top Severity", "info"), "Source": item.get("Top Source", ""),
+            "Category": item.get("Group", ""), "Count": item.get("Count", 0),
+            "Highlights": item.get("Highlights", ""),
+        } for item in category_groups[:12]]
+        auth_focus = [item for item in list((authorization_matrix or {}).get("interfaces") or [])
+                      if str(item.get("Risk", "")).lower() == "high"]
+        result = {
+            "generated_at": self._now(), "summary": summary, "issue_overview": overview,
+            "category_groups": category_groups, "owasp_groups": owasp_groups,
+            "target_groups": target_groups, "auth_focus": auth_focus[:12],
         }
+        result["text_summary"] = sec_registry.build_text_summary(summary)
+        return result
 
     def build_regression_suite(
         self,
@@ -846,93 +746,75 @@ class SecurityTestTool:
         role_regression: Optional[Dict[str, Any]] = None,
         authorization_matrix: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        selected = self._select_interfaces(interfaces, selected_indexes)
+        selected, warnings = self._select_interfaces(interfaces, selected_indexes)
         findings_by_target = self._group_findings_by_target(passive_report, probe_report)
         suite_rows: List[Dict[str, Any]] = []
-
         for item in selected:
             label = f"{item.get('method', 'GET')} {item.get('path', '/')}"
             target_findings = findings_by_target.get(label, [])
-            if not target_findings and not self._looks_sensitive_runtime_target(label, item.get("path", "")):
+            if not target_findings and not sec_registry.looks_sensitive_runtime_target(label, str(item.get("path", ""))):
                 continue
-
             for finding in target_findings:
-                suite_rows.append(
-                    {
-                        "Suite": self._suite_name_for_category(str(finding.get("Category", ""))),
-                        "Priority": self._priority_from_severity(str(finding.get("Severity", "info"))),
-                        "Label": label,
-                        "Role": "通用",
-                        "Trigger": f"{finding.get('Source', '')} / {finding.get('Title', '')}",
-                        "Checks": finding.get("Recommendation", ""),
-                        "Expected": self._expected_for_category(str(finding.get("Category", ""))),
-                    }
-                )
-
+                category = str(finding.get("Category", ""))
+                suite_rows.append({
+                    "Suite": sec_registry.get_suite_name(category),
+                    "Priority": sec_registry.priority_from_severity(str(finding.get("Severity", "info"))),
+                    "Label": label, "Role": "通用",
+                    "Trigger": f"{finding.get('Source', '')} / {finding.get('Title', '')}",
+                    "Checks": finding.get("Recommendation", ""),
+                    "Expected": sec_registry.get_expected_text(category),
+                })
         for row in list((authorization_matrix or {}).get("matrix") or []):
             if str(row.get("Risk", "")).lower() not in {"high", "medium"}:
                 continue
-            suite_rows.append(
-                {
-                    "Suite": "权限矩阵回归",
-                    "Priority": "P0" if str(row.get("Risk", "")).lower() == "high" else "P1",
-                    "Label": row.get("Label", ""),
-                    "Role": row.get("Role", ""),
-                    "Trigger": "角色矩阵",
-                    "Checks": row.get("Checks", ""),
-                    "Expected": row.get("Expected Result", ""),
-                }
-                )
-
+            suite_rows.append({
+                "Suite": "权限矩阵回归",
+                "Priority": "P0" if str(row.get("Risk", "")).lower() == "high" else "P1",
+                "Label": row.get("Label", ""), "Role": row.get("Role", ""),
+                "Trigger": "角色矩阵", "Checks": row.get("Checks", ""),
+                "Expected": row.get("Expected Result", ""),
+            })
         for finding in list((role_regression or {}).get("findings") or []):
-            suite_rows.append(
-                {
-                    "Suite": "多角色差异回归",
-                    "Priority": self._priority_from_severity(str(finding.get("Severity", "info"))),
-                    "Label": finding.get("Target", ""),
-                    "Role": "多角色",
-                    "Trigger": f"多角色回归 / {finding.get('Title', '')}",
-                    "Checks": finding.get("Recommendation", ""),
-                    "Expected": "不同角色应符合预期访问边界，敏感接口不能对低权限角色放行",
-                }
-            )
-
+            suite_rows.append({
+                "Suite": sec_registry.get_suite_name("role_regression"),
+                "Priority": sec_registry.priority_from_severity(str(finding.get("Severity", "info"))),
+                "Label": finding.get("Target", ""), "Role": "多角色",
+                "Trigger": f"多角色回归 / {finding.get('Title', '')}",
+                "Checks": finding.get("Recommendation", ""),
+                "Expected": "不同角色应符合预期访问边界，敏感接口不能对低权限角色放行",
+            })
         deduped_rows = []
         seen = set()
         for row in suite_rows:
-            key = (row.get("Suite", ""), row.get("Priority", ""), row.get("Label", ""), row.get("Role", ""), row.get("Trigger", ""))
+            key = (row.get("Suite", ""), row.get("Priority", ""), row.get("Label", ""),
+                   row.get("Role", ""), row.get("Trigger", ""))
             if key in seen:
                 continue
             seen.add(key)
             deduped_rows.append(row)
-
-        suite_groups = []
+        suite_groups: List[Dict[str, Any]] = []
         group_map: Dict[str, Dict[str, Any]] = {}
         for row in deduped_rows:
             suite_name = row.get("Suite", "未分类")
-            group_item = group_map.setdefault(
-                suite_name,
-                {"Suite": suite_name, "Count": 0, "P0": 0, "P1": 0, "P2": 0, "P3": 0},
-            )
+            group_item = group_map.setdefault(suite_name, {
+                "Suite": suite_name, "Count": 0, "P0": 0, "P1": 0, "P2": 0, "P3": 0,
+            })
             group_item["Count"] += 1
             priority = row.get("Priority", "P3")
             if priority in group_item:
                 group_item[priority] += 1
         suite_groups.extend(group_map.values())
         suite_groups.sort(key=lambda item: (-item.get("P0", 0), -item.get("P1", 0), item.get("Suite", "")))
-
         return {
             "generated_at": self._now(),
             "summary": {
-                "suite_count": len(suite_groups),
-                "scenario_count": len(deduped_rows),
-                "p0": sum(1 for item in deduped_rows if item.get("Priority") == "P0"),
-                "p1": sum(1 for item in deduped_rows if item.get("Priority") == "P1"),
-                "p2": sum(1 for item in deduped_rows if item.get("Priority") == "P2"),
-                "p3": sum(1 for item in deduped_rows if item.get("Priority") == "P3"),
+                "suite_count": len(suite_groups), "scenario_count": len(deduped_rows),
+                "p0": sum(1 for i in deduped_rows if i.get("Priority") == "P0"),
+                "p1": sum(1 for i in deduped_rows if i.get("Priority") == "P1"),
+                "p2": sum(1 for i in deduped_rows if i.get("Priority") == "P2"),
+                "p3": sum(1 for i in deduped_rows if i.get("Priority") == "P3"),
             },
-            "groups": suite_groups,
-            "scenarios": deduped_rows,
+            "groups": suite_groups, "scenarios": deduped_rows, "warnings": warnings,
         }
 
     def generate_security_playbook(
@@ -942,57 +824,45 @@ class SecurityTestTool:
         probe_report: Optional[Dict[str, Any]] = None,
         checklist: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        passive_findings = list((passive_report or {}).get("findings") or [])
-        probe_findings = list((probe_report or {}).get("findings") or [])
-        checklist = checklist or []
-        all_findings = passive_findings + probe_findings
-        top_findings = sorted(all_findings, key=lambda item: self._severity_rank(item.get("Severity", "info")))[:12]
-
+        limits = sec_registry.get_security_limits()
+        all_findings = list((passive_report or {}).get("findings") or []) + list((probe_report or {}).get("findings") or [])
+        top_findings = sorted(all_findings, key=lambda i: sec_registry.severity_rank(i.get("Severity", "info")))[: limits.max_playbook_findings]
+        scope = plan.get("scope") or {}
         lines = [
-            "# API 安全测试剧本",
-            "",
-            "## 测试策略",
+            "# API 安全测试剧本", "", "## 测试策略",
             "- 被动审计: 参考 ZAP/Burp 的被动扫描思路，先从接口文档、请求头、响应样例识别高价值风险。",
             "- 安全基线探测: 仅使用授权范围内的 OPTIONS/GET/HEAD 检查头部、CORS、Cookie、错误泄露和方法暴露。",
             "- 回归与清单: 参考 Nuclei 的模板化工作流，把高风险点沉淀成可复用的回归检查项。",
-            "",
-            "## 范围摘要",
+            "", "## 范围摘要",
             f"- 生成时间: {plan.get('created_at', self._now())}",
-            f"- Base URL: {plan.get('scope', {}).get('base_url', '') or '未指定'}",
-            f"- 接口数: {plan.get('scope', {}).get('interface_count', 0)}",
-            f"- 目标数: {plan.get('scope', {}).get('target_count', 0)}",
-            "",
-            "## 高优先级发现",
+            f"- Base URL: {scope.get('base_url', '') or '未指定'}",
+            f"- 接口数: {scope.get('interface_count', 0)}",
+            f"- 目标数: {scope.get('target_count', 0)}",
+            f"- 探测策略: {scope.get('probe_strategy', 'safe_baseline')}",
+            f"- 超时(秒): {scope.get('timeout_seconds', 0)}",
+            f"- 允许内网目标: {'是' if scope.get('allow_private_targets') else '否'}",
+            "", "## 高优先级发现",
         ]
-
         if not top_findings:
             lines.append("- 当前没有自动发现的高优先级问题，建议继续执行 OWASP 清单中的人工复核项。")
         else:
             for index, item in enumerate(top_findings, start=1):
-                lines.extend(
-                    [
-                        f"{index}. [{item.get('Severity', '').upper()}] {item.get('Title', '')}",
-                        f"   - 目标: {item.get('Target', '')}",
-                        f"   - 证据: {item.get('Evidence', '')}",
-                        f"   - 建议: {item.get('Recommendation', '')}",
-                    ]
-                )
-
-        lines.extend(
-            [
-                "",
-                "## 回归建议",
-                "- 把高频误配项固定成安全基线检查: HTTPS、HSTS、X-Content-Type-Options、Server/X-Powered-By、CORS、Cookie Flags。",
-                "- 把权限相关场景固定成角色矩阵回归: 匿名、普通用户、管理员、越权对象 ID。",
-                "- 把 SSRF/回调/重定向参数纳入专项复核，重点看协议白名单、私网访问限制和重定向处理。",
-                "",
-                "## OWASP API Top 10 清单摘要",
-            ]
-        )
-        for item in checklist[:10]:
-            lines.append(
-                f"- {item.get('OWASP', '')} {item.get('Category', '')}: {item.get('Status', '')} | {item.get('Focus', '')}"
-            )
+                lines.extend([
+                    f"{index}. [{str(item.get('Severity', '')).upper()}] {item.get('Title', '')}",
+                    f"   - 目标: {item.get('Target', '')}",
+                    f"   - 证据: {item.get('Evidence', '')}",
+                    f"   - 建议: {item.get('Recommendation', '')}",
+                    f"   - OWASP: {item.get('OWASP', '')}",
+                ])
+        lines.extend(["", "## 回归建议",
+                      "- 把高频误配项固定成安全基线检查: HTTPS、HSTS、X-Content-Type-Options、Server/X-Powered-By、CORS、Cookie Flags。",
+                      "- 把权限相关场景固定成角色矩阵回归: 匿名、普通用户、管理员、越权对象 ID。",
+                      "- 把 SSRF/回调/重定向参数纳入专项复核，重点看协议白名单、私网访问限制和重定向处理。",
+                      "", "## OWASP API Top 10 清单摘要"])
+        for item in (checklist or [])[: len(sec_registry.get_owasp_items())]:
+            lines.append(f"- {item.get('OWASP', '')} {item.get('Category', '')}: {item.get('Status', '')} | {item.get('Focus', '')}")
+        for warning in (plan.get("warnings") or []):
+            lines.append(f"- ⚠️ {warning}")
         return "\n".join(lines)
 
     def build_report_bundle(
@@ -1010,39 +880,67 @@ class SecurityTestTool:
         checklist = checklist or self.build_owasp_checklist(passive_report, probe_report)
         scan_policy = self.build_scan_policy(plan, passive_report, probe_report)
         playbook = self.generate_security_playbook(plan, passive_report, probe_report, checklist)
+        warnings: List[str] = []
+        for source in (plan, passive_report or {}, probe_report or {}, role_regression or {},
+                       nuclei_template_pack or {}, regression_suite or {}):
+            for item in source.get("warnings") or []:
+                if item not in warnings:
+                    warnings.append(item)
         bundle = {
-            "generated_at": self._now(),
-            "plan": plan,
-            "scan_policy": scan_policy,
-            "passive_report": passive_report or {},
-            "probe_report": probe_report or {},
-            "role_regression": role_regression or {},
-            "owasp_checklist": checklist,
+            "generated_at": self._now(), "plan": plan, "scan_policy": scan_policy,
+            "passive_report": passive_report or {}, "probe_report": probe_report or {},
+            "role_regression": role_regression or {}, "owasp_checklist": checklist,
             "authorization_matrix": authorization_matrix or {},
             "nuclei_template_pack": nuclei_template_pack or {},
-            "risk_dashboard": risk_dashboard or {},
-            "regression_suite": regression_suite or {},
-            "playbook_markdown": playbook,
+            "risk_dashboard": risk_dashboard or {}, "regression_suite": regression_suite or {},
+            "playbook_markdown": playbook, "warnings": warnings,
+            "config_snapshot": plan.get("config_snapshot", {}),
+            "input_signature": plan.get("input_signature", ""),
+            "registry_summary": sec_registry.get_registry_summary(),
         }
         bundle["report_markdown"] = self._bundle_to_markdown(bundle)
         return bundle
+
+    # ------------------------------------------------------------------
+    # 内部辅助
+    # ------------------------------------------------------------------
 
     def _select_interfaces(
         self,
         interfaces: List[Dict[str, Any]],
         selected_indexes: Optional[List[int]] = None,
-    ) -> List[Dict[str, Any]]:
-        selected_indexes = selected_indexes or list(range(len(interfaces)))
-        selected = []
-        for index in selected_indexes:
-            if index < 0 or index >= len(interfaces):
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """区分 None（未指定=全选）与 []（明确不选）；去重、过滤越界、钳制上限。"""
+        limits = sec_registry.get_security_limits()
+        warnings: List[str] = []
+        all_items = list(interfaces or [])
+        if selected_indexes is None:
+            indexes: List[int] = list(range(len(all_items)))
+        else:
+            indexes = list(selected_indexes)
+        cleaned: List[int] = []
+        seen = set()
+        for raw in indexes:
+            index = sec_registry.to_int(raw, -1)
+            if index < 0 or index >= len(all_items):
+                warnings.append(f"已忽略越界接口索引 {raw!r}")
                 continue
-            selected.append(self._normalize_interface(interfaces[index]))
-        return selected
+            if index in seen:
+                continue
+            seen.add(index)
+            cleaned.append(index)
+        cleaned.sort()
+        if len(cleaned) > limits.max_interfaces:
+            warnings.append(f"接口数 {len(cleaned)} 超过上限 {limits.max_interfaces}，已截断")
+            cleaned = cleaned[: limits.max_interfaces]
+        if selected_indexes is not None and len(selected_indexes) == 0:
+            warnings.append("当前未选择任何接口，不会发起任何探测请求")
+        return [self._normalize_interface(all_items[index]) for index in cleaned], warnings
 
     def _normalize_interface(self, interface: Dict[str, Any]) -> Dict[str, Any]:
+        methods = sec_registry.get_http_methods()
         method = str(interface.get("method") or "GET").upper()
-        if method not in self.HTTP_METHODS:
+        if method not in methods:
             method = "GET"
         query_params = interface.get("query_params") if isinstance(interface.get("query_params"), dict) else {}
         path_params = interface.get("path_params") if isinstance(interface.get("path_params"), dict) else {}
@@ -1062,14 +960,15 @@ class SecurityTestTool:
             "body": deepcopy(body),
             "expected_response": deepcopy(interface.get("expected_response") or {}),
             "request_format": str(interface.get("request_format") or "auto").strip() or "auto",
-            "expected_status": self._to_int(interface.get("expected_status"), 200),
+            "expected_status": sec_registry.to_int(interface.get("expected_status"), 200),
         }
 
     def _build_full_url(self, interface: Dict[str, Any], base_url: str, include_query: bool = True) -> str:
         path = str(interface.get("path") or "/")
         for key, value in (interface.get("path_params") or {}).items():
-            path = path.replace("{" + str(key) + "}", str(value))
-
+            raw = str(value)
+            encoded = raw[4:] if raw.startswith("raw:") else quote(raw, safe="")
+            path = path.replace("{" + str(key) + "}", encoded)
         if path.startswith(("http://", "https://")):
             url = path
         else:
@@ -1077,118 +976,76 @@ class SecurityTestTool:
             if not clean_base_url:
                 return path
             url = clean_base_url.rstrip("/") + "/" + path.lstrip("/")
-
         if not include_query:
             return url
-
         query_params = interface.get("query_params") or {}
         if not query_params:
             return url
         parsed = urlparse(url)
-        # 保留 URL 中同名多值参数（如 ?id=1&id=2），避免 dict() 静默丢值。
         existing_query: Dict[str, list] = {}
         for key, value in parse_qsl(parsed.query, keep_blank_values=True):
             existing_query.setdefault(key, []).append(value)
         for key, value in query_params.items():
-            existing_query[str(key)] = [str(value)]
+            name = str(key)
+            if isinstance(value, (list, tuple)):
+                existing_query.setdefault(name, []).extend(str(item) for item in value)
+            else:
+                existing_query.setdefault(name, []).append(str(value))
         return urlunparse(parsed._replace(query=urlencode(existing_query, doseq=True)))
 
     def _build_probe_methods(self, interface: Dict[str, Any]) -> List[str]:
-        method = str(interface.get("method") or "GET").upper()
-        if method in {"GET", "HEAD"}:
-            return ["OPTIONS", "GET"]
-        if method == "OPTIONS":
-            return ["OPTIONS"]
-        return ["OPTIONS"]
+        return sec_registry.get_probe_methods(interface.get("method"))
 
     def _has_visible_auth(self, interface_headers: Dict[str, Any], extra_headers: Optional[Dict[str, Any]] = None) -> bool:
-        combined = {}
-        combined.update(interface_headers or {})
-        combined.update(extra_headers or {})
-        header_names = {str(key).strip().lower() for key in combined.keys()}
-        return bool(header_names & self.AUTH_HEADER_NAMES)
+        return sec_registry.has_visible_auth(interface_headers, extra_headers)
 
     def _match_sensitive_keys(self, *mapping_groups: Dict[str, Any]) -> List[str]:
-        hits = []
-        sensitive_keys = self.HIGH_SENSITIVE_KEYS | self.MEDIUM_SENSITIVE_KEYS
-        for mapping in mapping_groups:
-            for key in (mapping or {}).keys():
-                normalized = str(key).strip().lower()
-                if normalized in sensitive_keys:
-                    hits.append(str(key))
-        return sorted(set(hits))
+        return sec_registry.match_sensitive_keys(*mapping_groups)
 
     def _detect_sensitive_response(self, value: Any) -> Dict[str, List[str]]:
-        keys = self._extract_keys(value)
-        high_hits = [key for key in keys if key.lower() in self.HIGH_SENSITIVE_KEYS]
-        medium_hits = [key for key in keys if key.lower() in self.MEDIUM_SENSITIVE_KEYS]
-        return {
-            "high_hits": sorted(set(high_hits)),
-            "medium_hits": sorted(set(medium_hits)),
-        }
+        return sec_registry.detect_sensitive_response(value)
 
     def _find_error_leaks(self, value: Any) -> List[str]:
-        blob = self._to_text(value).lower()
-        return sorted([marker for marker in self.ERROR_MARKERS if marker in blob])
+        return sec_registry.find_error_leaks(value)
 
     def _looks_like_upload(self, item: Dict[str, Any]) -> bool:
-        blob = " ".join(
-            [
-                str(item.get("name", "") or ""),
-                str(item.get("description", "") or ""),
-                str(item.get("path", "") or ""),
-            ]
-        ).lower()
-        return any(hint in blob for hint in self.FILE_HINTS)
+        return any(h in sec_registry.interface_blob(item) for h in sec_registry.get_hints("file"))
 
     def _has_upload_validation_hint(self, item: Dict[str, Any]) -> bool:
-        blob = " ".join(
-            [
-                str(item.get("description", "") or ""),
-                json.dumps(item.get("body", ""), ensure_ascii=False, default=str),
-                json.dumps(item.get("headers", {}), ensure_ascii=False, default=str),
-            ]
-        ).lower()
-        validation_hints = {"multipart", "size", "mime", "content-type", "virus", "extension", "limit"}
-        return any(hint in blob for hint in validation_hints)
+        blob = " ".join([
+            str(item.get("description") or ""),
+            json.dumps(item.get("body", ""), ensure_ascii=False, default=str),
+            json.dumps(item.get("headers", {}), ensure_ascii=False, default=str),
+        ]).lower()
+        return any(h in blob for h in sec_registry.get_hints("upload_validation"))
 
     def _match_ssrf_keys(self, item: Dict[str, Any]) -> List[str]:
         hits = []
+        hints = sec_registry.get_hints("ssrf")
         for mapping in [item.get("query_params", {}), item.get("path_params", {})]:
-            for key in mapping.keys():
-                normalized = str(key).strip().lower()
-                if normalized in self.SSRF_HINTS:
+            for key in (mapping or {}).keys():
+                if str(key).strip().lower() in hints:
                     hits.append(str(key))
-
         body = item.get("body")
         if isinstance(body, dict):
             for key in body.keys():
-                normalized = str(key).strip().lower()
-                if normalized in self.SSRF_HINTS:
+                if str(key).strip().lower() in hints:
                     hits.append(str(key))
         return sorted(set(hits))
 
     def _looks_like_bulk_endpoint(self, item: Dict[str, Any]) -> bool:
-        blob = " ".join(
-            [
-                str(item.get("name", "") or ""),
-                str(item.get("description", "") or ""),
-                str(item.get("path", "") or ""),
-            ]
-        ).lower()
-        return item.get("method") == "GET" and any(hint in blob for hint in self.LIST_HINTS)
+        return (str(item.get("method") or "GET").upper() == "GET"
+                and any(h in sec_registry.interface_blob(item) for h in sec_registry.get_hints("list")))
 
     def _has_resource_control_hint(self, item: Dict[str, Any]) -> bool:
-        query_keys = {str(key).strip().lower() for key in (item.get("query_params") or {}).keys()}
-        if query_keys & {"page", "size", "limit", "offset", "cursor"}:
+        query_keys = {str(k).strip().lower() for k in (item.get("query_params") or {}).keys()}
+        if query_keys & sec_registry.get_hints("pagination"):
             return True
-        blob = " ".join(
-            [
-                str(item.get("description", "") or ""),
-                json.dumps(item.get("headers", {}), ensure_ascii=False),
-            ]
-        ).lower()
-        return any(hint in blob for hint in {"rate", "limit", "throttle", "quota", "pagination"})
+        blob = " ".join([
+            str(item.get("description") or ""),
+            json.dumps(item.get("headers", {}), ensure_ascii=False, default=str),
+        ]).lower()
+        return any(h in blob for h in sec_registry.get_hints("resource_control"))
 
     def _analyze_probe_response(
         self,
@@ -1199,238 +1056,91 @@ class SecurityTestTool:
         original_method: str,
         auth_provided: bool,
     ) -> List[Dict[str, Any]]:
-        findings: List[Dict[str, Any]] = []
-        headers = {str(key): str(value) for key, value in dict(response.headers or {}).items()}
-        lower_headers = {str(key).lower(): str(value) for key, value in headers.items()}
-        parsed = urlparse(url)
-        body_preview = (response.text or "")[:1200]
-        content_type = lower_headers.get("content-type", "").lower()
-        allow_header = lower_headers.get("allow", "")
+        limits = sec_registry.get_security_limits()
+        headers = {str(k): str(v) for k, v in dict(getattr(response, "headers", {}) or {}).items()}
+        lower_headers = {str(k).lower(): str(v) for k, v in headers.items()}
+        body, _ = self._read_response_body(response, limits.max_response_bytes)
+        ctx = sec_registry.ProbeContext(
+            headers=headers, lower_headers=lower_headers,
+            status_code=sec_registry.to_int(getattr(response, "status_code", 0), 0),
+            body_preview=body[: limits.max_body_preview_chars], url=url, label=label,
+            probe_method=probe_method, original_method=original_method, auth_provided=auth_provided,
+        )
+        return [self._make_finding(**_finding_kwargs(x, label)) for x in sec_registry.evaluate_probe_rules(ctx)]
 
-        if parsed.scheme == "http":
-            findings.append(
-                self._make_finding(
-                    "high",
-                    "transport",
-                    "基线探测发现目标使用 HTTP",
-                    label,
-                    url,
-                    "建议统一走 HTTPS，并在网关层配置 301/308 跳转和 HSTS。",
-                    "API8:2023",
-                )
-            )
+    @staticmethod
+    def _read_response_body(response: Any, max_bytes: int) -> Tuple[str, bool]:
+        """优先按上限读取原始流，避免 response.text 全量读入内存；返回 (文本, 是否截断)。"""
+        raw = getattr(response, "raw", None)
+        if raw is not None and hasattr(raw, "read"):
+            try:
+                data = raw.read(max_bytes + 1)
+                truncated = len(data) > max_bytes
+                return data[:max_bytes].decode("utf-8", errors="replace"), truncated
+            except Exception:
+                pass
+        text = str(getattr(response, "text", "") or "")
+        truncated = len(text) > max_bytes
+        return text[:max_bytes], truncated
 
-        if parsed.scheme == "https" and "strict-transport-security" not in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "medium",
-                    "headers",
-                    "缺少 HSTS",
-                    label,
-                    f"{probe_method} {url}",
-                    "建议在 HTTPS 响应中下发 Strict-Transport-Security，避免降级和首次访问劫持。",
-                    "API8:2023",
-                )
-            )
+    @staticmethod
+    def _classify_probe_error(exc: Exception) -> str:
+        name = type(exc).__name__.lower()
+        text = str(exc).lower()
+        if "timeout" in name or "timed out" in text:
+            return "timeout"
+        if "ssl" in name or "certificate" in text:
+            return "ssl_error"
+        if "connection" in name or "connect" in text:
+            return "connection_error"
+        if "dns" in text or "name resolution" in text or "getaddrinfo" in text:
+            return "dns_error"
+        if "invalidurl" in name or "invalid header" in text:
+            return "invalid_request"
+        return "unknown"
 
-        if "x-content-type-options" not in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "low",
-                    "headers",
-                    "缺少 X-Content-Type-Options",
-                    label,
-                    f"{probe_method} {url}",
-                    "建议返回 X-Content-Type-Options: nosniff，降低 MIME 混淆风险。",
-                    "API8:2023",
-                )
-            )
+    @staticmethod
+    def _unresolved_template_vars(path: str) -> List[str]:
+        return sorted(set(re.findall(r"\{([A-Za-z0-9_.-]+)\}", str(path or ""))))
 
-        if "text/html" in content_type and "content-security-policy" not in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "low",
-                    "headers",
-                    "HTML 响应缺少 Content-Security-Policy",
-                    label,
-                    f"{probe_method} {url}",
-                    "如果接口网关或门户返回 HTML，建议评估 CSP、frame-ancestors 等前端安全策略。",
-                    "API8:2023",
-                )
-            )
+    def _config_snapshot(self, base_url, selected_indexes, auth_headers, timeout, verify_ssl, origin, probe_strategy) -> Dict[str, Any]:
+        return {
+            "base_url": str(base_url or "").strip(),
+            "selected_indexes": list(selected_indexes) if selected_indexes is not None else None,
+            "auth_header_keys": sorted(str(k) for k in (auth_headers or {}).keys()),
+            "timeout_seconds": sec_registry.to_float(timeout, 15.0),
+            "verify_ssl": bool(verify_ssl),
+            "origin": str(origin or ""),
+            "probe_strategy": str(probe_strategy or ""),
+        }
 
-        cors_origin = lower_headers.get("access-control-allow-origin", "")
-        cors_credentials = lower_headers.get("access-control-allow-credentials", "").lower()
-        if cors_origin == "*" and cors_credentials == "true":
-            findings.append(
-                self._make_finding(
-                    "high",
-                    "cors",
-                    "CORS 配置存在高风险通配",
-                    label,
-                    "Access-Control-Allow-Origin=* 且 Allow-Credentials=true",
-                    "这会造成高风险跨域配置，建议改为精确白名单并避免和凭证同时使用通配。",
-                    "API8:2023",
-                )
-            )
-        elif cors_origin == "*":
-            findings.append(
-                self._make_finding(
-                    "medium",
-                    "cors",
-                    "CORS 允许任意来源",
-                    label,
-                    "Access-Control-Allow-Origin=*",
-                    "确认该接口是否真的允许所有来源访问；对于鉴权接口，建议改成精确白名单。",
-                    "API8:2023",
-                )
-            )
-
-        if "trace" in allow_header.lower():
-            findings.append(
-                self._make_finding(
-                    "high",
-                    "methods",
-                    "Allow 头暴露 TRACE 方法",
-                    label,
-                    allow_header,
-                    "建议关闭 TRACE 等不必要方法，并仅暴露接口实际需要的 HTTP 方法。",
-                    "API8:2023",
-                )
-            )
-
-        if "server" in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "info",
-                    "fingerprint",
-                    "Server 头暴露服务指纹",
-                    label,
-                    headers.get("Server", ""),
-                    "可按内部规范隐藏或弱化服务端指纹，减少被动指纹信息暴露。",
-                    "API8:2023",
-                )
-            )
-        if "x-powered-by" in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "info",
-                    "fingerprint",
-                    "X-Powered-By 暴露技术栈",
-                    label,
-                    headers.get("X-Powered-By", ""),
-                    "建议移除 X-Powered-By 等框架指纹响应头。",
-                    "API8:2023",
-                )
-            )
-
-        set_cookie = lower_headers.get("set-cookie", "")
-        if set_cookie:
-            cookie_issues = []
-            if "secure" not in set_cookie.lower():
-                cookie_issues.append("Secure")
-            if "httponly" not in set_cookie.lower():
-                cookie_issues.append("HttpOnly")
-            if "samesite" not in set_cookie.lower():
-                cookie_issues.append("SameSite")
-            if cookie_issues:
-                findings.append(
-                    self._make_finding(
-                        "medium",
-                        "cookie",
-                        "Cookie 安全属性不完整",
-                        label,
-                        ", ".join(cookie_issues),
-                        "对会话 Cookie 建议至少补齐 Secure、HttpOnly 和 SameSite 属性。",
-                        "API8:2023",
-                    )
-                )
-
-        error_leaks = self._find_error_leaks(body_preview)
-        if error_leaks:
-            findings.append(
-                self._make_finding(
-                    "medium",
-                    "error_leak",
-                    "响应体存在错误泄露迹象",
-                    label,
-                    ", ".join(error_leaks[:5]),
-                    "建议统一错误处理和错误码输出，不向调用方暴露调试栈、SQL 语句或内部类名。",
-                    "API8:2023",
-                )
-            )
-
-        if not auth_provided and response.status_code < 400 and self._looks_sensitive_runtime_target(label, url):
-            findings.append(
-                self._make_finding(
-                    "medium",
-                    "auth_runtime_review",
-                    "敏感接口在未显式携带鉴权头时可访问，需要人工复核",
-                    label,
-                    f"{probe_method} {url} -> {response.status_code}",
-                    "请人工确认该接口是否本应公开；如果不是，建议补测匿名/低权限用户下的 401/403 场景。",
-                    "API1:2023",
-                )
-            )
-
-        if response.status_code < 400 and self._looks_sensitive_runtime_target(label, url) and "cache-control" not in lower_headers:
-            findings.append(
-                self._make_finding(
-                    "low",
-                    "cache_review",
-                    "敏感接口未体现缓存控制头",
-                    label,
-                    f"{probe_method} {url}",
-                    "建议对认证、用户、Token、个人资料等接口评估 Cache-Control/Pragma/Expires 策略。",
-                    "API8:2023",
-                )
-            )
-
-        return findings
-
-    def _looks_sensitive_runtime_target(self, label: str, url: str) -> bool:
-        blob = f"{label} {url}".lower()
-        return any(hint in blob for hint in self.ADMIN_HINTS | self.CACHE_HINTS)
-
-    def _interface_blob(self, interface: Dict[str, Any]) -> str:
-        return " ".join(
-            [
-                str(interface.get("name", "") or ""),
-                str(interface.get("description", "") or ""),
-                str(interface.get("path", "") or ""),
-                str(interface.get("method", "") or ""),
-            ]
-        ).lower()
+    @staticmethod
+    def _signature(snapshot: Dict[str, Any]) -> str:
+        payload = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
     def _group_findings(self, findings: List[Dict[str, Any]], key: str, limit: int = 20) -> List[Dict[str, Any]]:
+        limits = sec_registry.get_security_limits()
+        limit = min(limit, limits.max_findings_per_group)
         grouped: Dict[str, Dict[str, Any]] = {}
         for item in findings:
             group_key = str(item.get(key, "") or "未分类")
-            bucket = grouped.setdefault(
-                group_key,
-                {
-                    "Group": group_key,
-                    "Count": 0,
-                    "Top Severity": "none",
-                    "Top Source": "",
-                    "Highlights": "",
-                },
-            )
+            bucket = grouped.setdefault(group_key, {
+                "Group": group_key, "Count": 0, "Top Severity": "none",
+                "Top Source": "", "Highlights": "",
+            })
             bucket["Count"] += 1
             severity = str(item.get("Severity", "info")).lower()
-            if self._severity_rank(severity) < self._severity_rank(bucket.get("Top Severity", "none")):
+            if sec_registry.severity_rank(severity) < sec_registry.severity_rank(bucket.get("Top Severity", "none")):
                 bucket["Top Severity"] = severity
                 bucket["Top Source"] = str(item.get("Source", "") or "")
                 bucket["Highlights"] = str(item.get("Title", "") or "")
         rows = list(grouped.values())
-        rows.sort(key=lambda item: (self._severity_rank(item.get("Top Severity", "none")), -item.get("Count", 0), item.get("Group", "")))
+        rows.sort(key=lambda i: (sec_registry.severity_rank(i.get("Top Severity", "none")), -i.get("Count", 0), i.get("Group", "")))
         return rows[:limit]
 
-    def _group_findings_by_target(
-        self,
-        passive_report: Optional[Dict[str, Any]] = None,
-        probe_report: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, List[Dict[str, Any]]]:
+    @staticmethod
+    def _group_findings_by_target(passive_report, probe_report) -> Dict[str, List[Dict[str, Any]]]:
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for source, report in [("被动审计", passive_report or {}), ("基线探测", probe_report or {})]:
             for item in list(report.get("findings") or []):
@@ -1438,253 +1148,151 @@ class SecurityTestTool:
                 grouped.setdefault(target, []).append(dict(item, Source=source))
         return grouped
 
-    def _normalize_role_profiles(self, role_profiles: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    def _normalize_role_profiles(self, role_profiles: Optional[List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        limits = sec_registry.get_security_limits()
+        warnings: List[str] = []
         profiles = []
-        raw_profiles = role_profiles or [{"role": "匿名用户", "headers": {}}]
+        raw_profiles = role_profiles if role_profiles is not None else [{"role": "匿名用户", "headers": {}}]
         for item in raw_profiles:
             if not isinstance(item, dict):
+                warnings.append("已忽略非对象类型的角色配置")
                 continue
             role = str(item.get("role") or item.get("name") or "").strip() or f"角色{len(profiles) + 1}"
-            headers = item.get("headers") if isinstance(item.get("headers"), dict) else {}
-            profiles.append({"role": role, "headers": deepcopy(headers)})
+            cleaned_headers, header_warnings = sec_registry.validate_request_headers(
+                item.get("headers") if isinstance(item.get("headers"), dict) else {}
+            )
+            warnings.extend(f"[{role}] {w}" for w in header_warnings)
+            profiles.append({"role": role, "headers": cleaned_headers})
         if not profiles:
             profiles.append({"role": "匿名用户", "headers": {}})
-        return profiles
+        if len(profiles) > limits.max_roles:
+            warnings.append(f"角色数 {len(profiles)} 超过上限 {limits.max_roles}，已截断")
+            profiles = profiles[: limits.max_roles]
+        return profiles, warnings
 
     def _build_role_comparison_rows(self, role_reports: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        grouped: Dict[tuple[str, str, str], Dict[str, Any]] = {}
-        # 同名角色直接作为 row 的 key 会互相覆盖，用后缀生成唯一列名保留各自状态码
+        """角色状态用独立的 Role Codes 结构，不再平铺到可能与元数据冲突的列名。"""
+        grouped: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
         role_columns: List[str] = []
-        used_names: Dict[str, int] = {}
+        used: Dict[str, int] = {}
         for item in role_reports:
             base_role = str(item.get("role", ""))
-            used_names[base_role] = used_names.get(base_role, 0) + 1
-            role_columns.append(base_role if used_names[base_role] == 1 else f"{base_role}#{used_names[base_role]}")
-
+            used[base_role] = used.get(base_role, 0) + 1
+            role_columns.append(base_role if used[base_role] == 1 else f"{base_role}#{used[base_role]}")
+        # 元数据字段集合：角色名与之冲突时只写入 Role Codes，避免覆盖接口标签等（SEC-16）。
+        meta_keys = {"Label", "Probe Method", "URL", "Sensitivity", "Status Pattern",
+                     "Success Roles", "Diversity", "Role Codes"}
         for role_report, role in zip(role_reports, role_columns):
             report = role_report.get("report", {}) or {}
             for sample in list(report.get("samples") or []):
-                key = (
-                    str(sample.get("Label", "")),
-                    str(sample.get("Probe Method", "")),
-                    str(sample.get("URL", "")),
-                )
-                row = grouped.setdefault(
-                    key,
-                    {
-                        "Label": key[0],
-                        "Probe Method": key[1],
-                        "URL": key[2],
-                    },
-                )
-                row[role] = int(sample.get("Status Code", 0) or 0)
-
+                key = (str(sample.get("Label", "")), str(sample.get("Probe Method", "")), str(sample.get("URL", "")))
+                row = grouped.setdefault(key, {
+                    "Label": key[0], "Probe Method": key[1], "URL": key[2],
+                    "Role Codes": {},
+                })
+                code = sec_registry.to_int(sample.get("Status Code", 0), 0)
+                row["Role Codes"][role] = code
+                # 保留历史契约：同名角色用后缀列名平铺，供对比矩阵直接展示。
+                if role not in meta_keys:
+                    row[role] = code
         rows = []
         for _, row in grouped.items():
-            status_parts = []
-            success_roles = []
-            for role in role_columns:
-                code = int(row.get(role, 0) or 0)
-                status_parts.append(f"{role}:{code}")
-                if self._status_bucket(code) == "allow":
-                    success_roles.append(role)
-            sensitivity = "high" if self._looks_sensitive_runtime_target(row.get("Label", ""), row.get("URL", "")) else "medium"
-            row["Sensitivity"] = sensitivity
+            codes = row.get("Role Codes") or {}
+            status_parts = [f"{role}:{sec_registry.to_int(code, 0)}" for role, code in codes.items()]
+            success_roles = [role for role, code in codes.items() if sec_registry.status_bucket(code) == "allow"]
+            row["Sensitivity"] = "high" if sec_registry.looks_sensitive_runtime_target(row.get("Label", ""), row.get("URL", "")) else "medium"
             row["Status Pattern"] = " | ".join(status_parts)
             row["Success Roles"] = ", ".join(success_roles) or "无"
-            row["Diversity"] = "有差异" if len({int(row.get(role, 0) or 0) for role in role_columns}) > 1 else "一致"
+            row["Diversity"] = "有差异" if len({sec_registry.to_int(c, 0) for c in codes.values()}) > 1 else "一致"
             rows.append(row)
-
-        rows.sort(key=lambda item: (item.get("Sensitivity", ""), item.get("Label", ""), item.get("Probe Method", "")))
+        rows.sort(key=lambda i: (i.get("Sensitivity", ""), i.get("Label", ""), i.get("Probe Method", "")))
         return rows
 
     def _analyze_role_comparison_rows(self, comparison_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         findings = []
         for row in comparison_rows:
             role_codes = {
-                key: int(value)
-                for key, value in row.items()
-                if key not in {"Label", "Probe Method", "URL", "Sensitivity", "Status Pattern", "Success Roles", "Diversity"}
+                key: sec_registry.to_int(value, 0)
+                for key, value in dict(row.get("Role Codes") or {}).items()
             }
             if not role_codes:
                 continue
-
-            ranked_roles = sorted(role_codes.keys(), key=self._role_rank)
-            lowest_role = ranked_roles[0]
-            highest_role = ranked_roles[-1]
+            ranked_roles = sorted(role_codes.keys(), key=sec_registry.role_rank)
+            lowest_role, highest_role = ranked_roles[0], ranked_roles[-1]
             lowest_code = role_codes.get(lowest_role, 0)
             highest_code = role_codes.get(highest_role, 0)
             sensitivity = str(row.get("Sensitivity", "medium")).lower()
             label = str(row.get("Label", ""))
             evidence = row.get("Status Pattern", "")
-
-            if sensitivity == "high" and self._status_bucket(lowest_code) == "allow":
-                severity = "high" if self._role_rank(lowest_role) == 0 else "medium"
-                findings.append(
-                    self._make_finding(
-                        severity,
-                        "role_regression",
-                        "敏感接口在低权限角色下可访问，需要人工复核",
-                        label,
-                        evidence,
-                        "建议对该接口做匿名、低权限、越权对象 ID 和跨租户场景复测，确认是否应返回 401/403/404。",
-                        "API5:2023",
-                    )
-                )
-
-            if sensitivity == "high" and self._status_bucket(lowest_code) == self._status_bucket(highest_code) == "allow":
-                findings.append(
-                    self._make_finding(
-                        "medium",
-                        "role_regression",
-                        "敏感接口在低高权限角色下结果无差异",
-                        label,
-                        evidence,
-                        "建议结合对象 ID、字段级权限和业务流校验该接口是否真的应对不同角色返回一致结果。",
-                        "API1:2023",
-                    )
-                )
-
-            if self._role_rank(highest_role) > self._role_rank(lowest_role) and self._status_bucket(highest_code) == "deny" and self._status_bucket(lowest_code) == "allow":
-                findings.append(
-                    self._make_finding(
-                        "low",
-                        "role_regression",
-                        "高权限角色结果反而弱于低权限角色",
-                        label,
-                        evidence,
-                        "建议检查角色路由、网关策略和测试凭证是否配置正确，避免出现权限映射异常。",
-                        "API5:2023",
-                    )
-                )
-
+            if sensitivity == "high" and sec_registry.status_bucket(lowest_code) == "allow":
+                severity = "high" if sec_registry.role_rank(lowest_role) == 0 else "medium"
+                findings.append(self._make_finding(
+                    severity, "role_regression", "敏感接口在低权限角色下可访问，需要人工复核", label, evidence,
+                    "建议对该接口做匿名、低权限、越权对象 ID 和跨租户场景复测，确认是否应返回 401/403/404。", "API5:2023"))
+            if sensitivity == "high" and sec_registry.status_bucket(lowest_code) == sec_registry.status_bucket(highest_code) == "allow":
+                findings.append(self._make_finding(
+                    "medium", "role_regression", "敏感接口在低高权限角色下结果无差异", label, evidence,
+                    "建议结合对象 ID、字段级权限和业务流校验该接口是否真的应对不同角色返回一致结果。", "API1:2023"))
+            if (sec_registry.role_rank(highest_role) > sec_registry.role_rank(lowest_role)
+                    and sec_registry.status_bucket(highest_code) == "deny"
+                    and sec_registry.status_bucket(lowest_code) == "allow"):
+                findings.append(self._make_finding(
+                    "low", "role_regression", "高权限角色结果反而弱于低权限角色", label, evidence,
+                    "建议检查角色路由、网关策略和测试凭证是否配置正确，避免出现权限映射异常。", "API5:2023"))
         return findings
 
     def _role_rank(self, role: str) -> int:
-        blob = str(role or "").lower()
-        if any(item in blob for item in ["匿名", "anonymous", "guest"]):
-            return 0
-        if any(item in blob for item in ["普通", "user", "member", "customer"]):
-            return 1
-        if any(item in blob for item in ["管理员", "admin", "ops", "operator", "root"]):
-            return 3
-        if any(item in blob for item in ["跨租户", "越权", "cross", "other tenant"]):
-            return 1
-        return 2
+        return sec_registry.role_rank(role)
 
     def _status_bucket(self, status_code: int) -> str:
-        code = int(status_code or 0)
-        if 200 <= code < 400:
-            return "allow"
-        if code in {401, 403, 404}:
-            return "deny"
-        if code <= 0:
-            return "error"
-        return "other"
+        return sec_registry.status_bucket(status_code)
 
     def _suite_name_for_category(self, category: str) -> str:
-        mapping = {
-            "transport": "传输与协议回归",
-            "headers": "安全头基线回归",
-            "cors": "跨域配置回归",
-            "methods": "方法暴露回归",
-            "fingerprint": "指纹暴露回归",
-            "cookie": "Cookie 安全回归",
-            "auth_review": "鉴权回归",
-            "admin_review": "功能权限回归",
-            "auth_runtime_review": "匿名访问回归",
-            "sensitive_url": "敏感参数回归",
-            "sensitive_response": "敏感数据泄露回归",
-            "error_leak": "错误泄露回归",
-            "upload_review": "上传安全回归",
-            "ssrf_review": "SSRF 参数回归",
-            "resource_control": "资源控制回归",
-            "cache_review": "缓存控制回归",
-            "probe_error": "可达性与环境回归",
-            "inventory": "接口清单回归",
-        }
-        return mapping.get(category, "通用安全回归")
+        return sec_registry.get_suite_name(category)
 
     def _expected_for_category(self, category: str) -> str:
-        mapping = {
-            "transport": "统一使用 HTTPS，且网关具备强制跳转/HSTS 策略",
-            "headers": "返回安全头且满足内部基线",
-            "cors": "仅允许白名单来源，且不与凭证通配组合",
-            "methods": "仅暴露必要 HTTP 方法，不返回 TRACE",
-            "fingerprint": "不暴露敏感指纹头或弱化版本信息",
-            "cookie": "Cookie 至少具备 Secure/HttpOnly/SameSite",
-            "auth_review": "未授权返回 401/403，授权后按角色放行",
-            "admin_review": "普通用户不可访问管理功能，管理员按最小权限放行",
-            "auth_runtime_review": "匿名访问敏感接口应被拒绝",
-            "sensitive_url": "敏感凭据不出现在 path/query 中",
-            "sensitive_response": "响应字段按角色裁剪或脱敏",
-            "error_leak": "错误返回不包含堆栈、SQL、内部类名",
-            "upload_review": "上传接口具备类型/大小/病毒扫描等限制",
-            "ssrf_review": "URL/回调参数具备协议白名单和内网访问限制",
-            "resource_control": "列表/批量/导出接口具备分页、限流和大小控制",
-            "cache_review": "敏感接口具备合理 Cache-Control 策略",
-        }
-        return mapping.get(category, "按安全基线和业务权限预期通过复测")
+        return sec_registry.get_expected_text(category)
 
     def _priority_from_severity(self, severity: str) -> str:
-        mapping = {"high": "P0", "medium": "P1", "low": "P2", "info": "P3"}
-        return mapping.get(str(severity).lower(), "P3")
+        return sec_registry.priority_from_severity(severity)
 
     def _classify_authorization_risk(self, interface: Dict[str, Any]) -> str:
         method = str(interface.get("method") or "GET").upper()
-        if self._looks_admin_endpoint(interface) or self._looks_business_endpoint(interface):
+        if sec_registry.looks_admin_endpoint(interface) or sec_registry.looks_business_endpoint(interface):
             return "high"
-        if method in self.MUTATING_METHODS or self._has_object_reference(interface):
+        if method in sec_registry.get_mutating_methods() or sec_registry.has_object_reference(interface):
             return "high"
-        if self._has_visible_auth(interface.get("headers", {})) or not self._looks_public_endpoint(interface):
+        if self._has_visible_auth(interface.get("headers", {})) or not sec_registry.looks_public_endpoint(interface):
             return "medium"
         return "low"
 
     def _looks_public_endpoint(self, interface: Dict[str, Any]) -> bool:
-        blob = self._interface_blob(interface)
-        return any(hint in blob for hint in self.PUBLIC_HINTS)
+        return sec_registry.looks_public_endpoint(interface)
 
     def _looks_admin_endpoint(self, interface: Dict[str, Any]) -> bool:
-        return any(hint in self._interface_blob(interface) for hint in self.ADMIN_HINTS)
+        return sec_registry.looks_admin_endpoint(interface)
 
     def _looks_business_endpoint(self, interface: Dict[str, Any]) -> bool:
-        return any(hint in self._interface_blob(interface) for hint in self.BUSINESS_HINTS)
+        return sec_registry.looks_business_endpoint(interface)
 
     def _has_object_reference(self, interface: Dict[str, Any]) -> bool:
-        path = str(interface.get("path") or "").lower()
-        path_params = set(str(key).lower() for key in (interface.get("path_params") or {}).keys())
-        query_params = set(str(key).lower() for key in (interface.get("query_params") or {}).keys())
-        if "{" in path and "}" in path:
-            return True
-        all_keys = path_params | query_params
-        return any(key in self.OBJECT_ID_HINTS or key.endswith("_id") for key in all_keys)
+        return sec_registry.has_object_reference(interface)
 
-    def _role_expectation(
-        self,
-        role: str,
-        interface: Dict[str, Any],
-        risk: str,
-        public_endpoint: bool,
-        admin_endpoint: bool,
-        object_related: bool,
-    ) -> tuple[str, str]:
+    def _role_expectation(self, role, interface, risk, public_endpoint, admin_endpoint, object_related) -> Tuple[str, str]:
         role_blob = str(role).lower()
         method = str(interface.get("method") or "GET").upper()
-        write_endpoint = method in self.MUTATING_METHODS
-
-        if any(key in role_blob for key in ["匿名", "anonymous", "guest"]):
+        write_endpoint = method in sec_registry.get_mutating_methods()
+        rank = sec_registry.role_rank(role)
+        if rank == 0:
             if public_endpoint and method in {"GET", "HEAD", "OPTIONS"}:
                 return "建议允许", "200/204，确认无敏感字段泄露"
             return "建议拒绝", "401/403"
-
         if any(key in role_blob for key in ["跨租户", "越权", "cross", "other tenant"]):
             return "建议拒绝", "403/404，替换对象 ID 后不能越权访问"
-
-        if any(key in role_blob for key in ["管理员", "admin", "ops", "operator"]):
+        if rank >= 3:
             if risk == "high":
                 return "建议允许", "200/204，同时验证最小权限和审批链"
             return "按业务允许", "200/204 或按环境配置"
-
         if admin_endpoint:
             return "建议拒绝", "403"
         if object_related:
@@ -1696,300 +1304,127 @@ class SecurityTestTool:
         return "按业务允许", "200/401/403，需结合角色矩阵复核"
 
     def _build_template_header_variables(self, auth_headers: Dict[str, Any]) -> List[Dict[str, str]]:
-        variables = []
-        for key in auth_headers:
-            normalized = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(key))
-            normalized = normalized.strip("_") or "custom_header"
-            placeholder = f"<fill-{normalized}>"
-            variables.append({"header": str(key), "variable": f"auth_{normalized}", "value": placeholder})
-        return variables
+        return sec_registry.build_template_header_variables(auth_headers)
 
-    def _build_nuclei_headers_template(
-        self,
-        paths: List[str],
-        origin: str,
-        header_variables: List[Dict[str, str]],
-    ) -> str:
-        lines = [
-            "id: api-security-headers-baseline",
-            "",
-            "info:",
-            "  name: API Security Headers Baseline",
-            "  author: test-toolkit",
-            "  severity: info",
-            "  description: Safe baseline checks for missing HSTS, missing X-Content-Type-Options and banner leakage.",
-            "  tags: api,security,baseline,headers",
-            "",
-            "variables:",
-            f'  audit_origin: "{self._yaml_quote(origin or "https://security-audit.local")}"',
-        ]
-        for item in header_variables:
-            lines.append(f'  {item["variable"]}: "{self._yaml_quote(item["value"])}"')
-        lines.extend(["", "http:", "  - method: GET", "    path:"])
-        for path in paths:
-            lines.append(f'      - "{{{{BaseURL}}}}{self._normalize_template_path(path)}"')
-        lines.extend(
-            [
-                "    headers:",
-                '      Accept: "application/json, text/plain, */*"',
-                '      Origin: "{{audit_origin}}"',
-            ]
-        )
-        for item in header_variables:
-            lines.append(f'      {item["header"]}: "{{{{{item["variable"]}}}}}"')
-        lines.extend(
-            [
-                "    stop-at-first-match: false",
-                "    matchers-condition: or",
-                "    matchers:",
-                "      - type: dsl",
-                "        name: missing-hsts",
-                "        dsl:",
-                "          - '!contains(tolower(all_headers), \"strict-transport-security\")'",
-                "      - type: dsl",
-                "        name: missing-x-content-type-options",
-                "        dsl:",
-                "          - '!contains(tolower(all_headers), \"x-content-type-options\")'",
-                "      - type: dsl",
-                "        name: tech-banner",
-                "        dsl:",
-                "          - 'contains(tolower(all_headers), \"server:\") || contains(tolower(all_headers), \"x-powered-by:\")'",
-            ]
-        )
-        return "\n".join(lines)
+    def _build_nuclei_headers_template(self, paths, origin, header_variables) -> str:
+        specs = {s.key: s for s in sec_registry.get_nuclei_templates()}
+        return specs["headers"].builder(paths, origin, header_variables) if "headers" in specs else ""
 
-    def _build_nuclei_options_template(
-        self,
-        paths: List[str],
-        origin: str,
-        header_variables: List[Dict[str, str]],
-    ) -> str:
-        lines = [
-            "id: api-cors-methods-exposure",
-            "",
-            "info:",
-            "  name: API CORS And Method Exposure",
-            "  author: test-toolkit",
-            "  severity: info",
-            "  description: Safe baseline checks for wildcard CORS and exposed TRACE/unsafe methods.",
-            "  tags: api,security,cors,methods",
-            "",
-            "variables:",
-            f'  audit_origin: "{self._yaml_quote(origin or "https://security-audit.local")}"',
-        ]
-        for item in header_variables:
-            lines.append(f'  {item["variable"]}: "{self._yaml_quote(item["value"])}"')
-        lines.extend(["", "http:", "  - method: OPTIONS", "    path:"])
-        for path in paths:
-            lines.append(f'      - "{{{{BaseURL}}}}{self._normalize_template_path(path)}"')
-        lines.extend(
-            [
-                "    headers:",
-                '      Origin: "{{audit_origin}}"',
-                '      Access-Control-Request-Method: "GET"',
-            ]
-        )
-        for item in header_variables:
-            lines.append(f'      {item["header"]}: "{{{{{item["variable"]}}}}}"')
-        lines.extend(
-            [
-                "    stop-at-first-match: false",
-                "    matchers-condition: or",
-                "    matchers:",
-                "      - type: dsl",
-                "        name: cors-wildcard-with-creds",
-                "        dsl:",
-                "          - 'contains(tolower(all_headers), \"access-control-allow-origin: *\") && contains(tolower(all_headers), \"access-control-allow-credentials: true\")'",
-                "      - type: dsl",
-                "        name: trace-enabled",
-                "        dsl:",
-                "          - 'contains(tolower(all_headers), \"allow:\") && contains(tolower(all_headers), \"trace\")'",
-            ]
-        )
-        return "\n".join(lines)
+    def _build_nuclei_options_template(self, paths, origin, header_variables) -> str:
+        specs = {s.key: s for s in sec_registry.get_nuclei_templates()}
+        return specs["options"].builder(paths, origin, header_variables) if "options" in specs else ""
 
-    def _build_nuclei_cache_template(
-        self,
-        paths: List[str],
-        origin: str,
-        header_variables: List[Dict[str, str]],
-    ) -> str:
-        lines = [
-            "id: api-sensitive-cache-review",
-            "",
-            "info:",
-            "  name: API Sensitive Cache Review",
-            "  author: test-toolkit",
-            "  severity: info",
-            "  description: Safe baseline checks for sensitive surfaces missing cache-control guidance or returning debug markers.",
-            "  tags: api,security,cache,sensitive",
-            "",
-            "variables:",
-            f'  audit_origin: "{self._yaml_quote(origin or "https://security-audit.local")}"',
-        ]
-        for item in header_variables:
-            lines.append(f'  {item["variable"]}: "{self._yaml_quote(item["value"])}"')
-        lines.extend(["", "http:", "  - method: GET", "    path:"])
-        for path in paths:
-            lines.append(f'      - "{{{{BaseURL}}}}{self._normalize_template_path(path)}"')
-        lines.extend(
-            [
-                "    headers:",
-                '      Accept: "application/json, text/plain, */*"',
-                '      Origin: "{{audit_origin}}"',
-            ]
-        )
-        for item in header_variables:
-            lines.append(f'      {item["header"]}: "{{{{{item["variable"]}}}}}"')
-        lines.extend(
-            [
-                "    stop-at-first-match: false",
-                "    matchers-condition: or",
-                "    matchers:",
-                "      - type: dsl",
-                "        name: missing-cache-control",
-                "        dsl:",
-                "          - '!contains(tolower(all_headers), \"cache-control\")'",
-                "      - type: dsl",
-                "        name: debug-marker",
-                "        dsl:",
-                "          - 'contains(tolower(body), \"traceback\") || contains(tolower(body), \"stack trace\") || contains(tolower(body), \"exception\")'",
-            ]
-        )
-        return "\n".join(lines)
+    def _build_nuclei_cache_template(self, paths, origin, header_variables) -> str:
+        specs = {s.key: s for s in sec_registry.get_nuclei_templates()}
+        return specs["cache"].builder(paths, origin, header_variables) if "cache" in specs else ""
 
     def _build_summary(self, interface_count: int, findings: List[Dict[str, Any]]) -> Dict[str, Any]:
-        summary = {
-            "interface_count": interface_count,
-            "finding_count": len(findings),
-            "high": 0,
-            "medium": 0,
-            "low": 0,
-            "info": 0,
-        }
+        summary = {"interface_count": interface_count, "finding_count": len(findings),
+                   "high": 0, "medium": 0, "low": 0, "info": 0}
         for item in findings:
             severity = str(item.get("Severity", "info")).lower()
             if severity in summary:
                 summary[severity] += 1
         return summary
 
-    def _build_probe_summary(
-        self,
-        samples: List[Dict[str, Any]],
-        findings: List[Dict[str, Any]],
-        request_count: int,
-    ) -> Dict[str, Any]:
+    def _build_probe_summary(self, samples, findings, request_count) -> Dict[str, Any]:
         summary = self._build_summary(len({item.get("Label", "") for item in samples}), findings)
-        responded = [item for item in samples if int(item.get("Status Code", 0) or 0) > 0]
-        summary.update(
-            {
-                "request_count": request_count,
-                "responded_count": len(responded),
-                "success_rate": round((len(responded) / request_count * 100) if request_count else 0.0, 2),
-            }
-        )
+        responded = [item for item in samples if sec_registry.to_int(item.get("Status Code", 0), 0) > 0]
+        summary.update({
+            "request_count": request_count, "responded_count": len(responded),
+            "success_rate": round((len(responded) / request_count * 100) if request_count else 0.0, 2),
+        })
         return summary
 
     def _manual_validation_text(self, owasp_code: str) -> str:
-        manual_steps = {
-            "API1:2023": "切换不同对象 ID、租户 ID、历史订单 ID 做越权验证。",
-            "API2:2023": "验证 Token 过期、注销、并发登录、弱口令和多因子流程。",
-            "API3:2023": "检查响应字段裁剪、只读字段写入和批量对象属性越权。",
-            "API4:2023": "验证分页上限、批量导出、并发速率、超大请求体和超时控制。",
-            "API5:2023": "针对普通用户、管理员、客服、运营角色做功能级权限矩阵测试。",
-            "API6:2023": "重点审计注册、登录、找回密码、领券、支付、提现等关键业务流。",
-            "API7:2023": "尝试不同协议、内网 IP、回环地址和 DNS 变体，确认服务端限制策略。",
-            "API8:2023": "复核头部、Cookie、CORS、调试开关、默认配置和多余方法暴露。",
-            "API9:2023": "核对接口清单、版本、环境、废弃接口和影子接口治理情况。",
-            "API10:2023": "复核第三方 API 调用、Webhook、回调信任边界和上游错误处理。",
-        }
-        return manual_steps.get(owasp_code, "建议结合业务场景做人机协同复核。")
+        return sec_registry.get_manual_validation_text(owasp_code)
 
     def _bundle_to_markdown(self, bundle: Dict[str, Any]) -> str:
-        passive_summary = bundle.get("passive_report", {}).get("summary", {})
-        probe_summary = bundle.get("probe_report", {}).get("summary", {})
-        role_regression = bundle.get("role_regression", {})
-        checklist = bundle.get("owasp_checklist", [])
-        scan_policy = bundle.get("scan_policy", {})
-        auth_matrix = bundle.get("authorization_matrix", {})
-        nuclei_pack = bundle.get("nuclei_template_pack", {})
-        risk_dashboard = bundle.get("risk_dashboard", {})
-        regression_suite = bundle.get("regression_suite", {})
-        playbook = bundle.get("playbook_markdown", "")
+        passive = bundle.get("passive_report", {}) or {}
+        probe = bundle.get("probe_report", {}) or {}
+        role_regression = bundle.get("role_regression", {}) or {}
+        checklist = bundle.get("owasp_checklist", []) or []
+        scan_policy = bundle.get("scan_policy", {}) or {}
+        auth_matrix = bundle.get("authorization_matrix", {}) or {}
+        nuclei_pack = bundle.get("nuclei_template_pack", {}) or {}
+        dashboard = bundle.get("risk_dashboard", {}) or {}
+        suite = bundle.get("regression_suite", {}) or {}
+        scope = (bundle.get("plan") or {}).get("scope", {}) or {}
+        ps, prs = passive.get("summary", {}) or {}, probe.get("summary", {}) or {}
         lines = [
-            "# API 安全测试报告",
-            "",
+            "# API 安全测试报告", "",
             f"- 生成时间: {bundle.get('generated_at', self._now())}",
-            f"- 接口数: {bundle.get('plan', {}).get('scope', {}).get('interface_count', 0)}",
-            f"- 目标数: {bundle.get('plan', {}).get('scope', {}).get('target_count', 0)}",
-            "",
-            "## 被动审计摘要",
-            f"- Findings: {passive_summary.get('finding_count', 0)}",
-            f"- High/Medium/Low/Info: {passive_summary.get('high', 0)}/{passive_summary.get('medium', 0)}/{passive_summary.get('low', 0)}/{passive_summary.get('info', 0)}",
-            "",
-            "## 基线探测摘要",
-            f"- Requests: {probe_summary.get('request_count', 0)}",
-            f"- Findings: {probe_summary.get('finding_count', 0)}",
-            f"- High/Medium/Low/Info: {probe_summary.get('high', 0)}/{probe_summary.get('medium', 0)}/{probe_summary.get('low', 0)}/{probe_summary.get('info', 0)}",
+            f"- Base URL: {scope.get('base_url', '') or '未指定'}",
+            f"- 接口数: {scope.get('interface_count', 0)}",
+            f"- 目标数: {scope.get('target_count', 0)}",
+            f"- 输入签名: {bundle.get('input_signature', '') or '未提供'}",
+            "", "## 被动审计摘要",
+            f"- Findings: {ps.get('finding_count', 0)}",
+            f"- High/Medium/Low/Info: {ps.get('high', 0)}/{ps.get('medium', 0)}/{ps.get('low', 0)}/{ps.get('info', 0)}",
+            "", "## 基线探测摘要",
+            f"- Requests: {prs.get('request_count', 0)}",
+            f"- Findings: {prs.get('finding_count', 0)}",
+            f"- High/Medium/Low/Info: {prs.get('high', 0)}/{prs.get('medium', 0)}/{prs.get('low', 0)}/{prs.get('info', 0)}",
         ]
+        truncation = probe.get("truncation") or {}
+        if truncation:
+            lines += ["", "## 运行与截断信息",
+                      f"- 实际请求数 / 上限: {truncation.get('requests_sent', 0)} / {truncation.get('requests_limit', 0)}",
+                      f"- 被安全策略阻止的目标: {truncation.get('blocked_targets', 0)}",
+                      f"- 响应体被截断次数: {truncation.get('truncated_responses', 0)}",
+                      f"- 耗时(秒): {truncation.get('elapsed_seconds', 0)}"]
         if role_regression:
-            lines.extend(
-                [
+            lines += ["", "## 多角色回归摘要",
+                      f"- 角色数: {role_regression.get('summary', {}).get('role_count', 0)}",
+                      f"- 差异对比数: {role_regression.get('summary', {}).get('comparison_count', 0)}",
+                      f"- Findings: {role_regression.get('summary', {}).get('finding_count', 0)}"]
+        lines += ["", "## 发现项明细（按严重级别）"]
+        all_findings = (list(passive.get("findings") or []) + list(probe.get("findings") or [])
+                        + list(role_regression.get("findings") or []))
+        if not all_findings:
+            lines.append("- 本轮没有自动发现的发现项，请继续执行 OWASP 清单中的人工复核项。")
+        else:
+            for index, item in enumerate(sorted(all_findings, key=lambda i: sec_registry.severity_rank(i.get("Severity", "info"))), start=1):
+                lines += [
+                    f"### {index}. [{str(item.get('Severity', '')).upper()}] {item.get('Title', '')}",
+                    f"- 目标: {item.get('Target', '')}",
+                    f"- 类别: {item.get('Category', '')}",
+                    f"- 证据: {item.get('Evidence', '')}",
+                    f"- OWASP: {item.get('OWASP', '')}",
+                    f"- 建议: {item.get('Recommendation', '')}",
                     "",
-                    "## 多角色回归摘要",
-                    f"- 角色数: {role_regression.get('summary', {}).get('role_count', 0)}",
-                    f"- 差异对比数: {role_regression.get('summary', {}).get('comparison_count', 0)}",
-                    f"- Findings: {role_regression.get('summary', {}).get('finding_count', 0)}",
                 ]
-            )
-        lines.extend(["", "## OWASP API Top 10 清单"])
+        lines += ["", "## OWASP API Top 10 清单"]
         for item in checklist:
-            lines.append(
-                f"- {item.get('OWASP', '')} {item.get('Category', '')}: {item.get('Status', '')} | {item.get('Focus', '')}"
-            )
+            lines.append(f"- {item.get('OWASP', '')} {item.get('Category', '')}: {item.get('Status', '')} | {item.get('Focus', '')}")
         if auth_matrix:
-            lines.extend(
-                [
-                    "",
-                    "## 权限矩阵摘要",
-                    f"- 接口数: {auth_matrix.get('summary', {}).get('interface_count', 0)}",
-                    f"- 角色数: {auth_matrix.get('summary', {}).get('role_count', 0)}",
-                    f"- 场景数: {auth_matrix.get('summary', {}).get('scenario_count', 0)}",
-                    f"- 高风险接口数: {auth_matrix.get('summary', {}).get('high_risk_interfaces', 0)}",
-                ]
-            )
+            lines += ["", "## 权限矩阵摘要",
+                      f"- 接口数: {auth_matrix.get('summary', {}).get('interface_count', 0)}",
+                      f"- 角色数: {auth_matrix.get('summary', {}).get('role_count', 0)}",
+                      f"- 场景数: {auth_matrix.get('summary', {}).get('scenario_count', 0)}",
+                      f"- 高风险接口数: {auth_matrix.get('summary', {}).get('high_risk_interfaces', 0)}"]
         if nuclei_pack:
-            lines.extend(
-                [
-                    "",
-                    "## Nuclei 模板包摘要",
-                    f"- 模板数: {nuclei_pack.get('template_count', 0)}",
-                    f"- 路径数: {nuclei_pack.get('path_count', 0)}",
-                ]
-            )
-        if risk_dashboard:
-            lines.extend(
-                [
-                    "",
-                    "## 风险看板摘要",
-                    f"- Findings: {risk_dashboard.get('summary', {}).get('finding_count', 0)}",
-                    f"- High/Medium/Low/Info: {risk_dashboard.get('summary', {}).get('high', 0)}/{risk_dashboard.get('summary', {}).get('medium', 0)}/{risk_dashboard.get('summary', {}).get('low', 0)}/{risk_dashboard.get('summary', {}).get('info', 0)}",
-                ]
-            )
-        if regression_suite:
-            lines.extend(
-                [
-                    "",
-                    "## 回归套件摘要",
-                    f"- 套件数: {regression_suite.get('summary', {}).get('suite_count', 0)}",
-                    f"- 场景数: {regression_suite.get('summary', {}).get('scenario_count', 0)}",
-                    f"- P0/P1/P2/P3: {regression_suite.get('summary', {}).get('p0', 0)}/{regression_suite.get('summary', {}).get('p1', 0)}/{regression_suite.get('summary', {}).get('p2', 0)}/{regression_suite.get('summary', {}).get('p3', 0)}",
-                ]
-            )
-        lines.extend(["", "## 扫描策略", f"- 模式: {scan_policy.get('mode', 'safe-baseline')}"])
+            lines += ["", "## Nuclei 模板包摘要",
+                      f"- 模板数: {nuclei_pack.get('template_count', 0)}",
+                      f"- 路径数: {nuclei_pack.get('path_count', 0)}",
+                      f"- 路径截断: {json.dumps(nuclei_pack.get('truncation', {}), ensure_ascii=False)}"]
+        if dashboard:
+            lines += ["", "## 风险看板摘要",
+                      f"- Findings（跨来源去重后）: {dashboard.get('summary', {}).get('finding_count', 0)}",
+                      f"- 合并的重复项: {dashboard.get('summary', {}).get('duplicate_merged', 0)}",
+                      f"- High/Medium/Low/Info: {dashboard.get('summary', {}).get('high', 0)}/{dashboard.get('summary', {}).get('medium', 0)}/{dashboard.get('summary', {}).get('low', 0)}/{dashboard.get('summary', {}).get('info', 0)}"]
+        if suite:
+            lines += ["", "## 回归套件摘要",
+                      f"- 套件数: {suite.get('summary', {}).get('suite_count', 0)}",
+                      f"- 场景数: {suite.get('summary', {}).get('scenario_count', 0)}",
+                      f"- P0/P1/P2/P3: {suite.get('summary', {}).get('p0', 0)}/{suite.get('summary', {}).get('p1', 0)}/{suite.get('summary', {}).get('p2', 0)}/{suite.get('summary', {}).get('p3', 0)}"]
+        warnings = bundle.get("warnings") or []
+        if warnings:
+            lines += ["", "## 告警", ""] + [f"- ⚠️ {w}" for w in warnings]
+        lines += ["", "## 扫描策略", f"- 模式: {scan_policy.get('mode', 'safe-baseline')}"]
         for item in scan_policy.get("guardrails", []):
             lines.append(f"- {item}")
-        lines.extend(["", "## 安全测试剧本", "", playbook])
+        lines += ["", "## 安全测试剧本", "", bundle.get("playbook_markdown", "")]
         return "\n".join(lines)
 
     def _make_finding(
@@ -2001,30 +1436,22 @@ class SecurityTestTool:
         evidence: str,
         recommendation: str,
         owasp: str,
+        error_type: str = "",
     ) -> Dict[str, Any]:
         return {
-            "Severity": severity,
-            "Category": category,
-            "Title": title,
-            "Target": target,
-            "Evidence": evidence,
-            "Recommendation": recommendation,
-            "OWASP": owasp,
+            "Severity": severity, "Category": category, "Title": title,
+            "Target": str(target or ""), "Evidence": str(evidence or "") or "（响应未提供可观测值）",
+            "Recommendation": recommendation, "OWASP": owasp, "error_type": error_type,
         }
 
     def _dedupe_findings(self, findings: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        deduped = {}
+        deduped: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         for item in findings:
-            key = (
-                item.get("Severity", ""),
-                item.get("Category", ""),
-                item.get("Title", ""),
-                item.get("Target", ""),
-                item.get("Evidence", ""),
-            )
+            key = (item.get("Severity", ""), item.get("Category", ""), item.get("Title", ""),
+                   item.get("Target", ""), item.get("Evidence", ""), item.get("OWASP", ""))
             deduped[key] = item
         sorted_items = list(deduped.values())
-        sorted_items.sort(key=lambda item: (self._severity_rank(item.get("Severity", "info")), item.get("Target", "")))
+        sorted_items.sort(key=lambda i: (sec_registry.severity_rank(i.get("Severity", "info")), i.get("Target", "")))
         return sorted_items
 
     def _extract_keys(self, value: Any) -> List[str]:
@@ -2049,33 +1476,16 @@ class SecurityTestTool:
             return str(value)
 
     def _top_severity(self, findings: List[Dict[str, Any]]) -> str:
-        if not findings:
-            return "none"
-        return min((str(item.get("Severity", "info")).lower() for item in findings), key=self._severity_rank)
+        return sec_registry.top_severity(findings)
 
     def _severity_rank(self, severity: str) -> int:
-        order = {"high": 0, "medium": 1, "low": 2, "info": 3, "none": 4}
-        return order.get(str(severity).lower(), 5)
+        return sec_registry.severity_rank(severity)
 
     def _normalize_template_path(self, path: Any) -> str:
-        text = str(path or "/").strip() or "/"
-        if text.startswith(("http://", "https://")):
-            parsed = urlparse(text)
-            text = parsed.path or "/"
-            if parsed.query:
-                text += f"?{parsed.query}"
-        if not text.startswith("/"):
-            text = "/" + text.lstrip("/")
-        return text
+        return sec_registry.normalize_template_path(path)
 
     def _yaml_quote(self, value: str) -> str:
-        # 转义反斜杠、双引号、换行与制表符，避免注入额外的 YAML 键值。
-        return (str(value)
-                .replace("\\", "\\\\")
-                .replace('"', '\\"')
-                .replace("\n", "\\n")
-                .replace("\r", "\\r")
-                .replace("\t", "\\t"))
+        return sec_registry.yaml_quote(value)
 
     def _now(self) -> str:
         return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
