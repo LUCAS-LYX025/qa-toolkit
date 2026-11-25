@@ -471,3 +471,44 @@
 - 全量 pytest：393 passed
 - e2e（新增 `10-time-processor.e2e.ts`：时间戳转换与过期 / 批量中文诊断 / Cron 结构化与过期 / 自定义 IANA 时区）：4/4 passed，全套 40/40 passed
 - GitHub：issues #250-#268 全部关闭，仓库 open issues = 0
+
+## 图片处理工具专项审计（2026-11-25，Issues #270-#289）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/utils/image_processing.py`（ImageProcessor 全量方法）+ `src/qa_toolkit/ui/pages/image_processor_page.py`（格式转换/指定体积/批量造图/尺寸/翻转/旋转/裁剪/水印 8 个 Tab）。
+- 方式：候选问题写成 `.qa-audit/image_repro.py` 实测坐实，证伪项剔除（例如“导出复制 EXIF 导致隐私泄露”在 Pillow 11.3 下不成立，实际是**静默剥离且不可配置**，因此改提 #271），确认 20 项后提交 GitHub Issues #270-#289。
+- 视角：除正确性外，重点覆盖测试专家关心的资源边界/动画保真，以及产品工程师关心的**拓展性、易用性**（格式与档位可注册、批量产物可追溯、动画与元数据策略可见）。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| EXIF 方向（#270） | 带 `Orientation=6` 的 64×48 JPEG 经 `_load_image()` 后仍是 64×48，竖拍照片按横向预览/导出 |
+| 元数据策略（#271） | 源图 `ImageDescription='GPS-LAT-31.23-LON-121.47'`，导出后 `getexif().get(270)` 为 `None`，无开关可选 |
+| 资源上限（#272/#273） | 12000×12000 PNG（1.44 亿像素）只触发 Pillow 警告仍继续加载；`resize_image(img, 1_000_000, 1)` 直接向 Pillow 请求百万像素宽 |
+| 参数校验（#274-#277） | `quality=-20/250` 都成功产出 JPG；`min_quality=90, max_quality=10` 不报错并返回 `target_achieved=True`；反向裁剪 `(50,40,5,5)` 得到 1×1；`convert_image_for_format(..., 'XYZ')` 静默返回原图 |
+| 水印（#278/#279） | `opacity=5.0` 静默接受；4 元组颜色拼成 5 元组报英文错；无效字体走 `NamedTemporaryFile(delete=False)` 后 `os.unlink` 调用数为 0，临时文件泄漏 |
+| 动画（#280） | 2 帧 GIF 经 `save_image_to_bytes(..., 'GIF')` 后 `n_frames=1`，页面无任何提示 |
+| 结果可信（#281） | `target_bytes=100` 返回 `target_achieved=False` 与 note，页面仍显示“目标体积图片已生成” |
+| 硬编码（#282） | 输出格式、预设体积/尺寸、裁剪比例、水印位置散落在页面常量与 8 个 selectbox，新增档位要改多处 |
+| 文件名/追溯（#283/#284） | `Path('../../evil?name.png').stem` 得到 `evil?name` 直接进入下载名；批量 ZIP 只有图片，没有 manifest |
+| 易用性（#285-#289） | 裁剪卡显示英文 `Current Selection`；切换宽/高锚点丢失比例结果；批量无进度；LA 透明像素转 JPG 变黑块；未知重采样算法静默回退 LANCZOS |
+
+### 修复方案要点
+
+- **方向与安全边界**：`_load_image()` 先校验上传字节数、声明像素数、内容格式，再 `load()`；静态图用 `ImageOps.exif_transpose` 校正方向，动画图保留多帧；资源上限通过 `configure_image_limits()` 可按环境调整。
+- **核心校验**：质量限定 1-100、目标质量区间与缩放步长强校验、输出边长/像素预算校验、未知格式/算法/位置全部中文报错；反向裁剪改为先交换坐标再裁剪。
+- **透明与背景**：LA/P 透明像素统一转 RGBA 后按可配置背景色合成，页面提供“透明区域背景色”，消除黑块。
+- **水印**：opacity/font_size/color/rotation 严格校验，字体改用 `BytesIO` 不再落盘；所有失败统一带“添加水印失败”前缀，保留既有错误可见性契约。
+- **动画保真**：新增 `extract_frames()` / `save_animated_image()`，格式转换、尺寸、翻转、旋转、裁剪、指定体积、批量均逐帧按同一比例处理并保留 duration/loop；不支持动画的格式明确提示“仅处理首帧”。
+- **元数据与结果可信**：`save_image_to_bytes(preserve_metadata=True)` 显式保留 EXIF，页面默认关闭并提示隐私风险；目标体积未达标改 warning 展示 note；批量 ZIP 增加带 BOM 且防公式注入的 `manifest.csv`，记录目标/实际/缩放/是否达标；新增逐档进度条。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/image_registry.py`，把输出格式、重采样算法、预设体积、预设尺寸、裁剪比例、水印位置、资源上限做成可注册扩展点；重复注册要求 `replace=True`，Spec 冻结、查询返回副本；页面下拉全部从注册表生成。
+- **易用性**：下载名与 ZIP 条目统一清洗控制字符/路径/系统保留字符；裁剪指标卡中文化；保持宽高比切换锚点时从 session_state 继承上次计算结果。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_image.py`：25 passed（逐条对应 issue）
+- 全量 pytest：418 passed
+- e2e（新增 `11-image-processor.e2e.ts`：入口与上传 / 格式转换 / 批量 manifest / 水印与动画提示）：4/4 passed；全套 44/44（另一次全套出现 1 例既有 TCG 示例载入偶发失败，单独重跑 3/3 通过）
+- GitHub：issues #270-#289 全部关闭，仓库 open issues = 0
