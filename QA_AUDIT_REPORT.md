@@ -554,3 +554,47 @@
 - 全量 pytest：442 passed（含 AppTest 脚本补丁自动还原，避免跨文件类方法污染）
 - e2e（新增 `12-ip-lookup.e2e.ts`：注册能力摘要 / 单查询结果过期 / 批量空输入与汇总 CSV / IPv4 转换与非法协议拦截）：4/4 passed，全套 48/48 passed
 - GitHub：issues #291-#310 全部评论并关闭，仓库 open issues = 0
+
+## 接口性能测试工具专项审计（2026-11-25，Issues #312-#332）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/core/api_performance_tool.py`（PerformanceTestTool 全量执行引擎：计划构建 / 虚拟用户 / 采样 / 统计 / HTML 报告 / CSV 参数化 / URL 构造）+ `src/qa_toolkit/ui/pages/api_performance_page.py`（JMeter 风格页面：Test Plan 树 / HTTP Request Defaults / Thread Group / CSV / Transaction / Assertion / Timer / Listener Dock / 下载中心）。
+- 方式：候选问题写成 `.qa-audit/perf_repro.py` 实测坐实（fake clock 跑 duration 模式、mock upload、构造畸形 URL、CSV 公式注入、HTML 注入、worker 抛异常），确认 20 项后提交 GitHub Issues #312-#331；新增 e2e 回归 `13-api-performance.e2e.ts` 时又暴露 1 项边界缺陷，追加提交 #332，共 **21 项**。
+- 视角：测试专家关注正确性（统计口径、并发异常、CSV 语义、URL 构造）、安全性（SSRF、注入、上传清理）、边界与大数据；产品工程师关注**拓展性、易用性**（注册式扩展点、状态反馈、文字摘要、口径说明），不局限于当前业务。
+- 修复分支 `fix/api-performance-audit`，PR 合并至 `master`；e2e 全套 52/52 通过。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 结果过期（#312） | 改并发/URL 后仍展示上一次结果，无签名、无过期提示 |
+| CSV EOF（#313） | Recycle 默认 True 且 Stop Thread 不互斥，EOF 后静默发送未替换的 `${var}` |
+| URL 构造与导出（#314/#330） | `_build_full_url` 用 `params.update` 覆盖同名多值 query、list 值被 `str()` 成 `"['a','b']"`；导出 JSON 只有 6 个结果键，不含 plan/samples |
+| 并发异常（#315/#316） | `future.result()` 冒泡导致整次结果与 HTML 报告全丢；duration 模式下 ramp-up / think-time 的 `sleep` 不受 deadline 约束，尾部 VU 0 样本且无告警 |
+| 断言与分组（#317/#318） | 结果树用 400 字符预览二次推断断言；per_sampler 按 method+path 分组，同路径不同接口被静默合并 |
+| 请求语义（#319/#320） | GET/HEAD 仍发 body、GET 的 `parameters` 被丢弃；`inf`/`nan` 被 `_to_float` 接受，多个时长参数无上限 |
+| 目标地址（#321/#322） | 四字段自由拼接无协议白名单/端口校验，`urlparse(...).port` 非法时抛 ValueError；path_params 与 CSV 变量不编码，可注入路径与额外 query |
+| 安全（#323/#324/#325） | 上传文件名直接拼路径且临时文件从不清理；CSV 公式注入、HTML 报告 status_code 与状态栏未转义；无协议白名单 / 内网拦截 / 重定向默认开启 / SSL 校验默认关闭（SSRF） |
+| 统计口径（#326/#327/#328） | throughput 分母含 ramp-up 与 think-time；p90/p95 用线性插值却标 JMeter「90% Line」；错误截断无提示、失败样本无 error_type、timeline 丢空档秒、不完整事务参与统计 |
+| 易用性（#329/#330） | 5 个 Listener 只有 canvas 无文字摘要；任务记录 payload 只有接口数量，10 用户与 200 用户两轮无法区分 |
+| 拓展性（#331） | 断言类型、分位数、监听器页签、报告字段、CSV 模式、定时器、事务策略、运行上限全部硬编码，无任何 `core/*_registry.py` |
+| **e2e 回归新发现（#332）** | **Server Name 留空、Port 填 `443@evil.com`，`st.code` 仍显示 `https://example.com` 且零提示**：`_compose_base_url_from_fields()` 的 `if not server_name: return fallback` 位于协议/端口校验之前，四字段校验被整体短路，非法输入被静默吞掉 |
+
+### 修复方案要点
+
+- **结果可信与状态反馈**：新增 `_compute_signature()` / `_CONFIG_SIGNATURE_KEYS` / `_is_result_stale()`，执行后写入 `result["input_signature"]`，配置变更即醒目提示「结果可能已过期」；所有 warning 统一反馈卡展示。
+- **并发与统计正确性**：`future.result()` 与 `_run_virtual_user()` 双层异常隔离，worker 抛错转成失败样本；`_sleep_with_deadline()` 统一 ramp-up / think-time；`_build_timeline()` 补齐空档秒；事务样本带 `complete` 标记，不完整链路排除出事务统计；失败样本带 `error_type` 与 `truncation` 截断提示。
+- **统计口径可解释**：`active_window_seconds` / `wall_throughput_rps` / `throughput_basis` 明确吞吐按活跃窗口计算、不含 Ramp-Up / Startup Delay；分位数默认 JMeter nearest-rank，可切 linear，分位点本身也可注册。
+- **请求构造与 CSV**：query 同名参数 append、list 用 doseq 展开；GET/HEAD 抑制 body 并合并 `parameters`；`_encode_path_value()` + `quote()` 编码 path_params 与 URL 变量，`raw:` 显式跳过，未解析变量写入 `unresolved_variables` 告警；新增 `sampler_id` 按 id 分组/匹配/展示 materialized 值；CSV EOF 三态策略 `recycle` / `stop_thread` / `continue_empty`，页面 Recycle 与 Stop Thread 互斥联动。
+- **安全护栏**：新增 `validate_target_url()` / `sanitize_server_name()` / `validate_port_text()`——协议白名单、userinfo 拒绝、端口 1-65535、内网/回环/链路本地/元数据地址拦截（显式开关放行）、默认关闭重定向、默认开启 SSL 校验；`_sanitize_csv_frame()` 防 CSV/HTML 公式注入、`html.escape()` 转义状态栏；上传文件名 basename + 字符白名单并在 `finally` 删除临时文件；`PerformanceLimits` 钳制所有数值输入，`inf`/`nan` 回落安全默认值。
+- **PERF-21 补强（e2e 新发现）**：把协议白名单与 `validate_port_text()` 校验前置到「主机名为空」判断之前，非法端口/协议无论主机是否填写都会写入 `api_perf_url_error` 并在页面醒目提示；仅当已填字段全部合法且主机名为空时才回落 fallback 且不误报。补 `test_perf_21_validation_runs_even_without_server_name` 与 e2e 断言双重回归。
+- **导出与易用性**：`build_export_payload()` 让下载 JSON 含 plan / samples / html_report / warnings / truncation；HTML 报告增测试配置快照与告警面板；Summary / Aggregate / Graph / Errors / Transactions 补中文文字摘要；任务 payload 记录配置摘要；所有关键 `number_input` 加来自注册表的 `max_value`；首屏展示「当前注册的能力」摘要。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/api_performance_registry.py`——断言类型、分位数口径与列表、监听器页签、结果字段、摘要指标、CSV 共享模式/EOF 策略、定时器策略、协议白名单、SSRF 校验、导出清洗器、运行上限全部提供 `register_*` / `configure_*` / `get_*` 扩展点；frozen dataclass Spec、查询返回副本、重复注册需 `replace=True`、`reset_performance_registry()` 保证测试隔离；页面下拉、按钮、能力摘要与导出字段全部注册表驱动。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_perf.py`：21 passed（逐条对应 #312-#332，含 e2e 新发现的 PERF-21）
+- 全量 pytest：463 passed（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）
+- e2e（新增 `13-api-performance.e2e.ts`：注册能力摘要与安全默认 / HTTP Request Defaults 主机与端口校验 / CSV EOF 互斥 / 分位数与吞吐口径）：4/4 passed，全套 **52/52 passed**
+- GitHub：issues #312-#332 全部评论并关闭，仓库 open issues = 0
