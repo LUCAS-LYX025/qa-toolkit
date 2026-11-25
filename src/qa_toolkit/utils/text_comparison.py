@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import csv
 import difflib
 import html
+import io
+import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
+from qa_toolkit.core.text_comparison_registry import (
+    MAX_EXACT_MATCH_ITEMS,
+    ExporterSpec,
+    exporters,
+    get_matcher,
+    get_normalizer,
+    get_tokenizer,
+)
 from qa_toolkit.utils.text_analysis import normalize_line_endings
 
 
@@ -34,11 +45,15 @@ def split_lines(text: str) -> List[str]:
     normalized = normalize_line_endings(text)
     if not normalized:
         return []
-    return normalized.split("\n")
+    lines = normalized.split("\n")
+    # 文件末尾的换行只是排版习惯，不该被当成一行真实的空行。
+    if len(lines) > 1 and lines[-1] == "":
+        lines.pop()
+    return lines
 
 
-def tokenize_text(text: str) -> List[str]:
-    return TOKEN_RE.findall(normalize_line_endings(text))
+def tokenize_text(text: str, tokenizer_name: str = "default") -> List[str]:
+    return get_tokenizer(tokenizer_name).tokenize(normalize_line_endings(text))
 
 
 def build_text_profile(text: str) -> Dict[str, int]:
@@ -62,6 +77,7 @@ def normalize_compare_text(
     trim_line_edges: bool = False,
     collapse_inner_spaces: bool = False,
     ignore_blank_lines: bool = False,
+    rules: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     original_text = normalize_line_endings(text)
     normalized_line_endings = text != original_text
@@ -72,8 +88,9 @@ def normalize_compare_text(
     removed_blank_lines = 0
     case_folded_lines = 0
     normalized_lines: List[str] = []
+    line_numbers: List[int] = []
 
-    for line in source_lines:
+    for line_number, line in enumerate(source_lines, start=1):
         updated_line = line
 
         if trim_line_edges:
@@ -87,7 +104,8 @@ def normalize_compare_text(
             collapsed_space_runs += replacement_count
 
         if ignore_case:
-            folded_line = updated_line.lower()
+            # casefold 比 lower 更彻底（如 Straße -> strasse），Unicode 文本才不会漏判。
+            folded_line = updated_line.casefold()
             if folded_line != updated_line:
                 case_folded_lines += 1
             updated_line = folded_line
@@ -97,9 +115,16 @@ def normalize_compare_text(
             continue
 
         normalized_lines.append(updated_line)
+        line_numbers.append(line_number)
+
+    changes: List[str] = []
+    active_rules = list(rules or [])
+    for rule_name in active_rules:
+        rule = get_normalizer(rule_name)
+        normalized_lines = rule.apply(normalized_lines)
+        changes.append(f"已应用扩展规则: {rule.description or rule.name}")
 
     normalized_text = "\n".join(normalized_lines)
-    changes: List[str] = []
     if normalized_line_endings:
         changes.append("已统一换行符格式")
     if trimmed_lines:
@@ -114,8 +139,10 @@ def normalize_compare_text(
     return {
         "text": normalized_text,
         "lines": normalized_lines,
-        "changed": normalized_text != original_text,
+        "changed": normalized_text != original_text or len(line_numbers) != len(source_lines),
         "changes": changes,
+        "line_numbers": line_numbers,
+        "extra_rules": active_rules,
         "normalized_line_endings": normalized_line_endings,
         "trimmed_lines": trimmed_lines,
         "collapsed_space_runs": collapsed_space_runs,
@@ -127,13 +154,27 @@ def normalize_compare_text(
 def _line_similarity(left_line: str, right_line: str) -> float | None:
     if not left_line or not right_line:
         return None
-    return round(difflib.SequenceMatcher(None, left_line, right_line).ratio(), 3)
+    return round(get_matcher("difflib").build(left_line, right_line).ratio(), 3)
 
 
-def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
+def _mapped_line_number(index: int, mapping: Optional[Sequence[int]]) -> int:
+    """把规范化后的行下标映射回源文件的真实行号。"""
+    if mapping is not None and index < len(mapping):
+        return mapping[index]
+    return index + 1
+
+
+def compare_line_texts(
+    left_text: str,
+    right_text: str,
+    *,
+    left_line_numbers: Optional[Sequence[int]] = None,
+    right_line_numbers: Optional[Sequence[int]] = None,
+    matcher_name: str = "difflib",
+) -> Dict[str, Any]:
     left_lines = split_lines(left_text)
     right_lines = split_lines(right_text)
-    matcher = difflib.SequenceMatcher(None, left_lines, right_lines)
+    matcher = get_matcher(matcher_name).build(left_lines, right_lines)
 
     change_rows: List[Dict[str, Any]] = []
     change_blocks: List[Dict[str, Any]] = []
@@ -152,8 +193,14 @@ def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
             {
                 "group": group_index,
                 "tag": tag,
-                "left_range": f"{i1 + 1}-{i2}" if left_chunk else "-",
-                "right_range": f"{j1 + 1}-{j2}" if right_chunk else "-",
+                "left_range": (
+                    f"{_mapped_line_number(i1, left_line_numbers)}-{_mapped_line_number(i2 - 1, left_line_numbers)}"
+                    if left_chunk else "-"
+                ),
+                "right_range": (
+                    f"{_mapped_line_number(j1, right_line_numbers)}-{_mapped_line_number(j2 - 1, right_line_numbers)}"
+                    if right_chunk else "-"
+                ),
                 "left_preview": "\n".join(left_chunk[:2]).strip(),
                 "right_preview": "\n".join(right_chunk[:2]).strip(),
             }
@@ -178,8 +225,8 @@ def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
                     {
                         "group": group_index,
                         "status": status,
-                        "left_line_number": i1 + offset + 1 if left_exists else None,
-                        "right_line_number": j1 + offset + 1 if right_exists else None,
+                        "left_line_number": _mapped_line_number(i1 + offset, left_line_numbers) if left_exists else None,
+                        "right_line_number": _mapped_line_number(j1 + offset, right_line_numbers) if right_exists else None,
                         "left_text": left_line,
                         "right_text": right_line,
                         "similarity": _line_similarity(left_line, right_line),
@@ -193,8 +240,8 @@ def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
                     {
                         "group": group_index,
                         "status": "删除",
-                        "left_line_number": i1 + offset + 1,
-                        "right_line_number": None,
+                "left_line_number": _mapped_line_number(i1 + offset, left_line_numbers),
+                "right_line_number": None,
                         "left_text": line,
                         "right_text": "",
                         "similarity": None,
@@ -208,8 +255,8 @@ def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
                     {
                         "group": group_index,
                         "status": "新增",
-                        "left_line_number": None,
-                        "right_line_number": j1 + offset + 1,
+                "left_line_number": None,
+                "right_line_number": _mapped_line_number(j1 + offset, right_line_numbers),
                         "left_text": "",
                         "right_text": line,
                         "similarity": None,
@@ -244,6 +291,9 @@ def compare_line_texts(left_text: str, right_text: str) -> Dict[str, Any]:
             "modified_lines": modified_lines,
             "change_groups": len(change_blocks),
             "line_similarity": round(matcher.ratio(), 4),
+            "matching_mode": (
+                "exact" if max(len(left_lines), len(right_lines)) <= MAX_EXACT_MATCH_ITEMS else "sampled"
+            ),
             "first_change_left_line": first_change.get("left_line_number") if first_change else None,
             "first_change_right_line": first_change.get("right_line_number") if first_change else None,
         },
@@ -254,10 +304,16 @@ def _count_significant_tokens(tokens: List[str]) -> int:
     return sum(1 for token in tokens if token.strip())
 
 
-def compare_token_texts(left_text: str, right_text: str) -> Dict[str, Any]:
-    left_tokens = tokenize_text(left_text)
-    right_tokens = tokenize_text(right_text)
-    matcher = difflib.SequenceMatcher(None, left_tokens, right_tokens)
+def compare_token_texts(
+    left_text: str,
+    right_text: str,
+    *,
+    tokenizer_name: str = "default",
+    matcher_name: str = "difflib",
+) -> Dict[str, Any]:
+    left_tokens = tokenize_text(left_text, tokenizer_name)
+    right_tokens = tokenize_text(right_text, tokenizer_name)
+    matcher = get_matcher(matcher_name).build(left_tokens, right_tokens)
 
     segments: List[Dict[str, str]] = []
     change_rows: List[Dict[str, Any]] = []
@@ -291,7 +347,7 @@ def compare_token_texts(left_text: str, right_text: str) -> Dict[str, Any]:
                     "status": "修改",
                     "left_text": left_text_chunk,
                     "right_text": right_text_chunk,
-                    "similarity": round(difflib.SequenceMatcher(None, left_text_chunk, right_text_chunk).ratio(), 3),
+                    "similarity": round(get_matcher("difflib").build(left_text_chunk, right_text_chunk).ratio(), 3),
                 }
             )
             continue
@@ -379,6 +435,9 @@ def compare_texts(
     trim_line_edges: bool = False,
     collapse_inner_spaces: bool = False,
     ignore_blank_lines: bool = False,
+    rules: Optional[List[str]] = None,
+    matcher_name: str = "difflib",
+    tokenizer_name: str = "default",
 ) -> Dict[str, Any]:
     left_normalized = normalize_compare_text(
         left_text,
@@ -386,6 +445,7 @@ def compare_texts(
         trim_line_edges=trim_line_edges,
         collapse_inner_spaces=collapse_inner_spaces,
         ignore_blank_lines=ignore_blank_lines,
+        rules=rules,
     )
     right_normalized = normalize_compare_text(
         right_text,
@@ -393,11 +453,25 @@ def compare_texts(
         trim_line_edges=trim_line_edges,
         collapse_inner_spaces=collapse_inner_spaces,
         ignore_blank_lines=ignore_blank_lines,
+        rules=rules,
     )
 
-    line_diff = compare_line_texts(left_normalized["text"], right_normalized["text"])
-    token_diff = compare_token_texts(left_normalized["text"], right_normalized["text"])
-    text_similarity = difflib.SequenceMatcher(None, left_normalized["text"], right_normalized["text"]).ratio()
+    line_diff = compare_line_texts(
+        left_normalized["text"],
+        right_normalized["text"],
+        left_line_numbers=left_normalized["line_numbers"],
+        right_line_numbers=right_normalized["line_numbers"],
+        matcher_name=matcher_name,
+    )
+    token_diff = compare_token_texts(
+        left_normalized["text"],
+        right_normalized["text"],
+        tokenizer_name=tokenizer_name,
+        matcher_name=matcher_name,
+    )
+    text_similarity = get_matcher(matcher_name).build(
+        left_normalized["text"], right_normalized["text"]
+    ).ratio()
 
     return {
         "left": {
@@ -417,6 +491,9 @@ def compare_texts(
             "trim_line_edges": trim_line_edges,
             "collapse_inner_spaces": collapse_inner_spaces,
             "ignore_blank_lines": ignore_blank_lines,
+            "rules": list(rules or []),
+            "matcher_name": matcher_name,
+            "tokenizer_name": tokenizer_name,
         },
         "summary": {
             "text_similarity": round(text_similarity, 4),
@@ -430,10 +507,141 @@ def compare_texts(
             "token_similarity": token_diff["summary"]["token_similarity"],
             "first_change_left_line": line_diff["summary"]["first_change_left_line"],
             "first_change_right_line": line_diff["summary"]["first_change_right_line"],
+            "empty_both": not left_text and not right_text,
+            "empty_side": bool(left_text) != bool(right_text),
+            "matching_mode": line_diff["summary"]["matching_mode"],
         },
         "line_diff": line_diff,
         "token_diff": token_diff,
     }
+
+
+MAX_REPORT_ROWS = 50
+MAX_DISPLAY_CHARS = 240
+
+
+def _markdown_text(value: Any) -> str:
+    """把动态文本降级成 Markdown 字面量，避免生成链接、标题或强调。"""
+    text = str(value).replace("\\", "\\\\")
+    for token in ("`", "*", "_", "[", "]", "<", ">", "#"):
+        text = text.replace(token, "\\" + token)
+    return text.replace("\r", "\\r").replace("\n", "\\n")
+
+
+def format_similarity(value: Any) -> str:
+    """避免 99.99% 被显示成 100.0% 却同时提示有差异。"""
+    if value is None:
+        return "-"
+    number = float(value)
+    if 0 < number < 1 and number >= 0.9995:
+        return ">99.9%"
+    if 0 < number < 0.0005:
+        return "<0.1%"
+    return f"{number * 100:.1f}%"
+
+
+def _neutralize_formula(value: Any) -> Any:
+    if isinstance(value, str) and value[:1] in {"=", "+", "-", "@", "\t", "\r"}:
+        return "'" + value
+    return value
+
+
+def safe_csv_bytes(rows: List[Dict[str, Any]], columns: Optional[List[str]] = None) -> bytes:
+    """导出差异 CSV：UTF-8 BOM 防 Excel 中文乱码，公式前缀降级为纯文本。"""
+    default_columns = [
+        "group", "status", "left_line_number", "right_line_number",
+        "left_text", "right_text", "similarity",
+    ]
+    fieldnames = columns or (list(rows[0].keys()) if rows else default_columns)
+    buffer = io.StringIO(newline="")
+    writer = csv.DictWriter(buffer, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow({key: _neutralize_formula(row.get(key, "")) for key in fieldnames})
+    return ("\ufeff" + buffer.getvalue()).encode("utf-8")
+
+
+def prepare_line_rows_for_display(
+    rows: List[Dict[str, Any]], max_chars: int = MAX_DISPLAY_CHARS
+) -> tuple[List[Dict[str, Any]], int]:
+    """长行在表格中截断显示，返回显示行与被截断的单元格数。"""
+    display_rows: List[Dict[str, Any]] = []
+    truncated = 0
+    for row in rows:
+        item = dict(row)
+        for key in ("left_text", "right_text"):
+            text = str(item.get(key) or "")
+            if len(text) > max_chars:
+                item[key] = text[:max_chars] + " …（已截断，完整内容请查看导出）"
+                truncated += 1
+        display_rows.append(item)
+    return display_rows, truncated
+
+
+def build_summary_text(result: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> str:
+    context = context or {}
+    summary = result.get("summary", {})
+    rows = [
+        "文本对比摘要",
+        f"原始来源: {context.get('left_source', '原始文本')}",
+        f"对比来源: {context.get('right_source', '对比文本')}",
+        f"文本相似度: {format_similarity(summary.get('text_similarity'))}",
+        f"行相似度: {format_similarity(summary.get('line_similarity'))}",
+        f"词级相似度: {format_similarity(summary.get('token_similarity'))}",
+        f"差异组: {summary.get('change_group_count', 0)}",
+        f"修改/新增/删除行: {summary.get('modified_lines', 0)}/{summary.get('added_lines', 0)}/{summary.get('removed_lines', 0)}",
+    ]
+    if summary.get("empty_both"):
+        rows.append("说明: 两侧文本均为空。")
+    elif summary.get("empty_side"):
+        rows.append("说明: 仅有一侧文本，相似度不代表内容重合度。")
+    if summary.get("matching_mode") == "sampled":
+        rows.append("提示: 文本较大，已使用采样匹配模式。")
+    return "\n".join(rows) + "\n"
+
+
+def _render_json_export(result: Dict[str, Any], context: Dict[str, Any]) -> str:
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+def _render_markdown_export(result: Dict[str, Any], context: Dict[str, Any]) -> str:
+    return build_comparison_report(
+        result,
+        left_source=context.get("left_source", "原始文本"),
+        right_source=context.get("right_source", "对比文本"),
+    )
+
+
+def _render_diff_export(result: Dict[str, Any], context: Dict[str, Any]) -> str:
+    return result.get("line_diff", {}).get("unified_diff") or "# 两侧文本无差异\n"
+
+
+def _render_csv_export(result: Dict[str, Any], context: Dict[str, Any]) -> bytes:
+    return safe_csv_bytes(result.get("line_diff", {}).get("rows", []))
+
+
+def _render_txt_export(result: Dict[str, Any], context: Dict[str, Any]) -> str:
+    return build_summary_text(result, context)
+
+
+def default_exporters() -> Dict[str, ExporterSpec]:
+    return {
+        "JSON": ExporterSpec("JSON", "text_comparison_report.json", "application/json", _render_json_export, "完整对比结果"),
+        "Markdown": ExporterSpec("Markdown", "text_comparison_report.md", "text/markdown", _render_markdown_export, "可读报告"),
+        "Unified Diff": ExporterSpec("Unified Diff", "text_comparison.diff", "text/x-diff", _render_diff_export, "标准 diff"),
+        "CSV": ExporterSpec("CSV", "text_comparison_changes.csv", "text/csv", _render_csv_export, "差异明细表格"),
+        "TXT": ExporterSpec("TXT", "text_comparison_summary.txt", "text/plain", _render_txt_export, "纯文本摘要"),
+    }
+
+
+def build_export_payloads(
+    result: Dict[str, Any], context: Optional[Dict[str, Any]] = None
+) -> List[tuple[str, str, str, Any]]:
+    context = context or {}
+    return [
+        (name, spec.filename, spec.mime, spec.render(result, context))
+        for name, spec in exporters().items()
+    ]
 
 
 def build_comparison_report(
@@ -447,28 +655,41 @@ def build_comparison_report(
     lines = [
         "# 文本对比报告",
         "",
-        f"- 原始来源: {left_source}",
-        f"- 对比来源: {right_source}",
-        f"- 文本相似度: {summary.get('text_similarity', 0):.2%}",
-        f"- 行相似度: {summary.get('line_similarity', 0):.2%}",
-        f"- 词级相似度: {summary.get('token_similarity', 0):.2%}",
+        f"- 原始来源: {_markdown_text(left_source)}",
+        f"- 对比来源: {_markdown_text(right_source)}",
+        f"- 文本相似度: {format_similarity(summary.get('text_similarity'))}",
+        f"- 行相似度: {format_similarity(summary.get('line_similarity'))}",
+        f"- 词级相似度: {format_similarity(summary.get('token_similarity'))}",
         f"- 修改行: {summary.get('modified_lines', 0)}",
         f"- 新增行: {summary.get('added_lines', 0)}",
         f"- 删除行: {summary.get('removed_lines', 0)}",
-        "",
-        "## 行级差异",
     ]
+    if summary.get("empty_both"):
+        lines.append("- 说明: 两侧文本均为空。")
+    elif summary.get("empty_side"):
+        lines.append("- 说明: 仅有一侧文本，相似度不代表内容重合度。")
+    if summary.get("matching_mode") == "sampled":
+        lines.append("- 提示: 文本较大，已使用采样匹配模式，小改动可能合并成较大差异块。")
+    lines.extend(["", "## 行级差异"])
 
     if not line_rows:
         lines.append("- 未发现差异")
     else:
-        for row in line_rows[:50]:
+        for row in line_rows[:MAX_REPORT_ROWS]:
             lines.append(
-                f"- [{row['status']}] 左 {row.get('left_line_number') or '-'} / 右 {row.get('right_line_number') or '-'}"
+                f"- [{_markdown_text(row['status'])}] 左 {row.get('left_line_number') or '-'}"
+                f" / 右 {row.get('right_line_number') or '-'}"
             )
-            lines.append(f"  原始: {row.get('left_text', '')}")
-            lines.append(f"  对比: {row.get('right_text', '')}")
+            lines.append(f"  原始: {_markdown_text(row.get('left_text', ''))}")
+            lines.append(f"  对比: {_markdown_text(row.get('right_text', ''))}")
+        if len(line_rows) > MAX_REPORT_ROWS:
+            lines.append(
+                f"> 仅展示前 {MAX_REPORT_ROWS} 条，共 {len(line_rows)} 条差异；"
+                "完整内容请查看 JSON 导出。"
+            )
 
-    unified_diff = result.get("line_diff", {}).get("unified_diff", "")
-    lines.extend(["", "## Unified Diff", "```diff", unified_diff or "(无差异)", "```"])
+    unified_diff = result.get("line_diff", {}).get("unified_diff", "") or "(无差异)"
+    # 正文里出现 ``` 会提前闭合围栏并让后续内容被当作正文渲染。
+    diff_body = unified_diff.replace("```", "\\`\\`\\`")
+    lines.extend(["", "## Unified Diff", "```diff", diff_body, "```"])
     return "\n".join(lines).strip() + "\n"

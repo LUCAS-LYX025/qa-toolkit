@@ -61,7 +61,9 @@ STOPWORDS = {
 
 
 def normalize_line_endings(text: str) -> str:
-    return (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    # 网页输入框、Mac 应用和部分日志系统会写入 Unicode 行分隔符，不统一会让行数与差异定位错位。
+    return normalized.replace("\u2028", "\n").replace("\u2029", "\n").replace("\x85", "\n")
 
 
 def _decode_plaintext_bytes(raw_bytes: bytes) -> str:
