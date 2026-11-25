@@ -427,3 +427,47 @@
 - 全量 pytest：365 passed
 - e2e（新增 `09-json-tools.e2e.ts`，格式化清空 / 错误定位与过期 / 稳定对比 / JSONPath 去重与失败清空）：4/4 passed，全套 36/36 passed
 - GitHub：issues #229-#247 全部关闭，仓库 open issues = 0
+
+## 时间处理工具专项审计（2026-11-25，Issues #250-#268）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/utils/datetime_tools.py`（DateTimeUtils 全量方法）+ `src/qa_toolkit/ui/pages/time_processor_page.py`（时间戳/单位换算/日期计算/SLA/Cron/性能/时区 4 大 Tab）。
+- 方式：候选问题先写成复现脚本（`.qa-audit/datetime_repro.py`）逐条实测，证伪后排除（12/13 位时间戳识别、SLA 跨天与周末跳过、毫秒往返精度等候选均被证伪），确认 19 项后提交 GitHub Issues #250-#268（另有脚本误建的重复 issue #249 已关闭）。
+- 修复分支 `fix/datetime-audit`（commit `955b1a4`），PR #269 合并至 master（merge commit `a0b3801`）。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 无效时区静默（#250） | `get_timezone_conversion(..., 'Not/ARealZone')` 返回原时间 2026-04-06 09:00，无任何报错，页面把原时间当转换结果展示 |
+| 夏令时歧义不一致（#251） | 纽约 2026-03-08 02:30（不存在的时刻）在时间戳页明确报错，但核心层 `localize` 默认 `is_dst=False` 静默给出标准时间结果 |
+| 节假日年份缺口崩溃（#252） | `summarize_date_range(2100-01-01, 2100-01-03, country='CN')` 抛 `TypeError: Value after * must be an iterable`（holidays 库对 2100+ 年构造失败），页面实时调用无 try 保护 |
+| 中国调休失真（#253） | `count_business_days(2024-02-04, 2024-02-04, country='CN')` 返回 0，但该周日是春节调休上班日；holidays 库只标记放假不标记调休上班 |
+| 结果不失效（#254） | AppTest：时间戳转换/批量转换/Cron 生成结果在输入修改后全部残留旧值 |
+| CSV 公式注入（#255） | 批量输入 `=1+1`，导出 CSV 第二行为 `1,=1+1,失败,...`，Excel 打开会执行公式 |
+| Cron API 设计（#256） | 错误信息 `['解析错误: ...']` 与正常 `list[datetime]` 同型返回，调用方只能 `isinstance` 嗅探；croniter 缺失时同样只返回字符串 |
+| 错误信息英文（#257） | 批量失败行显示 `Unknown string format: abc` 等原生异常 |
+| 星期英文（#258） | `parse_datetime_input` 返回 `Monday`，多时区对照表“星期”列同样英文 |
+| 边界校验（#259-#264） | 未来生日 `get_age(2030-01-01)` 返回 -4；`get_constellation(2,30)` 返回双鱼座；`add_business_days` 无上限（页面 number_input 无 max）；`duration×rps=52.5` 静默截断为 52；负响应时间参与 P95；`add_months(date(1,1,1),-1)` 抛裸 `ValueError: year 0 is out of range` |
+| DataFrame 混合类型（#265） | 结果表“结果”列混合 str/int，触发 `ArrowTypeError: Expected bytes, got a 'int' object` 告警 |
+| 硬编码扩展点（#266） | `TIME_UNIT_SECONDS`、`CRON_PRESETS`、13 个时区、对照表 `[UTC,北京,东京,纽约,伦敦]` 全部硬编码 |
+| 时区能力薄弱（#267） | 仅 13 个常用城市，无法搜索全量或输入 IANA 名称（如 `Asia/Ho_Chi_Minh`） |
+| SLA 无日历（#268） | `calculate_sla_due_date` 只跳周末，`count_business_days`/`add_business_days` 却都支持国家日历，能力不对齐 |
+
+### 修复方案要点
+
+- **时区转换健壮化**：无效时区抛 `ValueError`（含可用时区提示）；`localize(..., is_dst=None)` 统一处理夏令时歧义/不存在时刻，错误信息区分“不存在”与“有歧义”；多时区快照同样校验。
+- **节假日缺口降级**：`_get_country_holidays_safe` 按年构造、失败年份跳过并回传 `unsupported_holiday_years`，区间统计把缺口年份视为无节假日并在页面标注“节假日数据缺口”，不再崩溃；`is_holiday` 对不支持年份返回 False 而非吞异常。
+- **中国调休支持**：新增 `register_business_calendar(country, extra_workdays, extra_holidays)` 自定义覆盖表，`is_workday`/`count_business_days`/`add_business_days`/`summarize_date_range`/`calculate_sla_due_date`/`calculate_business_hours_diff` 全链路生效；SLA 增加可选 `country` 参数（默认保持旧行为兼容）。
+- **结果可信度**：时间戳转换、日期时间回算、批量转换、Cron、性能分析五类结果全部绑定输入签名，输入变更即提示“结果已过期”并隐藏旧结果。
+- **CSV 安全与诊断**：批量导出对 `= + - @` 开头单元格加前缀降级（UTF-8 BOM 保留，文件名带时间戳）；失败行转换为“无法识别的时间格式 / 超出可表示范围 / 请检查时间戳位数”等可操作中文诊断。
+- **本地化与易用性**：新增 `weekday_name(locale='zh')`，批量结果与多时区对照表输出中文星期；时区 Tab 支持自定义 IANA 名称并给出“未识别”提示；Cron 改结构化返回 `{ok, runs, error}`（旧接口兼容层保留）；结果表全部字符串化消除 Arrow 告警。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/datetime_registry.py`——时间单位、时区、Cron 模板、多时区对照列、自定义工作日/节假日、批量解析自定义格式均为注册扩展点，与 regex/crypto/json registry 同风格；页面列表全部改从注册表读取，重复项注册显式要求 `replace=True`。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_datetime.py`：28 passed（逐条对应 issue）
+- 全量 pytest：393 passed
+- e2e（新增 `10-time-processor.e2e.ts`：时间戳转换与过期 / 批量中文诊断 / Cron 结构化与过期 / 自定义 IANA 时区）：4/4 passed，全套 40/40 passed
+- GitHub：issues #250-#268 全部关闭，仓库 open issues = 0
