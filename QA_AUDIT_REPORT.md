@@ -479,6 +479,7 @@
 - 对象：`src/qa_toolkit/utils/image_processing.py`（ImageProcessor 全量方法）+ `src/qa_toolkit/ui/pages/image_processor_page.py`（格式转换/指定体积/批量造图/尺寸/翻转/旋转/裁剪/水印 8 个 Tab）。
 - 方式：候选问题写成 `.qa-audit/image_repro.py` 实测坐实，证伪项剔除（例如“导出复制 EXIF 导致隐私泄露”在 Pillow 11.3 下不成立，实际是**静默剥离且不可配置**，因此改提 #271），确认 20 项后提交 GitHub Issues #270-#289。
 - 视角：除正确性外，重点覆盖测试专家关心的资源边界/动画保真，以及产品工程师关心的**拓展性、易用性**（格式与档位可注册、批量产物可追溯、动画与元数据策略可见）。
+- 修复分支 `fix/image-audit`（commit `314c5c0`），PR #290 已合并至 `master`（merge commit `7c916fe`）。
 
 ### 关键实测证据（修复前）
 
