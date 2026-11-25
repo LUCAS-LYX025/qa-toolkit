@@ -8,7 +8,13 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
-from qa_toolkit.config.constants import LANGUAGE_TEMPLATES, PREDEFINED_PATTERNS
+from qa_toolkit.core.regex_registry import (
+    get_code_language,
+    get_code_languages,
+    get_pattern_presets,
+    get_registry_summary,
+    get_sample_cases,
+)
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.status_feedback import (
     push_status_feedback,
@@ -18,10 +24,16 @@ from qa_toolkit.ui.components.status_feedback import (
     render_warning_feedback,
 )
 from qa_toolkit.utils.regex_tools import (
+    DEFAULT_TIMEOUT_MS,
+    MAX_MATCH_RECORDS,
+    MAX_TEXT_CHARS,
     analyze_regex,
+    build_input_signature,
     build_regex_code,
+    build_regex_flags,
     generate_regex_from_examples,
     parse_example_items,
+    safe_csv_cell,
     suggest_field_patterns,
 )
 
@@ -52,6 +64,7 @@ DEFAULT_STATE = {
     "regex_tool_codegen_language": "Python",
     "regex_tool_codegen_operation": "匹配",
     "regex_tool_codegen_flags": [],
+    "regex_tool_codegen_global_match": "全局匹配",
     "regex_tool_codegen_replacement": "",
     "regex_tool_generated_code": None,
     "regex_tool_examples_source": "",
@@ -62,30 +75,12 @@ DEFAULT_STATE = {
     "regex_tool_quick_extract_source": "",
     "regex_tool_quick_extract_result": [],
     "regex_tool_quick_extract_error": "",
+    "regex_tool_context_chars": 40,
+    "regex_tool_max_windows": 6,
 }
 
-SAMPLE_CASES: Dict[str, Dict[str, Any]] = {
-    "接口响应字段提取": {
-        "pattern": r'"traceId"\s*:\s*"([^"]+)"',
-        "text": '{\n  "code": 0,\n  "message": "success",\n  "traceId": "trace-20260405-0001",\n  "data": {"userId": 1001}\n}',
-        "replacement": "traceId: <masked>",
-    },
-    "日志关键字段定位": {
-        "pattern": r"ERROR\s+\[(?P<trace>[A-Z0-9-]+)\]\s+(.+)",
-        "text": "2026-04-05 10:23:18 INFO [TRACE-1001] start request\n2026-04-05 10:23:19 ERROR [TRACE-1002] payment timeout\n2026-04-05 10:23:20 WARN [TRACE-1003] retry scheduled",
-        "replacement": r"ERROR [\g<trace>] <masked>",
-    },
-    "URL 参数批量清洗": {
-        "pattern": r"([?&]token=)[^&]+",
-        "text": "https://qa.example.com/order?id=1001&token=abc123\nhttps://qa.example.com/refund?id=1002&token=xyz999",
-        "replacement": r"\1***",
-    },
-    "订单号规则归纳": {
-        "pattern": r"ORD-\d{6}",
-        "text": "待处理订单: ORD-102401, ORD-102402, ORD-102499",
-        "replacement": "ORDER-******",
-    },
-}
+# 兼容旧导入的只读视图；页面运行时通过注册表取值，支持业务方注册新样例。
+SAMPLE_CASES = get_sample_cases()
 
 CODE_LANGUAGE_MAP = {
     "JavaScript": "javascript",
@@ -120,16 +115,16 @@ def _reset_playground_result() -> None:
 def _load_selected_preset():
     preset_name = st.session_state.regex_tool_selected_preset
     if preset_name != "自定义":
-        st.session_state.regex_tool_pattern = PREDEFINED_PATTERNS[preset_name]
+        st.session_state.regex_tool_pattern = get_pattern_presets()[preset_name].pattern
         _reset_playground_result()
 
 
 def _load_selected_sample():
-    sample = SAMPLE_CASES[st.session_state.regex_tool_selected_sample]
-    st.session_state.regex_tool_pattern = sample["pattern"]
-    st.session_state.regex_tool_text = sample["text"]
+    sample = get_sample_cases()[st.session_state.regex_tool_selected_sample]
+    st.session_state.regex_tool_pattern = sample.pattern
+    st.session_state.regex_tool_text = sample.text
     st.session_state.regex_tool_enable_replacement = True
-    st.session_state.regex_tool_replacement_text = sample["replacement"]
+    st.session_state.regex_tool_replacement_text = sample.replacement
     st.session_state.regex_tool_replace_scope = "全部匹配"
     st.session_state.regex_tool_replace_all = True
     _reset_playground_result()
@@ -168,8 +163,9 @@ def _clear_examples():
 
 def _filter_flags_for_language(language: str, selected_flags: List[str]) -> List[str]:
     """仅保留目标语言支持的 flags；切换语言后旧 flag 不再适用。"""
-    supported = LANGUAGE_TEMPLATES.get(language, {}).get("flags", {})
-    return [flag for flag in (selected_flags or []) if flag in supported]
+    supported = get_code_languages().get(language)
+    flags = supported.flags if supported else {}
+    return [flag for flag in (selected_flags or []) if flag in flags]
 
 
 def _favorite_at(favorites: List[dict], index: int) -> dict:
@@ -177,6 +173,20 @@ def _favorite_at(favorites: List[dict], index: int) -> dict:
     if not isinstance(index, int) or not 0 <= index < len(favorites):
         return {}
     return favorites[index]
+
+
+def _favorite_context() -> Dict[str, Any]:
+    """收藏项连同运行上下文一起保存，避免只留一个孤零零的表达式。"""
+    return {
+        "ignore_case": bool(st.session_state.regex_tool_ignore_case),
+        "multiline": bool(st.session_state.regex_tool_multiline),
+        "dotall": bool(st.session_state.regex_tool_dotall),
+        "global_match": bool(st.session_state.regex_tool_global_match),
+        "text": st.session_state.regex_tool_text,
+        "replacement_enabled": bool(st.session_state.regex_tool_enable_replacement),
+        "replacement": st.session_state.regex_tool_replacement_text,
+        "replace_all": bool(st.session_state.regex_tool_replace_all),
+    }
 
 
 def _add_current_favorite():
@@ -189,7 +199,7 @@ def _add_current_favorite():
     note = st.session_state.regex_tool_favorite_note.strip()
 
     favorites = [item for item in st.session_state.regex_tool_favorites if item["pattern"] != pattern]
-    favorites.insert(0, {"name": name, "pattern": pattern, "note": note})
+    favorites.insert(0, {"name": name, "pattern": pattern, "note": note, **_favorite_context()})
     st.session_state.regex_tool_favorites = favorites[:20]
     st.session_state.regex_tool_favorite_name = ""
     st.session_state.regex_tool_favorite_note = ""
@@ -201,6 +211,13 @@ def _apply_favorite(index: int):
     if not favorite:
         return
     st.session_state.regex_tool_pattern = favorite["pattern"]
+    # 旧版收藏项只有 pattern，用默认值补齐上下文，保持向后兼容。
+    context = _favorite_context()
+    for key, default in context.items():
+        st.session_state[f"regex_tool_{key}"] = favorite.get(key, default)
+    st.session_state.regex_tool_replace_scope = (
+        "全部匹配" if st.session_state.regex_tool_replace_all else "仅首个匹配"
+    )
     _reset_playground_result()
 
 
@@ -234,13 +251,14 @@ def _import_favorites():
         pattern = str(item.get("pattern", "")).strip()
         if not pattern:
             continue
-        imported_items.append(
-            {
-                "name": str(item.get("name", "")).strip() or f"导入表达式 {len(imported_items) + 1}",
-                "pattern": pattern,
-                "note": str(item.get("note", "")).strip(),
-            }
-        )
+        imported = {
+            "name": str(item.get("name", "")).strip() or f"导入表达式 {len(imported_items) + 1}",
+            "pattern": pattern,
+            "note": str(item.get("note", "")).strip(),
+        }
+        for key, default in _favorite_context().items():
+            imported[key] = item.get(key, default)
+        imported_items.append(imported)
 
     if not imported_items:
         _flash_regex_feedback("warning", "没有导入到有效的收藏项。", title="导入结果")
@@ -301,7 +319,7 @@ def _resolve_codegen_pattern() -> str:
     if source == "沿用测试页表达式":
         return st.session_state.regex_tool_pattern.strip()
     if source == "预定义模式":
-        return PREDEFINED_PATTERNS[st.session_state.regex_tool_codegen_preset]
+        return get_pattern_presets()[st.session_state.regex_tool_codegen_preset].pattern
     return st.session_state.regex_tool_codegen_custom_pattern.strip()
 
 
@@ -326,21 +344,57 @@ def _build_match_dataframe(result: Dict[str, Any], limit: int | None = None) -> 
     return pd.DataFrame(rows)
 
 
+def _build_match_csv(result: Dict[str, Any]) -> str:
+    frame = _build_match_dataframe(result).copy()
+    for column in ("匹配文本", "捕获组", "命名分组"):
+        frame[column] = frame[column].map(safe_csv_cell)
+    return frame.to_csv(index=False)
+
+
 def _build_unique_csv(result: Dict[str, Any]) -> str:
     rows = result["unique_matches"]
     if not rows:
         return "match_text,count\n"
-    return pd.DataFrame(rows).to_csv(index=False)
+    frame = pd.DataFrame(rows).copy()
+    frame["match_text"] = frame["match_text"].map(safe_csv_cell)
+    return frame.to_csv(index=False)
+
+
+def _current_result_signature() -> str:
+    replacement = (
+        st.session_state.regex_tool_replacement_text
+        if st.session_state.regex_tool_enable_replacement else None
+    )
+    return build_input_signature(
+        st.session_state.regex_tool_pattern,
+        st.session_state.regex_tool_text,
+        flags=build_regex_flags(
+            ignore_case=st.session_state.regex_tool_ignore_case,
+            multiline=st.session_state.regex_tool_multiline,
+            dotall=st.session_state.regex_tool_dotall,
+        ),
+        global_match=st.session_state.regex_tool_global_match,
+        replacement=replacement,
+        replace_all=st.session_state.regex_tool_replace_scope == "全部匹配",
+        context_chars=int(st.session_state.regex_tool_context_chars),
+        max_windows=int(st.session_state.regex_tool_max_windows),
+    )
 
 
 def _render_result_summary(result: Dict[str, Any]):
     metrics = st.columns(6)
-    metrics[0].metric("匹配数", result["match_count"])
+    truncated = result.get("truncated", False)
+    metrics[0].metric("匹配数", f"{result['match_count']}+" if truncated else result["match_count"])
     metrics[1].metric("唯一值", result["unique_match_count"])
     metrics[2].metric("捕获组", result["group_count"])
     metrics[3].metric("命名组", len(result["named_group_names"]))
     metrics[4].metric("耗时", f"{result['execution_ms']:.3f} ms")
     metrics[5].metric("模式", "全局" if result["global_match"] else "首个")
+
+    if truncated:
+        total = result.get("total_match_count")
+        total_text = str(total) if total is not None else "未知（统计超时）"
+        st.caption(f"匹配数已截断：展示前 {result['match_count']} 条 / 共 {total_text} 条；唯一值基于截断样本。")
 
     if result["flags_display"]:
         st.caption("已启用 flags: " + " / ".join(result["flags_display"]))
@@ -363,9 +417,19 @@ def _render_playground_result():
     if not result:
         return
 
+    if result.get("signature") and result["signature"] != _current_result_signature():
+        render_info_feedback("输入已变更，请重新点击“运行正则测试”。", title="结果已过期")
+        return
+
     st.markdown("### 运行结果")
     _render_result_summary(result)
     st.markdown(result["preview_html"], unsafe_allow_html=True)
+    st.download_button(
+        "下载分析结果 JSON",
+        data=json.dumps(result, ensure_ascii=False, indent=2, default=str),
+        file_name=f"regex_analysis_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        mime="application/json",
+    )
 
     matches_tab, unique_tab, replace_tab = st.tabs(["匹配明细", "唯一值提取", "替换预览"])
     with matches_tab:
@@ -376,7 +440,7 @@ def _render_playground_result():
             st.dataframe(match_df, use_container_width=True, hide_index=True)
             st.download_button(
                 "下载匹配明细 CSV",
-                data=_build_match_dataframe(result).to_csv(index=False).encode("utf-8-sig"),
+                data=_build_match_csv(result).encode("utf-8-sig"),
                 file_name=f"regex_matches_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
             )
@@ -506,15 +570,8 @@ def _run_playground():
         if st.session_state.regex_tool_enable_replacement:
             replacement = st.session_state.regex_tool_replacement_text
 
-        # 前置保护：灾难性回溯模式 + 超长文本会在标准库 re 中指数级卡顿，
-        # 页面层先拦截，避免挂死整个 Streamlit 脚本线程。
-        _risky = any(marker in pattern for marker in ("(a+)+", "(a*)*", "(.+)+", "(.*)*", "[a-zA-Z]++"))
-        if _risky:
-            st.error("检测到疑似灾难性回溯的表达式（嵌套量词），已拒绝执行以避免页面卡死。")
-            return
-        if len(text) > 100_000:
-            st.error("测试文本超过 10 万字符，请截断后再运行以避免页面卡死。")
-            return
+        # 运行时保护统一在核心层执行：regex 模块方法级 timeout + 文本长度上限。
+        # 页面层不再用字符串黑名单，避免 (a|aa)+$ 这类模式绕过保护卡死线程。
         result = analyze_regex(
             pattern,
             text,
@@ -524,13 +581,20 @@ def _run_playground():
             dotall=bool(st.session_state.regex_tool_dotall),
             replacement=replacement,
             replace_all=st.session_state.regex_tool_replace_scope == "全部匹配",
+            timeout_ms=DEFAULT_TIMEOUT_MS,
+            context_chars=int(st.session_state.regex_tool_context_chars),
+            max_windows=int(st.session_state.regex_tool_max_windows),
         )
+        if result.get("error"):
+            st.session_state.regex_tool_test_result = None
+            st.session_state.regex_tool_test_error = result["error"]
+            return
         st.session_state.regex_tool_test_result = result
         st.session_state.regex_tool_test_error = ""
         _push_recent_pattern(pattern)
-    except re.error as exc:
+    except (ValueError, OverflowError) as exc:
         st.session_state.regex_tool_test_result = None
-        st.session_state.regex_tool_test_error = f"正则表达式错误: {exc}"
+        st.session_state.regex_tool_test_error = f"运行参数无效: {exc}"
 
 
 def _render_playground_tab():
@@ -540,7 +604,7 @@ def _render_playground_tab():
         preset_col1, preset_col2 = st.columns([2, 1])
         preset_col1.selectbox(
             "预定义模式",
-            ["自定义"] + list(PREDEFINED_PATTERNS.keys()),
+            ["自定义"] + list(get_pattern_presets().keys()),
             key="regex_tool_selected_preset",
         )
         with preset_col2:
@@ -556,7 +620,7 @@ def _render_playground_tab():
         sample_col1, sample_col2 = st.columns([2, 1])
         sample_col1.selectbox(
             "QA 场景示例",
-            list(SAMPLE_CASES.keys()),
+            list(get_sample_cases().keys()),
             key="regex_tool_selected_sample",
         )
         with sample_col2:
@@ -614,7 +678,23 @@ def _render_playground_tab():
                 "- 先用预定义模式或 QA 场景示例快速起步。\n"
                 "- 命名分组建议用 `(?P<name>...)`，结果表会直接展开。\n"
                 "- 替换预览支持空字符串，可直接验证脱敏和清洗规则。\n"
-                "- 大文本会自动截取匹配附近上下文，避免整页卡顿。"
+                f"- 文本超过 {MAX_TEXT_CHARS} 字符会拒绝执行；单次运行上限 {DEFAULT_TIMEOUT_MS} 毫秒。\n"
+                "- 大文本只高亮匹配附近上下文，可在下面调整窗口数与上下文长度。"
+            )
+            st.number_input(
+                "高亮上下文字符数", min_value=0, max_value=500, step=10,
+                key="regex_tool_context_chars",
+            )
+            st.number_input(
+                "高亮窗口数", min_value=1, max_value=50, step=1,
+                key="regex_tool_max_windows",
+            )
+            summary = get_registry_summary()
+            st.caption(
+                f"当前扩展点：预定义模式 {len(summary['presets'])} 个 / "
+                f"QA 样例 {len(summary['samples'])} 个 / "
+                f"代码语言 {len(summary['languages'])} 种 / "
+                f"字段提取规则 {len(summary['extractors'])} 条。"
             )
 
         _render_favorites_panel()
@@ -644,10 +724,10 @@ def _render_codegen_tab():
         if st.session_state.regex_tool_codegen_source == "预定义模式":
             st.selectbox(
                 "选择预定义模式",
-                list(PREDEFINED_PATTERNS.keys()),
+                list(get_pattern_presets().keys()),
                 key="regex_tool_codegen_preset",
             )
-            st.code(PREDEFINED_PATTERNS[st.session_state.regex_tool_codegen_preset])
+            st.code(get_pattern_presets()[st.session_state.regex_tool_codegen_preset].pattern)
         elif st.session_state.regex_tool_codegen_source == "手动输入":
             st.text_input(
                 "输入表达式",
@@ -661,8 +741,14 @@ def _render_codegen_tab():
 
         st.selectbox(
             "目标语言",
-            list(LANGUAGE_TEMPLATES.keys()),
+            list(get_code_languages().keys()),
             key="regex_tool_codegen_language",
+        )
+        st.radio(
+            "匹配范围",
+            ["全局匹配", "首个匹配"],
+            key="regex_tool_codegen_global_match",
+            horizontal=True,
         )
         st.radio(
             "操作类型",
@@ -679,7 +765,7 @@ def _render_codegen_tab():
 
     with right_col:
         language = st.session_state.regex_tool_codegen_language
-        flag_options = list(LANGUAGE_TEMPLATES[language]["flags"].keys())
+        flag_options = list(get_code_language(language).flags.keys())
         # 目标语言切换后剔除旧语言专属 flag，避免生成时 KeyError
         current_flags = _filter_flags_for_language(language, st.session_state.get("regex_tool_codegen_flags", []))
         if current_flags != st.session_state.get("regex_tool_codegen_flags", []):
@@ -690,8 +776,11 @@ def _render_codegen_tab():
             key="regex_tool_codegen_flags",
             help="不同语言支持的正则 flags 会有差异。",
         )
-        if language == "Go":
-            render_info_feedback("Go 会把 flags 以内联形式拼接到表达式前缀，例如 `(?i)`。", title="Go flags 说明")
+        if get_code_language(language).inline_flags:
+            render_info_feedback(
+                "该语言会把 flags 以内联形式作用到整个表达式，例如 `(?i)(?:cat|dog)`。",
+                title="内联 flags 说明",
+            )
 
         if st.button("生成代码", key="regex_tool_generate_code", use_container_width=True):
             pattern = _resolve_codegen_pattern()
@@ -704,6 +793,7 @@ def _render_codegen_tab():
                     operation_type=st.session_state.regex_tool_codegen_operation,
                     selected_flags=_filter_flags_for_language(language, st.session_state.regex_tool_codegen_flags),
                     replacement=st.session_state.regex_tool_codegen_replacement,
+                    global_match=st.session_state.regex_tool_codegen_global_match == "全局匹配",
                 )
 
         st.button("清空代码生成区", key="regex_tool_clear_codegen", use_container_width=True, on_click=_clear_codegen)
