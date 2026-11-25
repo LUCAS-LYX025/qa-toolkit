@@ -1,6 +1,9 @@
 import base64
+import hashlib
+import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -8,6 +11,7 @@ from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core import api_security_registry as sec_registry
 from qa_toolkit.core.api_security_tool import SecurityTestTool
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.application_security_tool import ApplicationSecurityTool
@@ -43,6 +47,9 @@ DEFAULT_STATE = {
     "api_sec_timeout": 15.0,
     "api_sec_verify_ssl": True,
     "api_sec_origin": "https://security-audit.local",
+    "api_sec_allow_private_targets": False,
+    "api_sec_probe_strategy": "safe_baseline",
+    "api_sec_result_signature": "",
     "api_sec_auth_headers_text": "{}",
     "api_sec_roles_text": "匿名用户\n普通用户\n管理员\n跨租户用户",
     "api_sec_role_profiles_text": json.dumps(
@@ -269,6 +276,155 @@ def _reset_security_workspace():
     st.session_state["app_sec_mobsf_profile_bootstrapped"] = True
 
 
+# ---------------------------------------------------------------------------
+# 注册式能力摘要 / 结果状态反馈 / 统一导出（SEC-08 / 10 / 12 / 13 / 20 / 21）
+# ---------------------------------------------------------------------------
+
+_CONFIG_SIGNATURE_KEYS = [
+    "api_sec_interfaces", "api_sec_selected_indexes", "api_sec_base_url",
+    "api_sec_timeout", "api_sec_verify_ssl", "api_sec_origin",
+    "api_sec_auth_headers_text", "api_sec_roles_text", "api_sec_role_profiles_text",
+    "api_sec_allow_private_targets", "api_sec_probe_strategy",
+]
+
+
+def _compute_security_signature(state: Dict[str, Any]) -> str:
+    parts = [f"{key}={state.get(key)!r}" for key in _CONFIG_SIGNATURE_KEYS]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _current_security_signature() -> str:
+    return _compute_security_signature(dict(st.session_state))
+
+
+def _mark_results_current() -> None:
+    st.session_state.api_sec_result_signature = _current_security_signature()
+
+
+def _is_result_stale() -> bool:
+    recorded = str(st.session_state.get("api_sec_result_signature", "") or "")
+    return bool(recorded) and recorded != _current_security_signature()
+
+
+def _render_result_state_feedback() -> None:
+    if _is_result_stale():
+        st.error("⚠️ 当前展示的是上一次安全测试的结果：Base URL / 鉴权头 / 范围 / 运行参数已变更，结论可能已过期，请重新执行相关动作。")
+    _render_warnings_panel()
+
+
+def _collect_result_warnings() -> List[str]:
+    warnings: List[str] = []
+    for key in [
+        "api_sec_plan", "api_sec_passive_report", "api_sec_probe_report",
+        "api_sec_role_regression", "api_sec_auth_matrix", "api_sec_nuclei_pack",
+        "api_sec_regression_suite", "api_sec_bundle",
+    ]:
+        value = st.session_state.get(key)
+        if not isinstance(value, dict):
+            continue
+        for item in value.get("warnings") or []:
+            text = str(item)
+            if text not in warnings:
+                warnings.append(text)
+    return warnings
+
+
+def _render_warnings_panel() -> None:
+    warnings = _collect_result_warnings()
+    if not warnings:
+        return
+    with st.expander(f"⚠️ 运行告警（{len(warnings)} 条）", expanded=False):
+        for item in warnings[: sec_registry.get_security_limits().max_error_samples]:
+            st.warning(html.escape(item))
+
+
+def _render_registry_summary() -> None:
+    """首屏展示当前注册的能力，证明检测规则/清单/模板/上限都是可扩展的。
+
+    安全默认值与运行上限是用户执行安全测试前必须知道的关键边界，必须直接
+    渲染在首屏，不能藏进默认折叠的面板里（与接口性能测试页保持一致）。
+    明细指标仍可折叠，避免首屏被 18 项 metric 占满。
+    """
+    summary = sec_registry.get_registry_summary()
+    st.caption(
+        f"安全默认：仅允许 {'/'.join(sorted(sec_registry.get_protocols()))}，"
+        f"默认校验 SSL={summary['默认校验 SSL']}、默认跟随重定向={summary['默认跟随重定向']}、"
+        f"默认允许内网目标={summary['默认允许内网目标']}；"
+        f"运行上限：接口 {summary['最大接口数']} / 角色 {summary['最大角色数']} / 请求 {summary['最大请求数']}；"
+        f"能力计数：被动审计规则 {summary['被动审计规则']} 个、基线探测规则 {summary['基线探测规则']} 个、"
+        f"Nuclei 模板 {summary['Nuclei 模板']} 个、OWASP 条目 {summary['OWASP 条目']} 个。"
+    )
+    with st.expander("🧩 当前注册的能力（可通过注册接口扩展，不局限于当前业务）", expanded=False):
+        cols = st.columns(4)
+        for index, (key, value) in enumerate(summary.items()):
+            cols[index % 4].metric(key, value)
+        st.caption(
+            "新增检查规则、OWASP 版本、敏感字段、角色等级或 Nuclei 模板只需调用 "
+            "`api_security_registry.register_*`，无需修改 core / 页面源码。"
+        )
+
+
+def _render_text_summary(summary: Dict[str, Any], title: str) -> None:
+    if not summary:
+        return
+    st.info(f"**{title}**：{sec_registry.build_text_summary(summary)}")
+
+
+def _sanitize_csv_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    """所有 CSV 导出统一走注册式清洗器，防止公式注入。"""
+    if frame is None or getattr(frame, "empty", True):
+        return frame
+    cleaned = frame.copy()
+    for column in cleaned.columns:
+        cleaned[column] = cleaned[column].map(sec_registry.sanitize_csv_value)
+    return cleaned
+
+
+def _csv_bytes(rows: Any) -> str:
+    return _sanitize_csv_frame(pd.DataFrame(rows or [])).to_csv(index=False)
+
+
+def _config_snapshot_from_state() -> Dict[str, Any]:
+    try:
+        auth_keys = sorted(str(k) for k in _parse_auth_headers(st.session_state.get("api_sec_auth_headers_text", "{}")).keys())
+    except ValueError:
+        auth_keys = []
+    return {
+        "base_url": str(st.session_state.get("api_sec_base_url", "") or ""),
+        "selected_indexes": list(st.session_state.get("api_sec_selected_indexes", []) or []),
+        "interface_count": len(st.session_state.get("api_sec_interfaces", []) or []),
+        "timeout_seconds": sec_registry.to_float(st.session_state.get("api_sec_timeout", 15.0), 15.0),
+        "verify_ssl": bool(st.session_state.get("api_sec_verify_ssl", True)),
+        "origin": str(st.session_state.get("api_sec_origin", "") or ""),
+        "auth_header_keys": auth_keys,
+        "roles": _parse_roles(st.session_state.get("api_sec_roles_text", "")),
+        "allow_private_targets": bool(st.session_state.get("api_sec_allow_private_targets", False)),
+        "probe_strategy": str(st.session_state.get("api_sec_probe_strategy", "safe_baseline") or "safe_baseline"),
+        "input_signature": _current_security_signature(),
+    }
+
+
+def _build_download_payload() -> Dict[str, Any]:
+    """统一下载 payload：所有导出项从同一份数据派生，字段口径一致。"""
+    bundle = st.session_state.get("api_sec_bundle") or {}
+    base: Dict[str, Any] = {
+        "plan": st.session_state.get("api_sec_plan") or {},
+        "scan_policy": st.session_state.get("api_sec_scan_policy") or {},
+        "passive_report": st.session_state.get("api_sec_passive_report") or {},
+        "probe_report": st.session_state.get("api_sec_probe_report") or {},
+        "role_regression": st.session_state.get("api_sec_role_regression") or {},
+        "owasp_checklist": st.session_state.get("api_sec_owasp_checklist") or [],
+        "authorization_matrix": st.session_state.get("api_sec_auth_matrix") or {},
+        "nuclei_template_pack": st.session_state.get("api_sec_nuclei_pack") or {},
+        "risk_dashboard": st.session_state.get("api_sec_risk_dashboard") or {},
+        "regression_suite": st.session_state.get("api_sec_regression_suite") or {},
+        "playbook_markdown": (bundle.get("playbook_markdown") or ""),
+        "report_markdown": (bundle.get("report_markdown") or ""),
+        "warnings": _collect_result_warnings(),
+    }
+    return sec_registry.build_export_payload(base, config_snapshot=_config_snapshot_from_state())
+
+
 def _render_styles():
     st.markdown(
         """
@@ -416,7 +572,12 @@ def _example_items(core: InterfaceAutoTestCore) -> List[Tuple[str, str, str]]:
 
 
 def _load_uploaded_interfaces(core: InterfaceAutoTestCore, uploaded_file) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-    suffix = os.path.splitext(uploaded_file.name)[1] or ".txt"
+    # 上传文件名先 basename，再只保留安全字符做临时文件后缀，避免路径穿越/控制字符。
+    raw_name = os.path.basename(str(getattr(uploaded_file, "name", "") or "upload.txt"))
+    suffix = os.path.splitext(raw_name)[1] or ".txt"
+    suffix = re.sub(r"[^A-Za-z0-9.]", "", suffix)[:16] or ".txt"
+    if not suffix.startswith("."):
+        suffix = "." + suffix
     temp_path = ""
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
@@ -713,7 +874,7 @@ def _render_source_section(core: InterfaceAutoTestCore):
                     try:
                         interfaces = core.parse_content(
                             raw_text,
-                            source_type=RAW_FORMAT_MAP[st.session_state.api_sec_raw_format],
+                            source_type=RAW_FORMAT_MAP.get(st.session_state.api_sec_raw_format, "auto"),
                             source_name="inline",
                         )
                         _store_interfaces(interfaces, dict(core.last_parse_meta))
@@ -737,6 +898,7 @@ def _render_source_section(core: InterfaceAutoTestCore):
 
 def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, source_type: str, env_profile_manager):
     labels = _build_interface_labels(interfaces)
+    limits = sec_registry.get_security_limits()
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">2. 范围与鉴权配置</div>', unsafe_allow_html=True)
     meta_col1, meta_col2, meta_col3, meta_col4 = st.columns(4)
@@ -788,15 +950,51 @@ def _render_scope_section(interfaces: List[Dict[str, Any]], source_name: str, so
             placeholder="https://api.example.com",
             help="如果文档里只有相对路径，请补充 Base URL 才能执行安全基线探测。",
         )
-        inner_col1, inner_col2 = st.columns(2)
+        inner_col1, inner_col2, inner_col3 = st.columns(3)
         with inner_col1:
-            st.number_input("超时(秒)", min_value=1.0, max_value=120.0, key="api_sec_timeout", step=1.0)
+            st.number_input(
+                "超时(秒)", min_value=float(limits.min_timeout_seconds),
+                max_value=float(limits.max_timeout_seconds), key="api_sec_timeout", step=1.0,
+                help=f"运行上限由注册中心配置，最大 {limits.max_timeout_seconds} 秒。",
+            )
         with inner_col2:
             st.checkbox("校验证书", key="api_sec_verify_ssl")
+        with inner_col3:
+            st.checkbox(
+                "允许内网/本地目标", key="api_sec_allow_private_targets",
+                help="默认关闭：拦截回环、内网、链路本地与元数据地址。仅在明确授权的隔离环境开启。",
+            )
         st.text_input(
             "Origin 头",
             key="api_sec_origin",
-            help="基线探测会复用该 Origin 检查 CORS 配置。",
+            help="基线探测统一使用该 Origin 检查 CORS 配置；不允许 CRLF/控制字符，也不会被鉴权头覆盖。",
+        )
+        probe_strategies = sec_registry.get_probe_strategy_labels()
+        st.selectbox(
+            "探测方法策略", options=list(probe_strategies.keys()),
+            key="api_sec_probe_strategy",
+            help="注册式策略：safe_baseline（OPTIONS/GET）、options_only（仅 OPTIONS），可自行注册新策略。",
+        )
+
+        # 目标地址与 Origin 的即时校验反馈，避免非法输入被静默吞掉。
+        base_value = str(st.session_state.get("api_sec_base_url", "") or "").strip()
+        if base_value:
+            candidate = base_value if "://" in base_value else "https://" + base_value
+            url_ok, url_error = sec_registry.validate_target_url(
+                candidate,
+                allow_private=bool(st.session_state.get("api_sec_allow_private_targets", False)),
+            )
+            if not url_ok:
+                st.warning(f"目标地址校验失败：{url_error}")
+        origin_ok, origin_error = sec_registry.sanitize_header_value(st.session_state.get("api_sec_origin", ""))
+        if not origin_ok:
+            st.error(f"Origin 头校验失败：{origin_error}")
+        if not st.session_state.get("api_sec_selected_indexes"):
+            st.info("当前未选择任何接口，所有发请求的动作都不会执行（范围为空不会被当成全选）。")
+        st.caption(
+            f"安全默认：仅允许 {'/'.join(sorted(sec_registry.get_protocols()))}，"
+            "默认拦截内网/回环/元数据地址，默认关闭重定向、默认开启 SSL 校验；"
+            f"运行上限：接口 {limits.max_interfaces} / 角色 {limits.max_roles} / 请求 {limits.max_requests}。"
         )
     with scope_col2:
         st.text_area(
@@ -894,12 +1092,24 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
         st.error(str(exc))
         role_profiles = None
 
+    limits = sec_registry.get_security_limits()
     selected_indexes = st.session_state.get("api_sec_selected_indexes", [])
     base_url = str(st.session_state.get("api_sec_base_url", "") or "").strip()
-    timeout_seconds = float(st.session_state.get("api_sec_timeout", 15.0) or 15.0)
+    timeout_seconds = sec_registry.clamp_float(
+        st.session_state.get("api_sec_timeout", 15.0), 15.0,
+        limits.min_timeout_seconds, limits.max_timeout_seconds,
+    )
     verify_ssl = bool(st.session_state.get("api_sec_verify_ssl", True))
-    origin = str(st.session_state.get("api_sec_origin", "https://security-audit.local") or "https://security-audit.local").strip()
+    origin = str(st.session_state.get("api_sec_origin", limits.default_origin) or limits.default_origin).strip()
     roles = _parse_roles(st.session_state.get("api_sec_roles_text", ""))
+    allow_private = bool(st.session_state.get("api_sec_allow_private_targets", False))
+    probe_strategy = str(st.session_state.get("api_sec_probe_strategy", "safe_baseline") or "safe_baseline")
+    scope_empty = len(selected_indexes or []) == 0
+
+    def done(message: str) -> None:
+        # 每次动作执行后把结果签名对齐到当前配置，供过期检测使用。
+        _mark_results_current()
+        st.success(message)
 
     action_col1, action_col2, action_col3, action_col4, action_col5 = st.columns(5)
 
@@ -913,10 +1123,12 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 timeout_seconds=timeout_seconds,
                 verify_ssl=verify_ssl,
                 origin=origin,
+                allow_private_targets=allow_private,
+                probe_strategy=probe_strategy,
             )
             st.session_state.api_sec_scan_policy = tool.build_scan_policy(st.session_state.api_sec_plan)
             st.session_state.api_sec_bundle = None
-            st.success("安全测试方案已生成。")
+            done("安全测试方案已生成。")
 
     with action_col2:
         if st.button("🔍 执行被动审计", key="api_sec_run_passive", use_container_width=True):
@@ -936,10 +1148,10 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     st.session_state.get("api_sec_probe_report"),
                 )
             st.session_state.api_sec_bundle = None
-            st.success("被动审计已完成。")
+            done("被动审计已完成。")
 
     with action_col3:
-        if st.button("🛰️ 执行基线探测", key="api_sec_run_probe", use_container_width=True) and _action_prerequisite_ready(auth_headers, "鉴权头"):
+        if st.button("🛰️ 执行基线探测", key="api_sec_run_probe", use_container_width=True, disabled=scope_empty) and _action_prerequisite_ready(auth_headers, "鉴权头"):
             with st.spinner("正在执行低风险安全基线探测..."):
                 st.session_state.api_sec_probe_report = tool.run_baseline_probe(
                     interfaces=interfaces,
@@ -949,6 +1161,8 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     verify_ssl=verify_ssl,
                     timeout_seconds=timeout_seconds,
                     origin=origin,
+                    allow_private_targets=allow_private,
+                    probe_strategy=probe_strategy,
                 )
             st.session_state.api_sec_owasp_checklist = tool.build_owasp_checklist(
                 st.session_state.get("api_sec_passive_report"),
@@ -961,7 +1175,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     st.session_state.get("api_sec_probe_report"),
                 )
             st.session_state.api_sec_bundle = None
-            st.success("安全基线探测已完成。")
+            done("安全基线探测已完成。")
 
     with action_col4:
         if st.button("📚 刷新 OWASP 清单", key="api_sec_refresh_checklist", use_container_width=True):
@@ -970,10 +1184,10 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 st.session_state.get("api_sec_probe_report"),
             )
             st.session_state.api_sec_bundle = None
-            st.success("OWASP 清单已刷新。")
+            done("OWASP 清单已刷新。")
 
     with action_col5:
-        if st.button("📦 一键生成完整报告", key="api_sec_bundle_report", use_container_width=True) and _action_prerequisite_ready(auth_headers, "鉴权头"):
+        if st.button("📦 一键生成完整报告", key="api_sec_bundle_report", use_container_width=True, disabled=scope_empty) and _action_prerequisite_ready(auth_headers, "鉴权头"):
             with st.spinner("正在构建安全方案、被动审计、基线探测和报告..."):
                 plan = tool.build_security_plan(
                     interfaces=interfaces,
@@ -983,6 +1197,8 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     timeout_seconds=timeout_seconds,
                     verify_ssl=verify_ssl,
                     origin=origin,
+                    allow_private_targets=allow_private,
+                    probe_strategy=probe_strategy,
                 )
                 passive_report = tool.analyze_interfaces(
                     interfaces=interfaces,
@@ -997,6 +1213,8 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     verify_ssl=verify_ssl,
                     timeout_seconds=timeout_seconds,
                     origin=origin,
+                    allow_private_targets=allow_private,
+                    probe_strategy=probe_strategy,
                 )
                 checklist = tool.build_owasp_checklist(passive_report, probe_report)
                 role_regression = (
@@ -1008,6 +1226,8 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                         verify_ssl=verify_ssl,
                         timeout_seconds=timeout_seconds,
                         origin=origin,
+                        allow_private_targets=allow_private,
+                        probe_strategy=probe_strategy,
                     )
                     if role_profiles is not None
                     else {}
@@ -1059,7 +1279,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 st.session_state.api_sec_risk_dashboard = risk_dashboard
                 st.session_state.api_sec_regression_suite = regression_suite
                 st.session_state.api_sec_bundle = bundle
-            st.success("完整报告已生成。")
+            done("完整报告已生成。")
 
     extra_col1, extra_col2, extra_col3, extra_col4 = st.columns(4)
     with extra_col1:
@@ -1070,7 +1290,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 roles=roles,
             )
             st.session_state.api_sec_bundle = None
-            st.success("权限/角色矩阵已生成。")
+            done("权限/角色矩阵已生成。")
     with extra_col2:
         if st.button("🧩 导出 Nuclei 模板", key="api_sec_build_nuclei_pack", use_container_width=True):
             st.session_state.api_sec_nuclei_pack = tool.build_nuclei_template_pack(
@@ -1080,7 +1300,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 auth_headers=auth_headers or {},
             )
             st.session_state.api_sec_bundle = None
-            st.success("Nuclei 风格基线模板已生成。")
+            done("Nuclei 风格基线模板已生成。")
     with extra_col3:
         if st.button("📊 生成风险看板", key="api_sec_build_risk_dashboard", use_container_width=True):
             st.session_state.api_sec_risk_dashboard = tool.build_risk_dashboard(
@@ -1090,7 +1310,7 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 authorization_matrix=st.session_state.get("api_sec_auth_matrix"),
             )
             st.session_state.api_sec_bundle = None
-            st.success("风险看板已生成。")
+            done("风险看板已生成。")
     with extra_col4:
         if st.button("🗂️ 生成回归套件", key="api_sec_build_regression_suite", use_container_width=True):
             st.session_state.api_sec_regression_suite = tool.build_regression_suite(
@@ -1102,11 +1322,11 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                 authorization_matrix=st.session_state.get("api_sec_auth_matrix"),
             )
             st.session_state.api_sec_bundle = None
-            st.success("安全回归套件已生成。")
+            done("安全回归套件已生成。")
 
     role_col1, role_col2 = st.columns(2)
     with role_col1:
-        if st.button("👥 执行多角色回归", key="api_sec_run_role_regression", use_container_width=True) and _action_prerequisite_ready(role_profiles, "角色凭证"):
+        if st.button("👥 执行多角色回归", key="api_sec_run_role_regression", use_container_width=True, disabled=scope_empty) and _action_prerequisite_ready(role_profiles, "角色凭证"):
             with st.spinner("正在执行多角色低风险回归..."):
                 st.session_state.api_sec_role_regression = tool.run_role_batch_regression(
                     interfaces=interfaces,
@@ -1116,9 +1336,11 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
                     verify_ssl=verify_ssl,
                     timeout_seconds=timeout_seconds,
                     origin=origin,
+                    allow_private_targets=allow_private,
+                    probe_strategy=probe_strategy,
                 )
             st.session_state.api_sec_bundle = None
-            st.success("多角色回归已完成。")
+            done("多角色回归已完成。")
     with role_col2:
         st.caption("多角色回归只使用你提供的已授权凭证，并且只发送 OPTIONS/GET 这类低风险请求。")
 
@@ -1155,9 +1377,30 @@ def _render_results(tool: SecurityTestTool):
     st.markdown('<div class="security-section">', unsafe_allow_html=True)
     st.markdown('<div class="security-section-title">4. 安全测试结果工作台</div>', unsafe_allow_html=True)
 
-    tab_plan, tab_policy, tab_passive, tab_probe, tab_role, tab_risk, tab_auth, tab_owasp, tab_templates, tab_suite, tab_playbook, tab_download = st.tabs(
-        ["安全方案", "扫描策略", "被动审计", "基线探测", "多角色回归", "风险看板", "权限矩阵", "OWASP 清单", "Nuclei模板", "回归套件", "测试剧本", "下载导出"]
+    # 结果过期 / 运行告警统一在结果工作台首屏反馈；能力摘要在工具首屏展示。
+    _render_result_state_feedback()
+    _render_text_summary(
+        (risk_dashboard or {}).get("summary") or (passive_report or {}).get("summary") or {},
+        "本轮安全测试结论",
     )
+
+    # 页签标签由注册中心驱动，新增页签不需要改这里的解包逻辑。
+    tab_specs = sec_registry.get_result_tabs()
+    tabs = st.tabs([label for _, label in tab_specs])
+    tab_map = {key: tab for (key, _), tab in zip(tab_specs, tabs)}
+    default_tab = tabs[0] if tabs else st.container()
+    tab_plan = tab_map.get("plan", default_tab)
+    tab_policy = tab_map.get("policy", default_tab)
+    tab_passive = tab_map.get("passive", default_tab)
+    tab_probe = tab_map.get("probe", default_tab)
+    tab_role = tab_map.get("role", default_tab)
+    tab_risk = tab_map.get("risk", default_tab)
+    tab_auth = tab_map.get("auth", default_tab)
+    tab_owasp = tab_map.get("owasp", default_tab)
+    tab_templates = tab_map.get("templates", default_tab)
+    tab_suite = tab_map.get("suite", default_tab)
+    tab_playbook = tab_map.get("playbook", default_tab)
+    tab_download = tab_map.get("download", default_tab)
 
     with tab_plan:
         if not plan:
@@ -1206,6 +1449,7 @@ def _render_results(tool: SecurityTestTool):
             st.info("还没有执行被动审计。")
         else:
             summary = passive_report.get("summary", {})
+            _render_text_summary(summary, "被动审计")
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             metric_col1.metric("发现总数", summary.get("finding_count", 0))
             metric_col2.metric("High", summary.get("high", 0))
@@ -1222,6 +1466,15 @@ def _render_results(tool: SecurityTestTool):
             st.info("还没有执行基线探测。")
         else:
             summary = probe_report.get("summary", {})
+            _render_text_summary(summary, "基线探测")
+            truncation = probe_report.get("truncation") or {}
+            if truncation:
+                st.caption(
+                    f"运行与截断：实际请求 {truncation.get('requests_sent', 0)}/{truncation.get('requests_limit', 0)}，"
+                    f"被安全策略阻止 {truncation.get('blocked_targets', 0)} 个目标，"
+                    f"响应体截断 {truncation.get('truncated_responses', 0)} 次，"
+                    f"耗时 {truncation.get('elapsed_seconds', 0)} 秒。"
+                )
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             metric_col1.metric("请求数", summary.get("request_count", 0))
             metric_col2.metric("可达目标", summary.get("responded_count", 0))
@@ -1234,26 +1487,13 @@ def _render_results(tool: SecurityTestTool):
             st.dataframe(pd.DataFrame(probe_report.get("samples", [])), use_container_width=True, hide_index=True)
 
     with tab_role:
+        # 只读取已执行动作的结果：浏览本页签不会隐式发起多角色探测请求（SEC-07）。
         current_role_regression = role_regression
-        if not current_role_regression and plan:
-            try:
-                parsed_role_profiles = _parse_role_profiles(st.session_state.get("api_sec_role_profiles_text", ""))
-            except ValueError:
-                parsed_role_profiles = None
-            if parsed_role_profiles is not None:
-                current_role_regression = tool.run_role_batch_regression(
-                    interfaces=st.session_state.get("api_sec_interfaces", []),
-                    role_profiles=parsed_role_profiles,
-                    base_url=st.session_state.get("api_sec_base_url", ""),
-                    selected_indexes=st.session_state.get("api_sec_selected_indexes", []),
-                    verify_ssl=st.session_state.get("api_sec_verify_ssl", True),
-                    timeout_seconds=float(st.session_state.get("api_sec_timeout", 15.0) or 15.0),
-                    origin=st.session_state.get("api_sec_origin", "https://security-audit.local"),
-                )
         if not current_role_regression:
-            st.info("先配置多角色凭证并执行多角色回归。")
+            st.info("先配置多角色凭证，并在「3. 安全测试动作」点击「执行多角色回归」或「一键生成完整报告」。")
         else:
             summary = current_role_regression.get("summary", {})
+            _render_text_summary(summary, "多角色回归")
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             metric_col1.metric("角色数", summary.get("role_count", 0))
             metric_col2.metric("对比数", summary.get("comparison_count", 0))
@@ -1282,6 +1522,7 @@ def _render_results(tool: SecurityTestTool):
             st.info("先执行被动审计、基线探测或权限矩阵，再生成风险看板。")
         else:
             summary = current_risk_dashboard.get("summary", {})
+            _render_text_summary(summary, "风险看板（跨来源去重后）")
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             metric_col1.metric("Findings", summary.get("finding_count", 0))
             metric_col2.metric("High", summary.get("high", 0))
@@ -1310,6 +1551,11 @@ def _render_results(tool: SecurityTestTool):
         if not current_checklist:
             st.info("执行被动审计或基线探测后，会自动生成 OWASP API Top 10 清单。")
         else:
+            focus_items = [item for item in current_checklist if item.get("Status") == "重点关注"]
+            st.info(
+                f"**OWASP API Top 10 清单**：共 {len(current_checklist)} 项，"
+                f"其中 {len(focus_items)} 项因自动发现被标为「重点关注」，其余为手工复核或自动基线项。"
+            )
             st.dataframe(pd.DataFrame(current_checklist), use_container_width=True, hide_index=True)
 
     with tab_auth:
@@ -1324,6 +1570,11 @@ def _render_results(tool: SecurityTestTool):
             st.info("先生成权限矩阵，或点击一键完整报告。")
         else:
             summary = current_auth_matrix.get("summary", {})
+            st.info(
+                f"**权限矩阵**：覆盖 {summary.get('interface_count', 0)} 个接口、"
+                f"{summary.get('role_count', 0)} 个角色、{summary.get('scenario_count', 0)} 个访问场景，"
+                f"其中 {summary.get('high_risk_interfaces', 0)} 个接口被判为高风险权限面。"
+            )
             metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
             metric_col1.metric("接口数", summary.get("interface_count", 0))
             metric_col2.metric("角色数", summary.get("role_count", 0))
@@ -1348,6 +1599,17 @@ def _render_results(tool: SecurityTestTool):
         else:
             note_text = "；".join(current_nuclei_pack.get("notes", []))
             st.caption(note_text)
+            pack_truncation = current_nuclei_pack.get("truncation") or {}
+            if pack_truncation.get("paths_total", 0) > pack_truncation.get("paths_kept", 0):
+                st.warning(
+                    f"Nuclei 模板路径已截断：共 {pack_truncation.get('paths_total')} 条，"
+                    f"保留 {pack_truncation.get('paths_kept')} 条（上限 {pack_truncation.get('max_template_paths')}），"
+                    "可在注册中心调整 max_template_paths。"
+                )
+            st.info(
+                f"**Nuclei 模板包**：{current_nuclei_pack.get('template_count', 0)} 个模板、"
+                f"{current_nuclei_pack.get('path_count', 0)} 条路径；header 名已做白名单校验并规避 YAML 注入。"
+            )
             metric_col1, metric_col2 = st.columns(2)
             metric_col1.metric("模板数", current_nuclei_pack.get("template_count", 0))
             metric_col2.metric("路径数", current_nuclei_pack.get("path_count", 0))
@@ -1378,6 +1640,11 @@ def _render_results(tool: SecurityTestTool):
             st.info("先生成回归套件，或执行一键完整报告。")
         else:
             summary = current_regression_suite.get("summary", {})
+            st.info(
+                f"**回归套件**：共 {summary.get('suite_count', 0)} 个套件、"
+                f"{summary.get('scenario_count', 0)} 个场景，"
+                f"其中 P0 {summary.get('p0', 0)} / P1 {summary.get('p1', 0)} / P2 {summary.get('p2', 0)} / P3 {summary.get('p3', 0)}。"
+            )
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             metric_col1.metric("套件数", summary.get("suite_count", 0))
             metric_col2.metric("场景数", summary.get("scenario_count", 0))
@@ -1399,181 +1666,141 @@ def _render_results(tool: SecurityTestTool):
             st.info("先生成安全方案后才能输出测试剧本。")
 
     with tab_download:
-        generated_checklist = checklist or tool.build_owasp_checklist(passive_report, probe_report)
-        generated_role_regression = role_regression
-        if not generated_role_regression and plan:
-            try:
-                parsed_role_profiles = _parse_role_profiles(st.session_state.get("api_sec_role_profiles_text", ""))
-            except ValueError:
-                parsed_role_profiles = None
-            if parsed_role_profiles is not None:
-                generated_role_regression = tool.run_role_batch_regression(
-                    interfaces=st.session_state.get("api_sec_interfaces", []),
-                    role_profiles=parsed_role_profiles,
-                    base_url=st.session_state.get("api_sec_base_url", ""),
-                    selected_indexes=st.session_state.get("api_sec_selected_indexes", []),
-                    verify_ssl=st.session_state.get("api_sec_verify_ssl", True),
-                    timeout_seconds=float(st.session_state.get("api_sec_timeout", 15.0) or 15.0),
-                    origin=st.session_state.get("api_sec_origin", "https://security-audit.local"),
-                )
-        generated_auth_matrix = auth_matrix
-        if not generated_auth_matrix and plan:
-            generated_auth_matrix = tool.build_authorization_matrix(
-                interfaces=st.session_state.get("api_sec_interfaces", []),
-                selected_indexes=st.session_state.get("api_sec_selected_indexes", []),
-                roles=_parse_roles(st.session_state.get("api_sec_roles_text", "")),
-            )
-        generated_nuclei_pack = nuclei_pack
-        if not generated_nuclei_pack and plan:
-            generated_nuclei_pack = tool.build_nuclei_template_pack(
-                interfaces=st.session_state.get("api_sec_interfaces", []),
-                selected_indexes=st.session_state.get("api_sec_selected_indexes", []),
-                origin=st.session_state.get("api_sec_origin", "https://security-audit.local"),
-                auth_headers=parsed_auth_headers,
-            )
-        generated_risk_dashboard = risk_dashboard
-        if not generated_risk_dashboard and (passive_report or probe_report or auth_matrix):
-            generated_risk_dashboard = tool.build_risk_dashboard(
-                passive_report=passive_report,
-                probe_report=probe_report,
-                role_regression=generated_role_regression,
-                authorization_matrix=auth_matrix,
-            )
-        generated_regression_suite = regression_suite
-        if not generated_regression_suite and (passive_report or probe_report or auth_matrix):
-            generated_regression_suite = tool.build_regression_suite(
-                interfaces=st.session_state.get("api_sec_interfaces", []),
-                selected_indexes=st.session_state.get("api_sec_selected_indexes", []),
-                passive_report=passive_report,
-                probe_report=probe_report,
-                role_regression=generated_role_regression,
-                authorization_matrix=auth_matrix,
-            )
-        report_bundle = bundle
-        if not report_bundle and plan:
-            report_bundle = tool.build_report_bundle(
-                plan,
-                passive_report,
-                probe_report,
-                generated_role_regression,
-                generated_checklist,
-                authorization_matrix=generated_auth_matrix,
-                nuclei_template_pack=generated_nuclei_pack,
-                risk_dashboard=generated_risk_dashboard,
-                regression_suite=generated_regression_suite,
+        # 导出区只读已有结果，绝不隐式触发网络探测（SEC-07）；所有导出从同一 payload 派生（SEC-20）。
+        payload = _build_download_payload()
+        st.caption(
+            "导出区只读取已执行动作产生的结果，浏览本页签不会隐式发起任何探测请求；"
+            "所有 CSV 走注册式公式注入清洗，JSON/Markdown 附配置快照、输入签名与运行告警。"
+        )
+        missing = []
+        for label, value in [
+            ("安全方案", plan), ("被动审计", passive_report), ("基线探测", probe_report),
+            ("多角色回归", role_regression), ("权限矩阵", auth_matrix),
+            ("Nuclei 模板", nuclei_pack), ("风险看板", risk_dashboard),
+            ("回归套件", regression_suite), ("完整报告", bundle),
+        ]:
+            if not value:
+                missing.append(label)
+        if missing:
+            st.info(
+                "以下产物尚未生成，导出区不会自动补算（避免隐式发请求）：" + "、".join(missing)
+                + "。请回到「3. 安全测试动作」显式执行对应按钮。"
             )
 
         export_items: List[Dict[str, Any]] = []
         if plan:
-            export_items.append(
-                {
-                    "label": "下载安全方案 JSON",
-                    "data": json.dumps(plan, ensure_ascii=False, indent=2),
-                    "file_name": "api_security_plan.json",
-                    "mime": "application/json",
-                    "caption": "保留扫描方案、范围和策略基线。",
-                }
-            )
+            export_items.append({
+                "label": "下载安全方案 JSON",
+                "data": json.dumps({
+                    "plan": payload.get("plan"),
+                    "config_snapshot": payload.get("config_snapshot"),
+                    "input_signature": payload.get("input_signature"),
+                    "registry_summary": payload.get("registry_summary"),
+                }, ensure_ascii=False, indent=2),
+                "file_name": "api_security_plan.json",
+                "mime": "application/json",
+                "caption": "保留扫描方案、范围、策略基线、配置快照与输入签名。",
+            })
         if passive_report:
-            export_items.append(
-                {
-                    "label": "下载被动审计 CSV",
-                    "data": pd.DataFrame(passive_report.get("findings", [])).to_csv(index=False),
-                    "file_name": "api_security_passive_findings.csv",
-                    "mime": "text/csv",
-                    "caption": "适合做问题分派和复测跟踪。",
-                }
-            )
+            export_items.append({
+                "label": "下载被动审计 CSV",
+                "data": _csv_bytes(passive_report.get("findings", [])),
+                "file_name": "api_security_passive_findings.csv",
+                "mime": "text/csv",
+                "caption": "适合做问题分派和复测跟踪；单元格已做公式注入清洗。",
+            })
         if probe_report:
-            export_items.append(
-                {
-                    "label": "下载基线探测 CSV",
-                    "data": pd.DataFrame(probe_report.get("findings", [])).to_csv(index=False),
-                    "file_name": "api_security_probe_findings.csv",
-                    "mime": "text/csv",
-                }
-            )
-        if generated_checklist:
-            export_items.append(
-                {
-                    "label": "下载 OWASP 清单 CSV",
-                    "data": pd.DataFrame(generated_checklist).to_csv(index=False),
-                    "file_name": "api_security_owasp_checklist.csv",
-                    "mime": "text/csv",
-                }
-            )
-        if generated_role_regression:
-            export_items.append(
-                {
-                    "label": "下载多角色回归 CSV",
-                    "data": pd.DataFrame(generated_role_regression.get("comparisons", [])).to_csv(index=False),
-                    "file_name": "api_security_role_regression.csv",
-                    "mime": "text/csv",
-                }
-            )
-            export_items.append(
-                {
-                    "label": "下载多角色回归 JSON",
-                    "data": json.dumps(generated_role_regression, ensure_ascii=False, indent=2),
-                    "file_name": "api_security_role_regression.json",
-                    "mime": "application/json",
-                }
-            )
-        if generated_auth_matrix:
-            export_items.append(
-                {
-                    "label": "下载权限矩阵 CSV",
-                    "data": pd.DataFrame(generated_auth_matrix.get("matrix", [])).to_csv(index=False),
-                    "file_name": "api_security_authorization_matrix.csv",
-                    "mime": "text/csv",
-                }
-            )
-        if generated_regression_suite:
-            export_items.append(
-                {
-                    "label": "下载回归套件 CSV",
-                    "data": pd.DataFrame(generated_regression_suite.get("scenarios", [])).to_csv(index=False),
-                    "file_name": "api_security_regression_suite.csv",
-                    "mime": "text/csv",
-                }
-            )
-        if report_bundle:
-            export_items.append(
-                {
-                    "label": "下载完整报告 JSON",
-                    "data": json.dumps(report_bundle, ensure_ascii=False, indent=2),
-                    "file_name": "api_security_report_bundle.json",
-                    "mime": "application/json",
-                    "caption": "推荐优先归档完整 bundle。",
-                }
-            )
-            export_items.append(
-                {
-                    "label": "下载完整报告 Markdown",
-                    "data": report_bundle.get("report_markdown", ""),
-                    "file_name": "api_security_report.md",
-                    "mime": "text/markdown",
-                }
-            )
-        if generated_nuclei_pack:
-            for template in generated_nuclei_pack.get("templates", []):
-                export_items.append(
-                    {
-                        "label": f"下载 {template.get('name', 'Nuclei 模板')}",
-                        "data": template.get("content", ""),
-                        "file_name": template.get("file_name", "template.yaml"),
-                        "mime": "text/yaml",
-                    }
+            export_items.append({
+                "label": "下载基线探测 CSV",
+                "data": _csv_bytes(probe_report.get("findings", [])),
+                "file_name": "api_security_probe_findings.csv",
+                "mime": "text/csv",
+            })
+            export_items.append({
+                "label": "下载基线探测样本 CSV",
+                "data": _csv_bytes(probe_report.get("samples", [])),
+                "file_name": "api_security_probe_samples.csv",
+                "mime": "text/csv",
+                "caption": "含 error_type / truncated 标记与截断明细。",
+            })
+        if checklist:
+            export_items.append({
+                "label": "下载 OWASP 清单 CSV",
+                "data": _csv_bytes(checklist),
+                "file_name": "api_security_owasp_checklist.csv",
+                "mime": "text/csv",
+            })
+        if role_regression:
+            export_items.append({
+                "label": "下载多角色回归 CSV",
+                "data": _csv_bytes(role_regression.get("comparisons", [])),
+                "file_name": "api_security_role_regression.csv",
+                "mime": "text/csv",
+            })
+            export_items.append({
+                "label": "下载多角色回归 JSON",
+                "data": json.dumps({
+                    "role_regression": payload.get("role_regression"),
+                    "config_snapshot": payload.get("config_snapshot"),
+                    "input_signature": payload.get("input_signature"),
+                }, ensure_ascii=False, indent=2),
+                "file_name": "api_security_role_regression.json",
+                "mime": "application/json",
+            })
+        if auth_matrix:
+            export_items.append({
+                "label": "下载权限矩阵 CSV",
+                "data": _csv_bytes(auth_matrix.get("matrix", [])),
+                "file_name": "api_security_authorization_matrix.csv",
+                "mime": "text/csv",
+            })
+        if regression_suite:
+            export_items.append({
+                "label": "下载回归套件 CSV",
+                "data": _csv_bytes(regression_suite.get("scenarios", [])),
+                "file_name": "api_security_regression_suite.csv",
+                "mime": "text/csv",
+            })
+        if bundle:
+            export_items.append({
+                "label": "下载完整报告 JSON",
+                "data": json.dumps(payload, ensure_ascii=False, indent=2),
+                "file_name": "api_security_report_bundle.json",
+                "mime": "application/json",
+                "caption": "推荐优先归档：含 plan / 各报告 / 配置快照 / 告警 / 截断 / 注册能力摘要。",
+            })
+            export_items.append({
+                "label": "下载完整报告 Markdown",
+                "data": payload.get("report_markdown", ""),
+                "file_name": "api_security_report.md",
+                "mime": "text/markdown",
+                "caption": "含发现项明细、运行与截断信息、告警章节。",
+            })
+        if nuclei_pack:
+            truncation = nuclei_pack.get("truncation") or {}
+            if truncation.get("paths_total", 0) > truncation.get("paths_kept", 0):
+                st.warning(
+                    f"Nuclei 模板路径已截断：共 {truncation.get('paths_total')} 条，"
+                    f"保留 {truncation.get('paths_kept')} 条（上限 {truncation.get('max_template_paths')}）。"
                 )
-        if generated_risk_dashboard:
-            export_items.append(
-                {
-                    "label": "下载风险看板 JSON",
-                    "data": json.dumps(generated_risk_dashboard, ensure_ascii=False, indent=2),
-                    "file_name": "api_security_risk_dashboard.json",
-                    "mime": "application/json",
-                }
-            )
+            for template in nuclei_pack.get("templates", []):
+                export_items.append({
+                    "label": f"下载 {template.get('name', 'Nuclei 模板')}",
+                    "data": template.get("content", ""),
+                    "file_name": template.get("file_name", "template.yaml"),
+                    "mime": "text/yaml",
+                })
+        if risk_dashboard:
+            export_items.append({
+                "label": "下载风险看板 JSON",
+                "data": json.dumps({
+                    "risk_dashboard": payload.get("risk_dashboard"),
+                    "config_snapshot": payload.get("config_snapshot"),
+                    "input_signature": payload.get("input_signature"),
+                }, ensure_ascii=False, indent=2),
+                "file_name": "api_security_risk_dashboard.json",
+                "mime": "application/json",
+            })
 
         render_download_panel(
             title="统一导出区",
@@ -1584,6 +1811,7 @@ def _render_results(tool: SecurityTestTool):
                 {"label": "接口范围", "value": str(len(st.session_state.get("api_sec_selected_indexes", [])))},
                 {"label": "被动审计", "value": str(len((passive_report or {}).get("findings", [])))},
                 {"label": "基线探测", "value": str(len((probe_report or {}).get("findings", [])))},
+                {"label": "输入签名", "value": str(payload.get("input_signature", "") or "-")},
             ],
             empty_message="先生成方案、报告或套件后才能导出。",
         )
@@ -2730,7 +2958,7 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
             export_items.append(
                 {
                     "label": f"下载 {label_prefix}问题清单 CSV",
-                    "data": pd.DataFrame(review_bundle.get("issue_register", [])).to_csv(index=False),
+                    "data": _csv_bytes(review_bundle.get("issue_register", [])),
                     "file_name": f"{file_prefix}_issue_register.csv",
                     "mime": "text/csv",
                 }
@@ -2738,7 +2966,7 @@ def _render_mobsf_mobile_security_tab(app_tool: ApplicationSecurityTool):
             export_items.append(
                 {
                     "label": f"下载 {label_prefix}回归套件 CSV",
-                    "data": pd.DataFrame(review_bundle.get("regression_suite", [])).to_csv(index=False),
+                    "data": _csv_bytes(review_bundle.get("regression_suite", [])),
                     "file_name": f"{file_prefix}_regression_suite.csv",
                     "mime": "text/csv",
                 }
@@ -3162,6 +3390,7 @@ def render_api_security_test_page():
         ],
     )
 
+    _render_registry_summary()
     _render_design_cards()
     render_workflow_guide(
         title="安全页推荐使用顺序",
