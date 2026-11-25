@@ -513,3 +513,44 @@
 - 全量 pytest：418 passed
 - e2e（新增 `11-image-processor.e2e.ts`：入口与上传 / 格式转换 / 批量 manifest / 水印与动画提示）：4/4 passed；全套 44/44（另一次全套出现 1 例既有 TCG 示例载入偶发失败，单独重跑 3/3 通过）
 - GitHub：issues #270-#289 全部关闭，仓库 open issues = 0
+
+## IP/域名查询工具专项审计（2026-11-25，Issues #291-#310）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/tools/ip_lookup.py`（IPQueryTool 全量方法）+ `src/qa_toolkit/ui/pages/ip_lookup_page.py`（单个查询 / 批量查询 / IPv4 转换 / 资产扩展 4 个 Tab）。
+- 方式：候选问题写成 `.qa-audit/ip_repro.py` 实测坐实（含 mock 网络源、构造畸形 URL、超时 DNS、公式注入 CSV），确认 20 项后提交 GitHub Issues #291-#310。
+- 视角：测试专家关注输入边界、网络超时、来源失败判定、导出安全；产品工程师关注**拓展性、易用性**（数据源/动作/转换方式可注册，状态与降级可见），不局限于当前业务。
+- 修复分支 `fix/ip-lookup-audit`，PR 合并后逐个关闭 #291-#310。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 地址分类（#291） | `127.0.0.1`、`169.254.10.1` 都被归入「私有IP」，`is_private` 判断先于 `is_loopback`/`is_link_local` |
+| 凭据泄露（#292） | `https://user:s3cr3t@example.com/login` 的 `original_input` 原样进入结果表与导出 JSON |
+| 协议与端口（#293/#294） | `:99999`/`:abc` 只追加一条「已忽略端口」备注仍返回成功；`javascript:alert(1)`、`mailto:` 被当成合法域名 |
+| 网络护栏（#295） | `socket.gethostbyaddr`/`getaddrinfo`/`getfqdn` 全部裸调用，无超时；慢 DNS 会长时间阻塞页面 |
+| 缓存（#296/#297） | 同一 IP 连续两次查询发起 2 次地理请求；连续点击「获取当前公网 IP」重复打满服务 |
+| 结果可信（#298/#299/#300） | crt.sh 与 HackerTarget 全失败仍返回 `success=True`；`limit=-1` 返回全部 300 条；ICP 接口 `code=401` 仍把 `data` 当备案成功 |
+| 推断标注（#301） | 域名关键字/IP 段推断出的 ASN 无来源标记，易被当成权威数据 |
+| 导出安全（#302） | 批量 CSV 单元格 `=HYPERLINK(...)` 原样导出，Excel/WPS 下可执行公式 |
+| 易用性（#303/#304） | 修改输入后仍展示上一次结果；地理/资产降级只在表格里写一行文字，页面无醒目提示 |
+| 拓展性（#305-#310） | 地理源、公网 IP 服务、转换方式、主域后缀/端口/国家映射、资产动作、批量上限/超时/缓存时长全部硬编码在类常量与页面下拉里 |
+
+### 修复方案要点
+
+- **输入与隐私**：回环/链路本地优先分类；URL 中的 userinfo 在解析阶段替换为 `***@` 并给出备注；非 http/https 协议、非法/越界端口直接拒绝并给中文原因。
+- **网络护栏**：新增 `_run_with_timeout()` 守护线程包装 `gethostbyname_ex`/`getaddrinfo`/`getfqdn`/`gethostbyaddr`，超时返回部分结果并写入「解析提示」；所有第三方请求统一 `allow_redirects=False` + 可配置超时，URL 模板强制 HTTPS。
+- **缓存**：地理结果与公网 IP 均带独立 TTL 缓存（默认 600s / 300s），`clear_cache()` 可主动失效；同时保留熔断降级逻辑，缓存命中会重置源失败计数。
+- **结果可信度**：资产查询返回 `status=ok/partial/failed`，所有数据源失败即 `success=False`；`limit` 越界回落到注册表默认值；ICP 校验 `code` 与 `data`；ASN 推断结果显式追加 `[根据域名推断]` / `[根据IP段推断]` 标记。
+- **导出与状态**：CSV 单元格对 `= + - @`、制表符/回车加前缀降级并保留 UTF-8 BOM；单条/批量/资产结果绑定输入签名，输入变化即提示「结果可能已过期」；来源状态、结果状态、降级说明改为醒目反馈卡；批量表格补文字汇总，IPv4 转换补文字摘要（表格是 canvas，读屏与自动化都读不到）。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/ip_lookup_registry.py`——地理数据源、公网 IP 服务、IPv4 转换方式、资产动作、可注册主域后缀、端口服务名、国家代码映射、协议白名单、运行参数全部做成注册扩展点；Spec 冻结、查询返回副本、重复注册要求 `replace=True`，页面下拉/按钮/能力摘要全部从注册表生成。
+- **易用性**：首屏展示「当前注册的能力」摘要（数据源/服务/转换/动作/批量上限/缓存时长）；批量上限前置校验并提示截断；资产动作可按 key 注册并由 `run_asset_action()` 统一调度。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_ip.py`：24 passed（逐条对应 issue）
+- 全量 pytest：442 passed（含 AppTest 脚本补丁自动还原，避免跨文件类方法污染）
+- e2e（新增 `12-ip-lookup.e2e.ts`：注册能力摘要 / 单查询结果过期 / 批量空输入与汇总 CSV / IPv4 转换与非法协议拦截）：4/4 passed，全套 48/48 passed
+- GitHub：issues #291-#310 全部评论并关闭，仓库 open issues = 0

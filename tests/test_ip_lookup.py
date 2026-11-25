@@ -187,7 +187,7 @@ def test_get_ip_domain_info_exposes_geo_source_and_downgrade_note():
 def test_query_subdomains_merges_crtsh_and_hostsearch_results():
     tool = IPQueryTool()
 
-    def fake_get(url, timeout=15, headers=None):
+    def fake_get(url, timeout=15, headers=None, **kwargs):
         if "crt.sh" in url:
             return MockResponse(json_data=[
                 {
@@ -218,7 +218,7 @@ def test_query_subdomains_merges_crtsh_and_hostsearch_results():
 def test_query_reverse_sites_resolves_domain_then_parses_hostnames():
     tool = IPQueryTool()
 
-    def fake_get(url, timeout=15, headers=None):
+    def fake_get(url, timeout=15, headers=None, **kwargs):
         if "reverseiplookup" in url:
             return MockResponse(text="a.example.net\nb.example.net\na.example.net\n")
         raise AssertionError(f"unexpected url: {url}")
@@ -237,7 +237,7 @@ def test_query_reverse_sites_resolves_domain_then_parses_hostnames():
 def test_query_icp_info_uses_registered_domain_and_parses_payload():
     tool = IPQueryTool()
 
-    def fake_get(url, timeout=15, headers=None):
+    def fake_get(url, timeout=15, headers=None, **kwargs):
         assert "baidu.com" in url
         return MockResponse(json_data={
             "code": 200,
