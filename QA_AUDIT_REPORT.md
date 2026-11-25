@@ -598,3 +598,55 @@
 - 全量 pytest：463 passed（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）
 - e2e（新增 `13-api-performance.e2e.ts`：注册能力摘要与安全默认 / HTTP Request Defaults 主机与端口校验 / CSV EOF 互斥 / 分位数与吞吐口径）：4/4 passed，全套 **52/52 passed**
 - GitHub：issues #312-#332 全部评论并关闭，仓库 open issues = 0
+
+## 接口安全测试工具专项审计（2026-11-25，Issues #334-#355）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/core/api_security_tool.py`（SecurityTestTool 全量执行引擎：方案构建 / 被动审计 / 基线探测 / 多角色回归 / OWASP 清单 / 权限矩阵 / Nuclei 模板 / 风险看板 / 回归套件 / 报告打包）+ `src/qa_toolkit/ui/pages/api_security_page.py`（Streamlit 应用安全工作台：API 文档安全 / 移动包 / MobSF / Web 站点三视图，覆盖导入、范围鉴权、动作区、结果工作台与下载导出）。
+- 方式：候选问题写成 `.qa-audit/security_repro.py` 实测坐实（`_to_int` 缺失导致 7 入口崩溃、对元数据地址真实发请求、URL 构造覆盖、CSV/YAML 注入、大小写响应头、角色保留字冲突、页签隐式探测等），确认 21 项后提交 GitHub Issues #334-#354；新增 e2e 回归 `14-api-security.e2e.ts` 时又暴露 1 项首屏安全边界不可见问题，追加提交 #355，共 **22 项**。
+- 视角：测试专家关注正确性（入口可用性、空范围语义、URL 编码、响应头读取、数值健壮性、结果过期、错误观测）、安全性（SSRF、Header/CRLF、CSV 公式注入、Nuclei YAML 注入、上传文件名）、边界与大数据（运行上限、响应体限额、截断）；产品工程师关注**拓展性、易用性**（注册式扩展点、状态反馈、文字摘要、统一导出、可复现快照），不局限于当前业务。
+- 修复分支 `fix/api-security-audit`（commit `cf4c396`），PR #356 已合并至 `master`（merge commit `e565386`）；全套 e2e 56/56 通过。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 整体不可用（#334） | `_normalize_interface()` 调用不存在的 `self._to_int`，`build_security_plan` / `analyze_interfaces` / `run_baseline_probe` / `build_authorization_matrix` / `build_nuclei_template_pack` / `build_regression_suite` / `run_role_batch_regression` 7 个入口全部 AttributeError，工具 100% 不可用 |
+| 范围语义（#335） | `selected_indexes=[]` 被当成全选，清空选择仍对全部接口发请求；越界与重复索引不过滤 |
+| SSRF（#336） | 对 `http://169.254.169.254/latest/meta-data/iam/security-credentials/` 真实发起请求，无协议白名单、无内网/元数据拦截，重定向与 SSL 校验默认值不安全 |
+| URL 构造（#337） | `path_params` 未编码可注入路径与 query；同名 query 参数被覆盖；list 值被 `str()` 成 `"['a','b']"` |
+| 响应头证据（#338） | 大小写敏感取 `X-Frame-Options`，服务返回小写头即漏报，证据列为空 |
+| 运行上限（#339） | 接口数 / 角色数 / 请求数 / 超时 / 响应体均无上限，`inf`/`nan` 被接受 |
+| 隐式发请求（#340） | 浏览「多角色回归」「下载导出」页签即隐式执行批量回归或补算并发网络请求 |
+| CSV / YAML 注入（#341/#342） | 裸 `to_csv(index=False)` 直接导出 `=1+1` 等公式；Nuclei 模板 header 名与变量未校验，换行可注入 YAML |
+| 结果过期（#343） | 改 Base URL / 鉴权头 / 范围后仍展示旧结论，无签名、无提示，导出无可复现快照 |
+| 截断与报告（#344） | 静默截断无明细，Markdown 报告缺发现项明细与告警章节 |
+| 页签可读（#345） | 12 个结果页签只有表格/canvas，无中文文字结论 |
+| 拓展性（#346） | 规则、词表、OWASP、严重级别、角色等级、结果页签、Nuclei 模板、运行上限全部硬编码，零注册扩展点 |
+| 数值健壮性（#347） | `int()` / `float()` 直接转换，`inf`/`nan` 与非数值导致崩溃或错误分桶 |
+| 上传清理（#348） | 上传文件名直接拼路径且临时文件从不清理，可路径穿越 |
+| 角色冲突（#349） | 角色名与 `Label` 等保留字段同名时状态码互相覆盖，重复角色名丢数据 |
+| OWASP / 看板（#350） | 多 OWASP 标签只匹配第一个；风险看板跨 passive/probe/role 来源不去重，计数虚高 |
+| CORS / Cookie（#351） | `null` 来源被视为可信、反射来源不识别、多 `Set-Cookie` 未拆分，安全基线漏报 |
+| Header / Origin（#352） | 鉴权头可覆盖工具侧 `Origin`，CRLF 与控制字符未拒绝，无 RFC 7230 token 校验 |
+| 导出口径（#353） | 各页签各自拼 JSON/CSV，字段口径不一，导出缺 config snapshot / warnings |
+| 错误观测（#354） | 请求异常无分类、无截断样本标记、warnings 不集中反馈 |
+| **e2e 回归新发现（#355）** | **安全默认值 / 运行上限 / 能力计数塞进 `st.expander(expanded=False)`，首屏 body 文本完全读不到「安全默认：仅允许 http/https」**：与接口性能测试页直接渲染的口径不一致，用户按下执行前看不到协议白名单、SSL / 重定向 / 内网拦截与运行上限 |
+
+### 修复方案要点
+
+- **入口与数值健壮性**：`_normalize_interface()` 改由注册中心 `to_int()` / `to_float()` / `clamp_*()` 统一处理，非有限值回落安全默认值，全部 7 个入口补冒烟与数值回归。
+- **范围与 SSRF 护栏**：`_select_interfaces()` 区分 `None`（未指定=全选）与 `[]`（明确不选），空范围不发请求、去重与越界过滤；新增 `validate_target_url()`——协议白名单、userinfo/端口校验、内网/回环/链路本地/元数据地址默认拦截（显式开关放行）、默认关闭重定向、默认开启 SSL 校验；`build_probe_headers()` 走 RFC 7230 token 白名单、拒绝 CRLF/控制字符、工具侧强制 `Origin`，禁止鉴权头覆盖；`SecurityLimits` 约束接口 500 / 角色 20 / 请求 400 / 单接口探测 4 / 超时 60s / 总时长 300s / 响应体 512000B，请求前统一校验并在非法目标时转成 finding 而不发请求。
+- **请求构造与结果可信**：`quote()` 编码 `path_params`、`raw:` 显式跳过编码、同名 query append 保留多值、list/tuple 用 `urlencode(doseq=True)` 展开，未解析 `{var}` 写入 warnings；`ProbeContext.header()` 大小写不敏感读响应头；配置签名 `_compute_security_signature()` / `_is_result_stale()` 在结果工作台醒目提示「结果可能已过期」；导出统一附 `config_snapshot` / `input_signature` / `registry_summary`；`stream=True` + `_read_response_body()` 限制响应体，记录 `error_type`（timeout / ssl_error / connection_error / dns_error / invalid_request / unknown）、`truncated` 样本、`truncation` 明细与集中 `warnings` 面板；Markdown 报告补发现项明细与告警章节。
+- **导出安全**：`_sanitize_csv_frame()` 对所有 CSV 单元格按 `= + - @ \t \r` 前缀加 `'` 防公式注入；Nuclei 模板 header 名白名单校验、变量名带唯一序号后缀、路径换行/控制字符清理；`build_export_payload()` 与页面 `_build_download_payload()` 统一输出 plan / passive / probe / role / matrix / checklist / nuclei / dashboard / suite / warnings / truncation / config_snapshot / input_signature / registry_summary，下载页签只读已有结果，绝不隐式发请求。
+- **页面与可读性**：上传文件名 `os.path.basename()` + 后缀白名单清洗并在 `finally` 删除临时文件；注册式 `build_text_summary()` 给 12 个结果页签补中文结论；结构化 `Role Codes` 隔离保留字冲突并保留历史平铺列兼容契约；`match_owasp_codes()` 支持 `API8:2023,API5:2023` 多标签，风险看板按 `(Category, Title, Target, Evidence)` 跨来源去重并写 `duplicate_merged` / `Sources`；CORS `null` / 反射来源与多 `Set-Cookie` 拆分检测；`RAW_FORMAT_MAP.get(..., "auto")` 避免老 session 触发 KeyError。
+- **SEC-22 补强（e2e 新发现）**：把安全默认值 / 运行上限 / 能力计数的 `st.caption` 从默认折叠面板移到首屏直接渲染，仅 18 项明细 metric 保留可折叠，与接口性能测试页同一呈现口径；补 `test_sec_22_security_defaults_rendered_on_first_screen` 源码契约回归与 e2e 首屏断言双重验证。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/api_security_registry.py`——HTTP 方法、鉴权头名、敏感字段、错误标记、各类 HINTS、OWASP 条目、被动审计规则、基线探测规则、严重级别、角色等级、状态码分桶、套件/期望文案、结果页签、摘要指标、探测策略、Nuclei 模板、CSV 清洗器、运行上限、安全默认值全部提供 `register_*` / `configure_*` / `get_*` 扩展点；frozen dataclass Spec、查询返回副本、重复注册需 `replace=True`、`reset_security_registry()` 保证测试隔离；页面能力摘要、下拉、按钮、页签与导出结构全部注册表驱动。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_security.py`：22 passed（逐条对应 #334-#355，含 e2e 新发现的 SEC-22）
+- 全量 pytest：485 passed（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）
+- e2e（新增 `14-api-security.e2e.ts`：注册能力摘要与安全默认 / 范围护栏与空选择不发请求 / 方案+被动审计全链路不崩溃 / 下载页签不隐式探测）：4/4 passed，全套 **56/56 passed**
+- GitHub：issues #334-#355 全部评论并关闭，PR #356 已合并，仓库 open issues = 0
