@@ -5,11 +5,15 @@ from typing import Dict, Set
 
 INLINE_TOOL_CATEGORIES: Set[str] = {
     "数据生成工具",
-    "JSON处理工具",
 }
 
 
 PAGE_TOOL_CONFIG: Dict[str, Dict[str, str]] = {
+    "JSON处理工具": {
+        "module_path": "qa_toolkit.ui.pages.json_tools_page",
+        "function_name": "render_json_tools_page",
+        "page_label": "JSON 处理页面",
+    },
     "测试用例生成器": {
         "module_path": "qa_toolkit.ui.pages.test_case_generator_page",
         "function_name": "render_test_case_generator_page",
