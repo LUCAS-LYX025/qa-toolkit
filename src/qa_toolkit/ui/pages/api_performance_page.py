@@ -1,3 +1,4 @@
+import hashlib
 import html
 import json
 import os
@@ -8,6 +9,7 @@ from urllib.parse import urlparse
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core import api_performance_registry as perf_registry
 from qa_toolkit.core.api_performance_tool import PerformanceTestTool
 from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
@@ -59,8 +61,9 @@ DEFAULT_STATE = {
     "performance_start_delay": 0.0,
     "performance_base_url": "https://example.com",
     "performance_timeout": 30.0,
-    "performance_verify_ssl": False,
-    "performance_follow_redirects": True,
+    "performance_verify_ssl": True,
+    "performance_follow_redirects": False,
+    "performance_allow_private_targets": False,
     "performance_keep_alive": True,
     "performance_csv_enabled": False,
     "performance_csv_source_mode": "直接粘贴",
@@ -118,27 +121,56 @@ def _sync_http_fields_from_base_url():
     if not parsed.scheme or not parsed.netloc:
         return
 
-    st.session_state.api_perf_protocol = parsed.scheme or "https"
+    protocols = perf_registry.get_protocols()
+    st.session_state.api_perf_protocol = parsed.scheme if parsed.scheme in protocols else "https"
     st.session_state.api_perf_server_name = parsed.hostname or ""
-    st.session_state.api_perf_port = str(parsed.port or "")
+    try:
+        st.session_state.api_perf_port = str(parsed.port or "")
+    except ValueError:
+        # urlparse 对 "https://x:abc" 会在访问 .port 时抛 ValueError，不能让页面崩掉
+        st.session_state.api_perf_port = ""
     st.session_state.api_perf_base_path = parsed.path.strip("/")
     st.session_state.api_perf_http_fields_synced_from = base_url
 
 
 def _compose_base_url_from_fields() -> str:
-    protocol = str(st.session_state.get("api_perf_protocol", "https") or "https").strip()
+    """拼接并校验 HTTP Request Defaults，拒绝协议/端口/主机混淆。"""
+    protocol = str(st.session_state.get("api_perf_protocol", "https") or "https").strip().lower()
     server_name = str(st.session_state.get("api_perf_server_name", "") or "").strip()
     port = str(st.session_state.get("api_perf_port", "") or "").strip()
     base_path = str(st.session_state.get("api_perf_base_path", "") or "").strip().strip("/")
+    fallback = str(st.session_state.get("performance_base_url", "") or "").strip()
+
+    # 协议与端口只要填了值就必须校验，不能因为主机名尚未填写就整体跳过：
+    # 否则用户填了非法端口仍会看到 fallback URL，误以为配置已生效。
+    if protocol not in perf_registry.get_protocols():
+        st.session_state["api_perf_url_error"] = (
+            f"不支持的协议 {protocol!r}，仅允许：" + "、".join(sorted(perf_registry.get_protocols()))
+        )
+        return fallback
+    ok, cleaned_port = perf_registry.validate_port_text(port)
+    if not ok:
+        st.session_state["api_perf_url_error"] = cleaned_port
+        return fallback
 
     if not server_name:
-        return str(st.session_state.get("performance_base_url", "") or "").strip()
+        st.session_state.pop("api_perf_url_error", None)
+        return fallback
+    ok, cleaned_host = perf_registry.sanitize_server_name(server_name)
+    if not ok:
+        st.session_state["api_perf_url_error"] = cleaned_host
+        return fallback
+    st.session_state.pop("api_perf_url_error", None)
 
-    base_url = f"{protocol}://{server_name}"
-    if port:
-        base_url += f":{port}"
-    if base_path:
-        base_url += f"/{base_path}"
+    base_url = f"{protocol}://{cleaned_host}"
+    if cleaned_port:
+        base_url += f":{cleaned_port}"
+    safe_segments = [
+        segment for segment in base_path.split("/")
+        if segment and segment not in (".", "..") and not any(ch in segment for ch in ("@", "?", "#", "\\", ":"))
+    ]
+    if safe_segments:
+        base_url += "/" + "/".join(safe_segments)
     return base_url
 
 
@@ -162,9 +194,14 @@ def _apply_performance_env_profile(profile: Dict[str, Any]) -> None:
 
     parsed = urlparse(base_url)
     if parsed.scheme and parsed.netloc:
-        st.session_state.api_perf_protocol = parsed.scheme
+        st.session_state.api_perf_protocol = (
+            parsed.scheme if parsed.scheme in perf_registry.get_protocols() else "https"
+        )
         st.session_state.api_perf_server_name = parsed.hostname or ""
-        st.session_state.api_perf_port = str(parsed.port or "")
+        try:
+            st.session_state.api_perf_port = str(parsed.port or "")
+        except ValueError:
+            st.session_state.api_perf_port = ""
         st.session_state.api_perf_base_path = (parsed.path or "").strip("/")
         st.session_state.api_perf_http_fields_synced_from = base_url
     else:
@@ -777,7 +814,7 @@ def _render_report_table_workbench(
     with download_col2:
         st.download_button(
             label="保存表数据",
-            data=prepared_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+            data=_sanitize_csv_frame(prepared_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
             file_name=file_name,
             mime="text/csv",
             use_container_width=True,
@@ -1042,12 +1079,24 @@ def _parse_interface_source(source_data, prefix: str, parser: InterfaceAutoTestC
         uploaded_file = source_data.get("uploaded_file")
         if uploaded_file is None:
             raise ValueError("请先上传接口文档")
-        temp_filename = f"{prefix}_{int(time.time() * 1000)}_{uploaded_file.name}"
+        # 文件名取 basename + 白名单，杜绝 ../ 路径穿越；解析后在 finally 中删除临时文件。
+        raw_name = str(uploaded_file.name or "upload").replace("\\", "/")
+        safe_name = os.path.basename(raw_name)
+        safe_name = "".join(ch for ch in safe_name if ch.isalnum() or ch in "._-")
+        if not safe_name:
+            safe_name = "upload"
+        temp_filename = f"{prefix}_{int(time.time() * 1000)}_{safe_name}"
         file_path = os.path.join(parser.upload_dir, temp_filename)
-        with open(file_path, "wb") as file:
-            file.write(uploaded_file.getbuffer())
-        interfaces = parser.parse_document(file_path)
-        return interfaces, uploaded_file.name
+        try:
+            with open(file_path, "wb") as file:
+                file.write(uploaded_file.getbuffer())
+            interfaces = parser.parse_document(file_path)
+        finally:
+            try:
+                os.remove(file_path)
+            except OSError:
+                pass
+        return interfaces, safe_name
 
     raw_content = source_data.get("raw_content", "")
     if not raw_content.strip():
@@ -1056,7 +1105,7 @@ def _parse_interface_source(source_data, prefix: str, parser: InterfaceAutoTestC
     raw_format = source_data.get("raw_format", "自动检测")
     interfaces = parser.parse_content(
         raw_content,
-        source_type=RAW_FORMAT_MAP[raw_format],
+        source_type=RAW_FORMAT_MAP.get(raw_format, "auto"),
         source_name=f"{prefix}-inline",
     )
     return interfaces, f"{raw_format} 文本"
@@ -1085,6 +1134,96 @@ def _get_sampler_label(interfaces, idx: int) -> str:
     )
 
 
+def _sanitize_csv_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """导出前对字符串单元格应用注册中心的清洗器（默认防 CSV 公式注入）。"""
+    sanitized = df.copy()
+    for column in sanitized.columns:
+        sanitized[column] = sanitized[column].map(
+            lambda value: perf_registry.sanitize_csv_value(value) if isinstance(value, str) else value
+        )
+    return sanitized
+
+
+# 结果绑定这份配置签名；任一配置变化都会让旧结果被标记为「可能已过期」。
+_CONFIG_SIGNATURE_KEYS = (
+    "performance_sampler_indexes",
+    "performance_users", "performance_ramp_up", "performance_loops",
+    "performance_duration", "performance_start_delay",
+    "performance_base_url", "api_perf_protocol", "api_perf_server_name",
+    "api_perf_port", "api_perf_base_path",
+    "performance_timeout", "performance_verify_ssl",
+    "performance_follow_redirects", "performance_keep_alive",
+    "performance_allow_private_targets",
+    "performance_csv_enabled", "performance_csv_text",
+    "performance_csv_use_header", "performance_csv_variable_names",
+    "performance_csv_delimiter", "performance_csv_quotechar",
+    "performance_csv_sharing_mode", "performance_csv_recycle",
+    "performance_csv_stop_thread",
+    "performance_transaction_enabled", "performance_transaction_name",
+    "performance_transaction_stop_on_error", "performance_transaction_parent_sample",
+    "performance_expected_status_mode", "performance_custom_expected_status",
+    "performance_contains_text", "performance_max_response_ms",
+    "performance_think_time_ms", "performance_random_jitter_ms",
+    "interface_perf_source_name",
+)
+
+
+def _compute_signature(state: Dict[str, Any]) -> str:
+    parts = [f"{key}={state.get(key)!r}" for key in _CONFIG_SIGNATURE_KEYS]
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _current_config_signature() -> str:
+    return _compute_signature({key: st.session_state.get(key) for key in _CONFIG_SIGNATURE_KEYS})
+
+
+def _is_result_stale(perf_result) -> bool:
+    if not perf_result:
+        return False
+    signature = perf_result.get("input_signature")
+    return bool(signature) and signature != _current_config_signature()
+
+
+def _render_result_state_feedback(perf_result):
+    """醒目反馈：结果过期、运行告警、截断说明。"""
+    if not perf_result:
+        return
+    if _is_result_stale(perf_result):
+        st.error("⚠️ 当前展示的是上一次压测结果：压测配置已变更，结果可能已过期，请重新执行压测。")
+    for warning in perf_result.get("warnings") or []:
+        st.warning(warning)
+    truncation = perf_result.get("truncation") or {}
+    for key, info in truncation.items():
+        if isinstance(info, dict) and info.get("note"):
+            st.caption(f"截断说明（{key}）：{info['note']}")
+
+
+def _render_registry_summary():
+    """首屏展示当前注册的能力（拓展性与运行上限一目了然）。"""
+    summary = perf_registry.get_registry_summary()
+    limits = perf_registry.get_performance_limits()
+    st.markdown(
+        '<div class="jmeter-field-card"><strong>当前注册的能力</strong> '
+        '断言、分位数、监听器、导出字段、CSV/定时器策略、协议与上限均可通过注册中心扩展。</div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        f"断言类型 {summary['assertion_types']} 个 | 分位数 {summary['percentiles']} 个"
+        f"（{perf_registry.get_percentile_method_label()}） | 监听器页签 {summary['listener_tabs']} 个"
+        f" | 导出字段 {summary['result_fields']} 个 | 摘要指标 {summary['summary_metrics']} 个"
+        f" | CSV 共享模式 {summary['csv_sharing_modes']} 种 / EOF 策略 {summary['csv_eof_policies']} 种"
+        f" | 定时器策略 {summary['timer_strategies']} 种 | 协议 {summary['protocols']} 种"
+        f" | 导出清洗器 {summary['export_sanitizers']} 个"
+    )
+    st.caption(
+        f"运行上限：虚拟用户 {limits.max_virtual_users}（UI 上限 {limits.ui_max_virtual_users}）"
+        f" / 时长 {limits.max_duration_seconds:.0f}s / 超时 {limits.max_timeout_seconds:.0f}s"
+        f" / 错误样本保留 {limits.max_error_samples} 条；"
+        f"默认校验 SSL={limits.verify_ssl_by_default}、跟随重定向={limits.follow_redirects_by_default}、"
+        f"允许内网目标={limits.allow_private_targets}"
+    )
+
+
 def _decode_csv_bytes(raw: bytes) -> str:
     """严格解码上传的 CSV：优先 UTF-8(BOM)，回退 GB18030；失败时报错而非静默丢字符。"""
     for encoding in ("utf-8-sig", "gb18030"):
@@ -1101,9 +1240,9 @@ def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
         "自定义状态码": "custom",
         "不校验状态码": "none",
     }
+    # 共享模式映射由注册中心生成，新增模式会自动出现在页面下拉里。
     sharing_mode_map = {
-        "All Threads": "all_threads",
-        "Current Thread": "current_thread",
+        label: key for key, label in perf_registry.get_csv_sharing_modes().items()
     }
 
     selected_sampler_indexes = st.session_state.get("performance_sampler_indexes") or []
@@ -1134,12 +1273,15 @@ def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
         },
         request_defaults={
             "timeout_seconds": st.session_state.get("performance_timeout", 30.0),
-            "verify_ssl": st.session_state.get("performance_verify_ssl", False),
-            "follow_redirects": st.session_state.get("performance_follow_redirects", True),
+            "verify_ssl": st.session_state.get("performance_verify_ssl", True),
+            "follow_redirects": st.session_state.get("performance_follow_redirects", False),
             "keep_alive": st.session_state.get("performance_keep_alive", True),
+            "allow_private_targets": st.session_state.get("performance_allow_private_targets", False),
         },
         assertions={
-            "expected_status_mode": expected_status_mode_map[st.session_state.get("performance_expected_status_mode", "使用文档状态码")],
+            "expected_status_mode": expected_status_mode_map.get(
+                st.session_state.get("performance_expected_status_mode", "使用文档状态码"), "document"
+            ),
             "custom_expected_status": st.session_state.get("performance_custom_expected_status", 200),
             "contains_text": st.session_state.get("performance_contains_text", ""),
             "max_response_ms": st.session_state.get("performance_max_response_ms", 0.0),
@@ -1147,6 +1289,7 @@ def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
         timer_config={
             "think_time_ms": st.session_state.get("performance_think_time_ms", 0.0),
             "random_jitter_ms": st.session_state.get("performance_random_jitter_ms", 0.0),
+            "strategy": "constant_jitter",
         },
         csv_data_set={
             "enabled": st.session_state.get("performance_csv_enabled", False),
@@ -1156,7 +1299,9 @@ def _build_plan_from_state(interfaces, performance_tool: PerformanceTestTool):
             "variable_names_text": st.session_state.get("performance_csv_variable_names", ""),
             "delimiter": st.session_state.get("performance_csv_delimiter", ","),
             "quotechar": st.session_state.get("performance_csv_quotechar", '"'),
-            "sharing_mode": sharing_mode_map[st.session_state.get("performance_csv_sharing_mode", "All Threads")],
+            "sharing_mode": sharing_mode_map.get(
+                st.session_state.get("performance_csv_sharing_mode", "All Threads"), "all_threads"
+            ),
             "recycle_on_eof": st.session_state.get("performance_csv_recycle", True),
             "stop_thread_on_eof": st.session_state.get("performance_csv_stop_thread", False),
         },
@@ -1237,23 +1382,33 @@ def _build_results_tree_rows(perf_result):
 
 
 def _find_sampler_config(plan, sample):
-    for sampler in (plan or {}).get("samplers", []):
-        if sampler.get("label") == sample.get("sampler_label"):
+    samplers = (plan or {}).get("samplers", [])
+    sample_id = sample.get("sampler_id")
+    if sample_id:
+        for sampler in samplers:
+            if sampler.get("sampler_id") == sample_id:
+                return sampler
+    label = sample.get("sampler_label")
+    for sampler in samplers:
+        if sampler.get("label") == label:
             return sampler
     return {}
 
 
 def _build_sampler_request_preview(plan, sample):
     sampler = _find_sampler_config(plan, sample)
+    # 优先展示实际发出的 materialized 值，而不是仍含 ${var} 的计划模板。
     payload = {
         "method": sample.get("method", ""),
         "url": sample.get("url", ""),
-        "headers": sampler.get("headers", {}),
+        "headers": sample.get("request_headers") or sampler.get("headers", {}),
         "path_params": sampler.get("path_params", {}),
-        "query_params": sampler.get("query_params", {}),
-        "body": sampler.get("body"),
+        "query_params": sample.get("materialized_query_params") or sampler.get("query_params", {}),
+        "body": sample.get("materialized_body") if "materialized_body" in sample else sampler.get("body"),
         "csv_variables": sample.get("csv_variables", {}),
     }
+    if sample.get("unresolved_variables"):
+        payload["warning"] = "未解析变量: " + ", ".join(sample["unresolved_variables"])
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
@@ -1364,8 +1519,6 @@ def _render_property_toolbar(selected_node: str, perf_interfaces):
 
 
 def _build_assertion_result_nodes(perf_plan, sample):
-    plan_assertions = (perf_plan or {}).get("assertions", {})
-    sampler = _find_sampler_config(perf_plan, sample)
     nodes = [
         {
             "level": 0,
@@ -1374,44 +1527,28 @@ def _build_assertion_result_nodes(perf_plan, sample):
             "detail": sample.get("response_message", "") or ("Success" if sample.get("success") else "Failure"),
         }
     ]
-
-    expected_status_mode = plan_assertions.get("expected_status_mode", "document")
-    if expected_status_mode != "none":
-        if expected_status_mode == "custom":
-            expected_status = int(plan_assertions.get("custom_expected_status", 200) or 200)
-        else:
-            expected_status = int(sampler.get("expected_status", 200) or 200)
-        actual_status = int(sample.get("status_code", 0) or 0)
+    details = sample.get("assertion_results") or []
+    if details:
+        # 直接读取执行时基于「全量响应」计算的断言明细，不再用 400 字符预览反推。
+        for item in details:
+            nodes.append(
+                {
+                    "level": 1,
+                    "passed": bool(item.get("passed")),
+                    "label": str(item.get("label") or item.get("key") or "Assertion"),
+                    "detail": str(item.get("detail") or ""),
+                }
+            )
+    else:
+        plan_assertions = (perf_plan or {}).get("assertions", {})
+        sampler = _find_sampler_config(perf_plan, sample)
+        expected_status = sampler.get("expected_status", 200)
         nodes.append(
             {
                 "level": 1,
-                "passed": actual_status == expected_status,
+                "passed": int(sample.get("status_code", 0) or 0) == int(expected_status or 0),
                 "label": "Response Code",
-                "detail": f"expected={expected_status}, actual={actual_status}",
-            }
-        )
-
-    contains_text = str(plan_assertions.get("contains_text", "") or "").strip()
-    if contains_text:
-        response_preview = str(sample.get("response_preview", "") or "")
-        nodes.append(
-            {
-                "level": 1,
-                "passed": contains_text in response_preview,
-                "label": "Response Contains",
-                "detail": f"keyword={contains_text}",
-            }
-        )
-
-    max_response_ms = float(plan_assertions.get("max_response_ms", 0.0) or 0.0)
-    if max_response_ms > 0:
-        elapsed_ms = float(sample.get("elapsed_ms", 0.0) or 0.0)
-        nodes.append(
-            {
-                "level": 1,
-                "passed": elapsed_ms <= max_response_ms,
-                "label": "Response Time",
-                "detail": f"limit={round(max_response_ms, 2)} ms, actual={round(elapsed_ms, 2)} ms",
+                "detail": f"expected={expected_status}, actual={sample.get('status_code', 0)}（旧结果无断言明细，仅供参考）",
             }
         )
 
@@ -1504,7 +1641,7 @@ def _render_results_tree_sidebar(filtered_rows, perf_result):
 
     st.download_button(
         label="保存当前树节点",
-        data=sample_browser_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
+        data=_sanitize_csv_frame(sample_browser_df).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig"),
         file_name="results_tree_samples.csv",
         mime="text/csv",
         use_container_width=True,
@@ -1791,15 +1928,35 @@ def _render_test_plan_panel(parser: InterfaceAutoTestCore, perf_interfaces):
 def _render_thread_group_panel():
     tg_col1, tg_col2, tg_col3, tg_col4, tg_col5 = st.columns(5)
     with tg_col1:
-        st.number_input("Number of Threads (users)", min_value=1, max_value=200, key="performance_users")
+        st.number_input(
+            "Number of Threads (users)", min_value=1,
+            max_value=perf_registry.get_performance_limits().ui_max_virtual_users,
+            key="performance_users",
+        )
     with tg_col2:
-        st.number_input("Ramp-Up Period (seconds)", min_value=0.0, step=1.0, key="performance_ramp_up")
+        st.number_input(
+            "Ramp-Up Period (seconds)", min_value=0.0, step=1.0,
+            max_value=perf_registry.get_performance_limits().max_ramp_up_seconds,
+            key="performance_ramp_up",
+        )
     with tg_col3:
-        st.number_input("Loop Count", min_value=0, max_value=1000, key="performance_loops")
+        st.number_input(
+            "Loop Count", min_value=0,
+            max_value=perf_registry.get_performance_limits().max_loop_count,
+            key="performance_loops",
+        )
     with tg_col4:
-        st.number_input("Duration (seconds)", min_value=0.0, step=5.0, key="performance_duration")
+        st.number_input(
+            "Duration (seconds)", min_value=0.0, step=5.0,
+            max_value=perf_registry.get_performance_limits().max_duration_seconds,
+            key="performance_duration",
+        )
     with tg_col5:
-        st.number_input("Startup Delay (seconds)", min_value=0.0, step=1.0, key="performance_start_delay")
+        st.number_input(
+            "Startup Delay (seconds)", min_value=0.0, step=1.0,
+            max_value=perf_registry.get_performance_limits().max_start_delay_seconds,
+            key="performance_start_delay",
+        )
 
 
 def _render_http_defaults_panel():
@@ -1815,7 +1972,11 @@ def _render_http_defaults_panel():
 
     ext_col1, ext_col2, ext_col3, ext_col4 = st.columns(4)
     with ext_col1:
-        st.number_input("Connect Timeout (seconds)", min_value=1.0, step=1.0, key="performance_timeout")
+        st.number_input(
+            "Connect Timeout (seconds)", min_value=1.0, step=1.0,
+            max_value=perf_registry.get_performance_limits().max_timeout_seconds,
+            key="performance_timeout",
+        )
     with ext_col2:
         st.checkbox("Follow Redirects", key="performance_follow_redirects")
     with ext_col3:
@@ -1827,6 +1988,17 @@ def _render_http_defaults_panel():
     st.session_state.performance_base_url = computed_base_url
     st.session_state.api_perf_http_fields_synced_from = computed_base_url
     st.code(computed_base_url or "请先填写 Server Name or IP", language="text")
+    url_error = st.session_state.get("api_perf_url_error")
+    if url_error:
+        st.error(f"目标地址校验失败：{url_error}")
+    st.checkbox(
+        "允许内网/本地目标（压测 127.0.0.1、192.168.x 等内网服务时开启）",
+        key="performance_allow_private_targets",
+    )
+    st.caption(
+        "安全默认：仅允许 http/https；默认校验 SSL、不跟随重定向、拦截回环/内网/元数据地址。"
+        "重定向与内网放行都需要显式开启，避免 SSRF 与主机混淆。"
+    )
 
 
 def _render_samplers_panel(perf_interfaces):
@@ -1879,6 +2051,17 @@ def _render_samplers_panel(perf_interfaces):
         st.code(json.dumps(item.get("body"), ensure_ascii=False, indent=2), language="json")
 
 
+def _on_recycle_toggle():
+    """Recycle 与 Stop Thread 互斥：勾选 Recycle 时自动取消 Stop Thread。"""
+    if st.session_state.get("performance_csv_recycle") and st.session_state.get("performance_csv_stop_thread"):
+        st.session_state.performance_csv_stop_thread = False
+
+
+def _on_stop_toggle():
+    if st.session_state.get("performance_csv_stop_thread") and st.session_state.get("performance_csv_recycle"):
+        st.session_state.performance_csv_recycle = False
+
+
 def _render_csv_panel():
     csv_enable_col1, csv_enable_col2 = st.columns([1, 2])
     with csv_enable_col1:
@@ -1903,9 +2086,21 @@ def _render_csv_panel():
     with csv_col2:
         st.text_input("Delimiter", max_chars=1, key="performance_csv_delimiter")
         st.text_input("Quote Char", max_chars=1, key="performance_csv_quotechar")
-        st.selectbox("Sharing Mode", ["All Threads", "Current Thread"], key="performance_csv_sharing_mode")
-        st.checkbox("Recycle on EOF", key="performance_csv_recycle")
-        st.checkbox("Stop Thread on EOF", key="performance_csv_stop_thread")
+        st.selectbox(
+            "Sharing Mode",
+            list(perf_registry.get_csv_sharing_modes().values()),
+            key="performance_csv_sharing_mode",
+        )
+        st.checkbox("Recycle on EOF", key="performance_csv_recycle", on_change=_on_recycle_toggle)
+        st.checkbox("Stop Thread on EOF", key="performance_csv_stop_thread", on_change=_on_stop_toggle)
+        policy = perf_registry.normalize_csv_eof_policy(
+            bool(st.session_state.get("performance_csv_recycle", True)),
+            bool(st.session_state.get("performance_csv_stop_thread", False)),
+        )
+        st.caption(
+            f"当前 EOF 策略：{perf_registry.get_csv_eof_policies().get(policy, policy)}。"
+            "两项互斥，勾选其一会自动取消另一项；变量值写入 URL 时自动编码，防止路径/参数注入。"
+        )
 
         preview_text = st.session_state.get("performance_csv_text", "")
         upload_file = st.session_state.get("performance_csv_upload")
@@ -1955,15 +2150,27 @@ def _render_assertion_panel():
     with assert_col2:
         st.text_input("Response Contains", key="performance_contains_text", placeholder="例如: success / code / token")
     with assert_col3:
-        st.number_input("Max Response Time (ms)", min_value=0.0, step=50.0, key="performance_max_response_ms")
+        st.number_input(
+            "Max Response Time (ms)", min_value=0.0, step=50.0,
+            max_value=perf_registry.get_performance_limits().max_max_response_ms,
+            key="performance_max_response_ms",
+        )
 
 
 def _render_timer_panel():
     timer_col1, timer_col2, timer_col3 = st.columns(3)
     with timer_col1:
-        st.number_input("Constant Timer (ms)", min_value=0.0, step=10.0, key="performance_think_time_ms")
+        st.number_input(
+            "Constant Timer (ms)", min_value=0.0, step=10.0,
+            max_value=perf_registry.get_performance_limits().max_think_time_ms,
+            key="performance_think_time_ms",
+        )
     with timer_col2:
-        st.number_input("Random Jitter (ms)", min_value=0.0, step=10.0, key="performance_random_jitter_ms")
+        st.number_input(
+            "Random Jitter (ms)", min_value=0.0, step=10.0,
+            max_value=perf_registry.get_performance_limits().max_jitter_ms,
+            key="performance_random_jitter_ms",
+        )
     with timer_col3:
         users = max(int(st.session_state.get("performance_users", 1)), 1)
         loops = max(int(st.session_state.get("performance_loops", 1)), 1)
@@ -1971,6 +2178,10 @@ def _render_timer_panel():
         duration = float(st.session_state.get("performance_duration", 0.0))
         estimated_request_count = "按时长运行，理论请求数不固定" if duration > 0 and int(st.session_state.get("performance_loops", 1)) == 0 else str(users * loops * sampler_count)
         st.metric("Estimated Requests", estimated_request_count)
+    st.caption(
+        f"分位数口径：{perf_registry.get_percentile_method_label()}；"
+        "吞吐量按活跃窗口（首末样本时间差）计算，不含 Ramp-Up / Startup Delay / 思考时间空档。"
+    )
 
 
 def _render_execution_status(perf_interfaces):
@@ -1998,6 +2209,8 @@ def _render_execution_status(perf_interfaces):
         st.caption(f"当前共导入 {len(perf_interfaces)} 个接口，点击工具条后会自动切到对应节点或结果页签。")
     else:
         st.caption("先导入接口文档，再生成 Test Plan 或直接开始压测。")
+
+    _render_result_state_feedback(st.session_state.get("interface_perf_result"))
 
 
 def _render_listener_shortcuts(perf_plan, perf_result):
@@ -2174,7 +2387,15 @@ def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTest
             run_info = run_center.submit(
                 tool="接口性能测试",
                 action="生成测试计划",
-                payload={"interface_count": len(perf_interfaces)},
+                payload={
+                    "interface_count": len(perf_interfaces),
+                    "users": st.session_state.get("performance_users", 10),
+                    "duration_seconds": st.session_state.get("performance_duration", 0.0),
+                    "base_url": _compose_base_url_from_fields(),
+                    "assertion_mode": st.session_state.get("performance_expected_status_mode", "使用文档状态码"),
+                    "csv_enabled": st.session_state.get("performance_csv_enabled", False),
+                    "config_signature": _current_config_signature(),
+                },
                 executor=_build_task,
             )
             st.success(f"✅ Test Plan 已生成（Run ID: `{run_info['run_id']}`）")
@@ -2190,6 +2411,9 @@ def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTest
                 st.session_state.interface_perf_plan = plan
                 with st.spinner("正在执行性能测试，请稍候..."):
                     result = performance_tool.run_test_plan(plan)
+                # 结果绑定当前配置签名，配置变化后页面会提示「结果可能已过期」。
+                if isinstance(result, dict):
+                    result["input_signature"] = _current_config_signature()
                 st.session_state.interface_perf_result = result
                 _open_listener_view("Summary Report")
                 summary = result.get("summary", {}) if isinstance(result, dict) else {}
@@ -2203,7 +2427,15 @@ def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTest
             run_info = run_center.submit(
                 tool="接口性能测试",
                 action="执行性能测试",
-                payload={"interface_count": len(perf_interfaces)},
+                payload={
+                    "interface_count": len(perf_interfaces),
+                    "users": st.session_state.get("performance_users", 10),
+                    "duration_seconds": st.session_state.get("performance_duration", 0.0),
+                    "base_url": _compose_base_url_from_fields(),
+                    "assertion_mode": st.session_state.get("performance_expected_status_mode", "使用文档状态码"),
+                    "csv_enabled": st.session_state.get("performance_csv_enabled", False),
+                    "config_signature": _current_config_signature(),
+                },
                 executor=_run_task,
             )
             st.success(f"✅ 性能测试执行完成（Run ID: `{run_info['run_id']}`）")
@@ -2214,6 +2446,7 @@ def _render_execution_toolbar(perf_interfaces, performance_tool: PerformanceTest
 def _render_listener_panel():
     perf_plan = st.session_state.get("interface_perf_plan")
     perf_result = st.session_state.get("interface_perf_result")
+    _render_result_state_feedback(perf_result)
 
     if not perf_plan and not perf_result:
         st.info("先生成 Test Plan 或执行压测，Listener 区域才会显示内容。")
@@ -2221,7 +2454,8 @@ def _render_listener_panel():
 
     _render_listener_shortcuts(perf_plan, perf_result)
 
-    listener_tabs = ["Test Plan", "Summary Report", "Aggregate Report", "View Results Tree", "Graph Results", "Errors", "Transactions", "Downloads"]
+    # 页签列表由注册中心生成，新增/替换监听器无需改这里。
+    listener_tabs = perf_registry.get_listener_tab_labels()
     active_listener_tab = _render_button_tab_bar(
         listener_tabs,
         "api_perf_listener_tab",
@@ -2249,6 +2483,12 @@ def _render_listener_panel():
             summary = perf_result.get("summary", {})
             summary_df = pd.DataFrame([_build_jmeter_summary_row(perf_result)])
             st.markdown('<div class="jmeter-field-card"><strong>Summary Listener</strong> 汇总总样本数、成功率、吞吐和分位耗时。</div>', unsafe_allow_html=True)
+            st.caption(
+                f"文字摘要：共 {summary.get('total_requests', 0)} 个请求，成功率 {float(summary.get('success_rate', 0.0) or 0.0):.1f}%，"
+                f"失败 {summary.get('failed_requests', 0)} 个；平均 {float(summary.get('avg_ms', 0.0) or 0.0):.2f}ms、"
+                f"P95 {float(summary.get('p95_ms', 0.0) or 0.0):.2f}ms、最慢 {float(summary.get('max_ms', 0.0) or 0.0):.2f}ms；"
+                f"吞吐 {float(summary.get('throughput_rps', 0.0) or 0.0):.2f} rps（{summary.get('throughput_basis', '活跃窗口')}）。"
+            )
             summary_action_col1, summary_action_col2, summary_action_col3 = st.columns(3)
             with summary_action_col1:
                 if st.button("查看全部样本", key="summary_open_all_samples", use_container_width=True):
@@ -2262,19 +2502,15 @@ def _render_listener_panel():
                 if st.button("打开下载中心", key="summary_open_downloads", use_container_width=True):
                     _open_listener_view("Downloads")
                     st.rerun()
-            metric_col1, metric_col2, metric_col3, metric_col4, metric_col5, metric_col6 = st.columns(6)
-            with metric_col1:
-                st.metric("Samples", summary.get("total_requests", 0))
-            with metric_col2:
-                st.metric("Success %", f"{summary.get('success_rate', 0):.1f}%")
-            with metric_col3:
-                st.metric("Average", f"{summary.get('avg_ms', 0):.2f} ms")
-            with metric_col4:
-                st.metric("P90", f"{summary.get('p90_ms', 0):.2f} ms")
-            with metric_col5:
-                st.metric("P95", f"{summary.get('p95_ms', 0):.2f} ms")
-            with metric_col6:
-                st.metric("Throughput", f"{summary.get('throughput_rps', 0):.2f} rps")
+            # 摘要指标由注册中心生成，新增/替换指标无需改页面。
+            metric_specs = perf_registry.get_summary_metrics()
+            metric_columns = st.columns(len(metric_specs) or 1)
+            for metric_column, metric_spec in zip(metric_columns, metric_specs):
+                with metric_column:
+                    try:
+                        st.metric(metric_spec.label, metric_spec.formatter(summary))
+                    except Exception:
+                        st.metric(metric_spec.label, "0")
             _render_report_table_workbench(
                 "summary_report",
                 "Summary Table",
@@ -2290,6 +2526,17 @@ def _render_listener_panel():
         if perf_result:
             aggregate_df = pd.DataFrame(_build_jmeter_aggregate_rows(perf_result))
             st.markdown('<div class="jmeter-field-card"><strong>Aggregate Listener</strong> 按 Sampler 聚合耗时、错误率和吞吐。</div>', unsafe_allow_html=True)
+            per_sampler_rows = perf_result.get("per_sampler", []) or []
+            if per_sampler_rows:
+                slowest = max(per_sampler_rows, key=lambda row: float(row.get("avg_ms", 0) or 0))
+                st.caption(
+                    f"文字摘要：共 {len(per_sampler_rows)} 个 Sampler（按稳定 ID 分组）；最慢接口 "
+                    f"{slowest.get('sampler_name', '')}（平均 {float(slowest.get('avg_ms', 0) or 0):.2f}ms，"
+                    f"{slowest.get('requests', 0)} 个请求）；合计 "
+                    f"{sum(int(row.get('failed_requests', 0) or 0) for row in per_sampler_rows)} 个失败请求。"
+                )
+            else:
+                st.caption("文字摘要：本次压测没有 Sampler 聚合数据（可能为 0 样本）。")
             agg_col1, agg_col2 = st.columns(2)
             with agg_col1:
                 if st.button("查看样本树", key="aggregate_open_tree", use_container_width=True):
@@ -2370,6 +2617,13 @@ def _render_listener_panel():
     if active_listener_tab == "Graph Results":
         if perf_result and perf_result.get("timeline"):
             st.markdown('<div class="jmeter-field-card"><strong>Graph Results</strong> 展示每秒请求量、失败数和时延变化。</div>', unsafe_allow_html=True)
+            timeline_rows = perf_result.get("timeline", []) or []
+            peak_bucket = max(timeline_rows, key=lambda row: int(row.get("requests", 0) or 0)) if timeline_rows else {}
+            st.caption(
+                f"文字摘要：时间线共 {len(timeline_rows)} 秒（已补齐空档秒）；峰值第 "
+                f"{peak_bucket.get('second_bucket', '-')} 秒 {peak_bucket.get('requests', 0)} 个请求；"
+                f"累计失败 {sum(int(row.get('failures', 0) or 0) for row in timeline_rows)} 个。"
+            )
             timeline_df = pd.DataFrame(perf_result.get("timeline", []))
             if not timeline_df.empty:
                 chart_col1, chart_col2 = st.columns(2)
@@ -2387,6 +2641,19 @@ def _render_listener_panel():
             if error_samples:
                 errors_df = pd.DataFrame(error_samples)
                 st.markdown('<div class="jmeter-field-card"><strong>Error Samples</strong> 这里集中查看失败样本，方便快速定位接口或断言问题。</div>', unsafe_allow_html=True)
+                type_counts = {}
+                for failed in error_samples:
+                    key = str(failed.get("error_type") or "unknown")
+                    type_counts[key] = type_counts.get(key, 0) + 1
+                top_types = "、".join(
+                    f"{name} {count} 条"
+                    for name, count in sorted(type_counts.items(), key=lambda pair: -pair[1])[:3]
+                )
+                st.caption(
+                    f"文字摘要：展示 {len(error_samples)} 条，共 "
+                    f"{perf_result.get('summary', {}).get('failed_requests', len(error_samples))} 条失败样本；"
+                    f"失败类型 TOP3：{top_types or '无'}。"
+                )
                 error_col1, error_col2 = st.columns(2)
                 with error_col1:
                     if st.button("跳到失败样本树", key="errors_open_tree", use_container_width=True):
@@ -2432,6 +2699,15 @@ def _render_listener_panel():
                     ]
                 )
                 st.markdown('<div class="jmeter-field-card"><strong>Transaction Controller Report</strong> 查看事务级吞吐、分位耗时和错误率。</div>', unsafe_allow_html=True)
+                st.caption(
+                    f"文字摘要：共 {len(transaction_rows)} 类完整事务，合计 "
+                    f"{sum(int(row.get('transactions', 0) or 0) for row in transaction_rows)} 次；平均耗时："
+                    + "、".join(
+                        f"{row.get('transaction_name', '')}={float(row.get('avg_ms', 0) or 0):.1f}ms"
+                        for row in transaction_rows[:3]
+                    )
+                    + "。被 duration 截断的不完整事务已排除。"
+                )
                 tx_col1, tx_col2 = st.columns(2)
                 with tx_col1:
                     if st.button("查看汇总报表", key="transactions_open_summary", use_container_width=True):
@@ -2471,19 +2747,15 @@ def _render_listener_panel():
         st.info("执行压测后可下载报告")
         return
 
+    # 导出字段由注册中心决定：含测试计划、原始样本、HTML 报告、告警与截断说明，可完整复现。
     result_json = json.dumps(
-        {
-            "summary": perf_result.get("summary", {}),
-            "per_sampler": perf_result.get("per_sampler", []),
-            "per_transaction": perf_result.get("per_transaction", []),
-            "timeline": perf_result.get("timeline", []),
-            "error_samples": perf_result.get("error_samples", []),
-            "summary_listener": perf_result.get("summary_listener", []),
-        },
+        perf_registry.build_export_payload(perf_result),
         ensure_ascii=False,
         indent=2,
     )
-    result_csv = pd.DataFrame(perf_result.get("samples", [])).to_csv(index=False, encoding="utf-8-sig")
+    result_csv = _sanitize_csv_frame(
+        pd.DataFrame(perf_result.get("samples", []))
+    ).to_csv(index=False, encoding="utf-8-sig")
     html_report = perf_result.get("html_report", "")
     summary = perf_result.get("summary", {})
     render_download_panel(
@@ -2502,7 +2774,7 @@ def _render_listener_panel():
                 "data": result_json,
                 "file_name": "api_performance_report.json",
                 "mime": "application/json",
-                "caption": "包含 summary、sampler、timeline 和 error samples。",
+                "caption": "包含测试计划、原始样本、HTML 报告、告警与截断说明，可完整复现本次压测。",
             },
             {
                 "label": "📊 下载 CSV 样本",
@@ -2575,6 +2847,7 @@ def render_api_performance_test_page():
     perf_result = st.session_state.get("interface_perf_result")
 
     st.markdown('<div class="category-card">🚀 接口性能测试</div>', unsafe_allow_html=True)
+    _render_registry_summary()
     _render_menu_bar()
     st.markdown(
         '<div class="jmeter-caption">按 JMeter 的思路组织页面: 左侧测试计划树，右侧节点配置，底部 Listener 结果区。</div>',
@@ -2629,7 +2902,7 @@ def render_api_performance_test_page():
         status_text = f"Last Run: {summary.get('finished_at', '')}"
         result_text = f"Samples={summary.get('total_requests', 0)} | Error%={100 - float(summary.get('success_rate', 0.0) or 0.0):.1f}"
     st.markdown(
-        f'<div class="jmeter-statusbar"><span>{status_text}</span><span>{result_text}</span></div>',
+        f'<div class="jmeter-statusbar"><span>{html.escape(status_text)}</span><span>{html.escape(result_text)}</span></div>',
         unsafe_allow_html=True,
     )
 
