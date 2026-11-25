@@ -521,7 +521,7 @@
 - 对象：`src/qa_toolkit/tools/ip_lookup.py`（IPQueryTool 全量方法）+ `src/qa_toolkit/ui/pages/ip_lookup_page.py`（单个查询 / 批量查询 / IPv4 转换 / 资产扩展 4 个 Tab）。
 - 方式：候选问题写成 `.qa-audit/ip_repro.py` 实测坐实（含 mock 网络源、构造畸形 URL、超时 DNS、公式注入 CSV），确认 20 项后提交 GitHub Issues #291-#310。
 - 视角：测试专家关注输入边界、网络超时、来源失败判定、导出安全；产品工程师关注**拓展性、易用性**（数据源/动作/转换方式可注册，状态与降级可见），不局限于当前业务。
-- 修复分支 `fix/ip-lookup-audit`，PR 合并后逐个关闭 #291-#310。
+- 修复分支 `fix/ip-lookup-audit`（commit `7e0c9a7`），PR #311 已合并至 `master`（merge commit `d937104`）。
 
 ### 关键实测证据（修复前）
 
