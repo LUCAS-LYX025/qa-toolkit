@@ -390,3 +390,40 @@
 - 全量 pytest：349 passed
 - e2e（新增 `08-crypto-tools.e2e.ts`，入口 / 结果过期 / MD5 / CBC / RSA 上限）：4/4 passed，全套 32/32 passed
 - GitHub：issues #209-#227 全部关闭，仓库 open issues = 0
+
+---
+
+## JSON 处理工具专项审计（2026-11-25，Issues #229-#247）
+
+以测试专家（正确性 / 边界 / 健壮性）+ 产品工程师（易用性 / **拓展性**，不局限于当前业务）双视角专项审计，实测确认 19 项问题并全部修复。PR #248 已合并到 `master`，合并提交 `b45aeca`。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 格式化 / 清空按钮（#229） | 输入框改成 `{"a":1}` 后点击“✨ 格式化”，`session_state` 已变为带缩进文本，但 widget 仍显示旧值；清空同理，用户以为按钮失效 |
+| 结果过期（#230） | 解析 `{"a":1}` 后把输入改为 `{"a":999}`，旧结果继续展示；对比和 JSONPath 同样残留；JSONPath 输入 `{bad json` 报错后仍显示上一次的 `['Author 1', 'Author 2']` |
+| 递归下降重复（#231/#232） | `$..author` 在 3 本书的数据上返回 12 项（每个作者重复 4 次），`$..book[0].title` 返回 2 项，`$..*` 返回 40+ 项且包含大量重复子树 |
+| 过滤器与语法（#233-#235） | `?(@.tags[0]=='a')` 返回空；`?(@.isbn)` 只对硬编码的 isbn 生效；`$['store']['book'][0]['title']` 静默返回空；`[0:3:0]` 抛 `range() arg 3 must not be zero` |
+| 解析宽松性（#236/#237） | `{"a":1,"a":2}` 静默取最后一个值；`NaN`/`Infinity` 被接受并原样写出；带 BOM 的粘贴内容直接报 `Unexpected UTF-8 BOM` |
+| 对比确定性（#238/#239） | 同一对象与 `{}` 对比，多次运行差异顺序由哈希随机化决定（实测 d、c、a、b）；`1` 与 `1.0` 被误报为“类型不同” |
+| 深嵌套（#240） | 1200 层嵌套对象调用 `analyze_json_structure()` 抛 `RecursionError`，页面无保护；其他遍历方法已有上限，唯独结构分析遗漏 |
+| 导出与错误提示（#242-#244） | JSONPath 对象结果用 Python `str` 导出，形如 `{'title': 'A'}`，不是合法 JSON；解析结果无下载按钮；错误只回显 `Expecting property name... line 1 column 10`，没有上下文与原因提示 |
+| 拓展性（#246） | 约 280 行工具逻辑内嵌 `streamlit_app.py`，模式、按钮、JSONPath 规则、导出格式全部硬编码，新增扩展点要改多处 |
+
+### 修复方案要点
+
+- **解析与序列化**：新增 `parse_json_text()` / `serialize_json()`，默认严格拒绝 NaN/Infinity、重复键给可见告警、自动剥离 BOM、识别 JSONL 并作为数组处理；错误转成“第 N 行第 M 列 + 附近内容 + 常见原因”的中文提示；输入体积上限防止页面卡死。
+- **JSONPath 重写**：实现词法分割与 token 求值，递归下降每个节点只访问一次；支持标准括号字符串索引、数组切片/负索引/多选、通配符、过滤器中的嵌套路径 `@.a.b` 与数组下标 `@.tags[0]`、任意属性存在性检查、`=~` 正则和注册函数（`length` / `keys` / `values`）；步长为 0 与未闭合括号给出明确错误。
+- **对比与结构分析**：dict 按键稳定排序，差异文本可逐行 diff；JSON number 支持可配置数值等价；`compare_json_values()` 返回统计信息并在页面展示；结构分析改迭代实现并加深度/节点上限，`get_json_depth()` 明确“标量 0、空容器 1、嵌套容器逐层 +1”。
+- **结果可信度**：解析、对比、查询三类结果均与输入/参数签名绑定，输入变化即提示“结果已过期”并隐藏旧结果；解析或查询失败时清空对应结果；格式化与清空通过 widget key 版本递增真正刷新输入框。
+- **易用性**：三种模式均有带标签的输入框、可载入示例和 JSONPath 速查；导出格式从注册表读取，支持 JSON / JSONL / 纯文本下载；解析错误给出可定位的上下文。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/json_registry.py`，把 **JSONPath 函数、差异规则、导出格式、校验器、示例** 做成可注册扩展点；同时把 JSON 工具从 `streamlit_app.py` 迁到独立页面 `json_tools_page.py`，`tool_routes.py` 从 inline 改为 page 路由，业务方扩展无需再改主脚本。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_json.py`：16 passed（逐条对应 issue）
+- 既有 JSON/路由回归：20 passed
+- 全量 pytest：365 passed
+- e2e（新增 `09-json-tools.e2e.ts`，格式化清空 / 错误定位与过期 / 稳定对比 / JSONPath 去重与失败清空）：4/4 passed，全套 36/36 passed
+- GitHub：issues #229-#247 全部关闭，仓库 open issues = 0
