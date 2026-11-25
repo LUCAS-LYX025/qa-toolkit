@@ -9,6 +9,14 @@ import pytz
 import streamlit as st
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
+from qa_toolkit.core.datetime_registry import (
+    get_comparison_columns,
+    get_cron_presets,
+    get_registry_summary,
+    get_time_units,
+    get_timezones,
+    resolve_timezone,
+)
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.action_controls import primary_action_button, secondary_action_button
 from qa_toolkit.ui.components.status_feedback import (
@@ -18,17 +26,15 @@ from qa_toolkit.ui.components.status_feedback import (
     render_warning_feedback,
 )
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
-from qa_toolkit.utils.datetime_tools import DateTimeUtils
+from qa_toolkit.utils.datetime_tools import (
+    MAX_BUSINESS_DAY_OFFSET,
+    DateTimeUtils,
+)
 
 
+# 兼容旧导入：单位换算表现在来自注册中心。
 TIME_UNIT_SECONDS = {
-    "秒": 1,
-    "分钟": 60,
-    "小时": 3600,
-    "天": 86400,
-    "周": 7 * 86400,
-    "月(按30天)": 30 * 86400,
-    "年(按365天)": 365 * 86400,
+    name: spec.seconds for name, spec in get_time_units().items()
 }
 
 DEFAULT_BATCH_SAMPLE = "\n".join(
@@ -40,12 +46,8 @@ DEFAULT_BATCH_SAMPLE = "\n".join(
     ]
 )
 
-CRON_PRESETS = {
-    "工作日 09:00": "0 9 * * 1-5",
-    "每 5 分钟": "*/5 * * * *",
-    "每天 00:00": "0 0 * * *",
-    "每周一 10:00": "0 10 * * 1",
-}
+# 兼容旧导入：Cron 模板现在来自注册中心。
+CRON_PRESETS = get_cron_presets()
 
 DEFAULT_STATE: Dict[str, Any] = {
     "time_tool_timestamp_input": "",
@@ -68,10 +70,11 @@ DEFAULT_STATE: Dict[str, Any] = {
     "time_tool_sla_date": datetime.date.today(),
     "time_tool_sla_time": datetime.time(9, 0, 0),
     "time_tool_sla_hours": 24.0,
+    "time_tool_sla_calendar": "仅周末",
     "time_tool_work_start": 9,
     "time_tool_work_end": 18,
-    "time_tool_cron_preset": "工作日 09:00",
-    "time_tool_cron_expression": CRON_PRESETS["工作日 09:00"],
+    "time_tool_cron_preset": list(CRON_PRESETS.keys())[0],
+    "time_tool_cron_expression": list(CRON_PRESETS.values())[0],
     "time_tool_cron_base": datetime.date.today(),
     "time_tool_cron_count": 5,
     "time_tool_perf_duration": 10.0,
@@ -79,13 +82,14 @@ DEFAULT_STATE: Dict[str, Any] = {
     "time_tool_response_times": "120, 98, 240, 300, 180, 90, 110, 150, 600, 220",
     "time_tool_from_tz": "北京",
     "time_tool_to_tz": "纽约",
+    "time_tool_custom_tz": "",
     "time_tool_tz_date": datetime.date.today(),
     "time_tool_tz_time": datetime.time(10, 0, 0),
     "time_tool_timestamp_result": None,
     "time_tool_datetime_result": None,
     "time_tool_batch_result": [],
     "time_tool_range_summary": None,
-    "time_tool_cron_result": [],
+    "time_tool_cron_result": None,
     "time_tool_perf_result": None,
     "time_tool_timezone_snapshot": [],
 }
@@ -111,12 +115,35 @@ def _format_lines(lines: List[str]) -> str:
     return "\n".join(lines)
 
 
+def _safe_csv_cell(value: Any) -> str:
+    """防止 CSV 公式注入：以 = + - @ 开头的单元格加前缀降级。"""
+    text = "" if value is None else str(value)
+    if text[:1] in {"=", "+", "-", "@"}:
+        return f"'{text}"
+    return text
+
+
+def _input_signature(*parts: Any) -> str:
+    return "|".join(str(part) for part in parts)
+
+
 def _convert_timestamp_input(raw_text: str, unit_mode: str, timezone_name: str) -> Dict[str, Any]:
-    value = float(str(raw_text).strip())
-    # 2000-09 之后的毫秒时间戳是 12 位（1e11 起），原 1e12 阈值会误判为秒。
-    if unit_mode == "毫秒" or (unit_mode == "自动识别" and abs(value) >= 100_000_000_000):
-        seconds = value / 1000
-        precision = "毫秒"
+    cleaned = str(raw_text).strip()
+    if not cleaned:
+        raise ValueError("请输入时间戳，例如 1712361600 或 1712361600000")
+    try:
+        value = float(cleaned)
+    except ValueError as exc:
+        raise ValueError(f"时间戳必须是数字，收到“{cleaned}”") from exc
+    integer_part = cleaned.lstrip("-").split(".", 1)[0]
+    if unit_mode == "毫秒" or (
+        unit_mode == "自动识别" and len(integer_part.lstrip("-")) >= 13
+    ):
+        seconds = value / (1_000_000 if len(integer_part.lstrip("-")) >= 16 else 1_000)
+        precision = "微秒" if len(integer_part.lstrip("-")) >= 16 else "毫秒"
+    elif unit_mode == "自动识别" and len(integer_part.lstrip("-")) >= 16:
+        seconds = value / 1_000_000
+        precision = "微秒"
     else:
         seconds = value
         precision = "秒"
@@ -136,7 +163,16 @@ def _parse_response_times(text: str) -> List[float]:
     chunks = [item.strip() for item in re.split(r"[\s,，]+", str(text or "").strip()) if item.strip()]
     if not chunks:
         raise ValueError("请至少输入一个响应时间")
-    return [float(item) for item in chunks]
+    values = []
+    for chunk in chunks:
+        try:
+            value = float(chunk)
+        except ValueError as exc:
+            raise ValueError(f"响应时间“{chunk}”不是数字") from exc
+        if value < 0:
+            raise ValueError(f"响应时间“{chunk}”为负数，响应时间不能小于 0")
+        values.append(value)
+    return values
 
 
 MAX_MONTH_OFFSET = 1200  # 100 年，避免 add_months 越过年份上限
@@ -150,6 +186,15 @@ def _clamp_month_offset(months: Any) -> int:
     except (TypeError, ValueError, OverflowError):
         value = 0
     return max(-MAX_MONTH_OFFSET, min(MAX_MONTH_OFFSET, value))
+
+
+def _clamp_business_offset(days: Any) -> int:
+    """钳制工作日偏移，防止超大输入长时间循环。"""
+    try:
+        value = int(days)
+    except (TypeError, ValueError, OverflowError):
+        value = 0
+    return max(-MAX_BUSINESS_DAY_OFFSET, min(MAX_BUSINESS_DAY_OFFSET, value))
 
 
 def _clamp_perf_inputs(duration: Any, rps: Any, max_timestamps: int = MAX_PERF_TIMESTAMPS) -> Tuple[float, float]:
@@ -179,6 +224,20 @@ def _apply_range_preset(preset: str) -> None:
 
     st.session_state["time_tool_start_date"] = start_date
     st.session_state["time_tool_end_date"] = end_date
+
+
+def _timezone_options_with_custom() -> Dict[str, str]:
+    """常用时区 + 用户自定义 IANA 时区。"""
+    options = get_timezones()
+    custom = str(st.session_state.get("time_tool_custom_tz") or "").strip()
+    if custom:
+        try:
+            pytz.timezone(resolve_timezone(custom))
+            label = f"自定义: {custom}"
+            options.setdefault(label, resolve_timezone(custom))
+        except Exception:
+            pass
+    return options
 
 
 def _render_timestamp_tab() -> None:
@@ -211,13 +270,15 @@ def _render_timestamp_tab() -> None:
             timestamp_text = st.text_input(
                 "输入时间戳",
                 key="time_tool_timestamp_input",
-                placeholder="支持秒级或毫秒级，建议使用 10 位或 13 位时间戳",
+                placeholder="支持秒级(10位)/毫秒级(13位)/微秒级(16位)",
             )
             unit_mode = st.selectbox("时间戳类型", ["自动识别", "秒", "毫秒"], key="time_tool_timestamp_mode")
             timezone_label = st.selectbox("展示时区", list(tz_options.keys()), key="time_tool_timestamp_tz")
             if primary_action_button("转换为日期时间", key="time_tool_convert_to_datetime"):
                 try:
                     result = _convert_timestamp_input(timestamp_text, unit_mode, tz_options[timezone_label])
+                    result["signature"] = _input_signature(
+                        timestamp_text, unit_mode, tz_options[timezone_label])
                     st.session_state["time_tool_timestamp_result"] = result
                     render_success_feedback("时间戳已经成功转换为日期时间。")
                 except Exception as exc:
@@ -225,7 +286,10 @@ def _render_timestamp_tab() -> None:
                     render_error_feedback(f"时间戳转换失败: {exc}")
 
             timestamp_result = st.session_state.get("time_tool_timestamp_result")
-            if timestamp_result:
+            if timestamp_result and timestamp_result.get("signature") != _input_signature(
+                    timestamp_text, unit_mode, tz_options[timezone_label]):
+                render_info_feedback("输入已变更，请重新点击“转换为日期时间”。", title="结果已过期")
+            elif timestamp_result:
                 target_dt = timestamp_result["datetime"]
                 st.code(
                     _format_lines(
@@ -233,8 +297,8 @@ def _render_timestamp_tab() -> None:
                             f"识别精度: {timestamp_result['precision']}",
                             f"时区: {timestamp_result['timezone']}",
                             f"日期时间: {target_dt.strftime('%Y-%m-%d %H:%M:%S %Z%z')}",
-                            f"ISO8601: {target_dt.isoformat()}",
                             f"星期: {_weekday_label(target_dt)}",
+                            f"ISO8601: {target_dt.isoformat()}",
                         ]
                     )
                 )
@@ -261,11 +325,15 @@ def _render_timestamp_tab() -> None:
                     "datetime": localized,
                     "timestamp_seconds": int(seconds),
                     "timestamp_milliseconds": int(seconds * 1000),
+                    "signature": _input_signature(selected_date, selected_time, tz_options[timezone_label]),
                 }
                 render_success_feedback("日期时间已经成功转换为时间戳。")
 
             datetime_result = st.session_state.get("time_tool_datetime_result")
-            if datetime_result:
+            if datetime_result and datetime_result.get("signature") != _input_signature(
+                    selected_date, selected_time, tz_options[timezone_label]):
+                render_info_feedback("输入已变更，请重新点击“转换为时间戳”。", title="结果已过期")
+            elif datetime_result:
                 localized = datetime_result["datetime"]
                 st.code(
                     _format_lines(
@@ -303,9 +371,15 @@ def _render_timestamp_tab() -> None:
             if primary_action_button("开始批量转换", key="time_tool_batch_convert"):
                 rows = DateTimeUtils.batch_convert_temporal_values(batch_text, tz_options[timezone_label])
                 st.session_state["time_tool_batch_result"] = rows
+                st.session_state["time_tool_batch_signature"] = _input_signature(
+                    batch_text, tz_options[timezone_label])
 
         batch_rows = st.session_state.get("time_tool_batch_result", [])
-        if batch_rows:
+        batch_signature = st.session_state.get("time_tool_batch_signature")
+        current_batch_signature = _input_signature(batch_text, tz_options[timezone_label])
+        if batch_rows and batch_signature != current_batch_signature:
+            render_info_feedback("输入已变更，请重新点击“开始批量转换”。", title="结果已过期")
+        elif batch_rows:
             success_count = sum(row["状态"] == "成功" for row in batch_rows)
             fail_count = len(batch_rows) - success_count
             metric_cols = st.columns(3)
@@ -319,11 +393,15 @@ def _render_timestamp_tab() -> None:
                 render_success_feedback("全部输入都已成功转换。", title="批量转换完成")
 
             result_df = pd.DataFrame(batch_rows)
+            for column in ("输入", "日期时间"):
+                if column in result_df.columns:
+                    result_df[column] = result_df[column].map(_safe_csv_cell)
             st.dataframe(result_df, use_container_width=True, hide_index=True)
+            stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             st.download_button(
                 "下载批量结果 CSV",
                 data=result_df.to_csv(index=False).encode("utf-8-sig"),
-                file_name="time_batch_result.csv",
+                file_name=f"time_batch_result_{stamp}.csv",
                 mime="text/csv",
                 use_container_width=True,
             )
@@ -334,16 +412,17 @@ def _render_timestamp_tab() -> None:
 def _render_unit_conversion_tab() -> None:
     st.markdown("### 时间单位换算")
 
+    units = get_time_units()
     value_col1, value_col2 = st.columns([1, 1])
     with value_col1:
         numeric_value = st.number_input("输入数值", min_value=0.0, value=1.0, key="time_tool_unit_value")
     with value_col2:
-        source_unit = st.selectbox("原始单位", list(TIME_UNIT_SECONDS.keys()), key="time_tool_source_unit")
+        source_unit = st.selectbox("原始单位", list(units.keys()), key="time_tool_source_unit")
 
-    base_seconds = float(numeric_value) * TIME_UNIT_SECONDS[source_unit]
+    base_seconds = float(numeric_value) * units[source_unit].seconds
     rows = []
-    for unit_name, seconds in TIME_UNIT_SECONDS.items():
-        rows.append({"单位": unit_name, "换算结果": round(base_seconds / seconds, 6)})
+    for unit_name, spec in units.items():
+        rows.append({"单位": unit_name, "换算结果": round(base_seconds / spec.seconds, 6)})
 
     metric_cols = st.columns(3)
     metric_cols[0].metric("折算秒数", round(base_seconds, 3))
@@ -351,7 +430,43 @@ def _render_unit_conversion_tab() -> None:
     metric_cols[2].metric("分钟数", round(base_seconds / 60, 3))
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-    st.caption("月和年按近似值换算，分别按 30 天和 365 天处理。")
+    approximate_notes = [name for name, spec in units.items() if spec.approximate]
+    if approximate_notes:
+        st.caption(f"{'、'.join(approximate_notes)}按近似值换算；跨月/跨年的精确计算请使用“日期计算”。")
+
+
+def _build_date_calculation_rows(start_date, holiday_country, *, offset_days,
+                                 offset_months, business_offset, birthday,
+                                 signed_diff_days) -> List[Dict[str, str]]:
+    """构建日期计算结果表；全部结果为字符串，避免 DataFrame 混合类型。"""
+    today = datetime.date.today()
+    safe_offset_months = _clamp_month_offset(offset_months)
+    safe_business_offset = _clamp_business_offset(business_offset)
+
+    def _safe_row(scene: str, func, *args):
+        try:
+            return {"场景": scene, "结果": str(func(*args))}
+        except Exception as exc:
+            return {"场景": scene, "结果": f"计算失败: {exc}"}
+
+    rows = [
+        _safe_row("开始日期 + 自然日", DateTimeUtils.add_days, start_date, int(offset_days)),
+        _safe_row("开始日期 - 自然日", DateTimeUtils.subtract_days, start_date, int(offset_days)),
+        _safe_row("开始日期 + 月数", DateTimeUtils.add_months, start_date, safe_offset_months),
+        _safe_row("开始日期 - 月数", DateTimeUtils.subtract_months, start_date, safe_offset_months),
+        _safe_row("开始日期 + 工作日偏移", DateTimeUtils.add_business_days, start_date, safe_business_offset, holiday_country),
+        _safe_row("当月第一天", DateTimeUtils.get_first_day_of_month, start_date),
+        _safe_row("当月最后一天", DateTimeUtils.get_last_day_of_month, start_date),
+        _safe_row("差值可读化", DateTimeUtils.format_duration, abs(signed_diff_days) * 86400),
+    ]
+    if birthday > today:
+        rows.append({"场景": "年龄", "结果": "出生日期晚于今天，无法计算年龄"})
+        rows.append({"场景": "生肖", "结果": "-"})
+    else:
+        rows.append(_safe_row("年龄", DateTimeUtils.get_age, birthday))
+        rows.append(_safe_row("生肖", DateTimeUtils.get_chinese_zodiac, birthday.year))
+    rows.append(_safe_row("星座", DateTimeUtils.get_constellation, birthday.month, birthday.day))
+    return rows
 
 
 def _render_date_calculator_tab() -> None:
@@ -378,8 +493,19 @@ def _render_date_calculator_tab() -> None:
         holiday_label = st.selectbox("工作日日历", list(country_options.keys()), key="time_tool_holiday_calendar")
 
     holiday_country = country_options[holiday_label]
-    summary = DateTimeUtils.summarize_date_range(start_date, end_date, country=holiday_country)
+    try:
+        summary = DateTimeUtils.summarize_date_range(start_date, end_date, country=holiday_country)
+    except Exception as exc:
+        render_error_feedback(f"区间统计失败: {exc}")
+        return
     st.session_state["time_tool_range_summary"] = summary
+
+    unsupported_years = summary.get("unsupported_holiday_years") or []
+    if unsupported_years:
+        render_warning_feedback(
+            f"节假日数据不覆盖 {min(unsupported_years)}–{max(unsupported_years)} 年，这些年份按无节假日统计。",
+            title="节假日数据缺口",
+        )
 
     if summary["signed_diff_days"] < 0:
         render_warning_feedback("结束日期早于开始日期。差值按负数展示，但区间统计会按排序后的日期范围计算。", title="日期顺序提示")
@@ -413,25 +539,25 @@ def _render_date_calculator_tab() -> None:
             key="time_tool_offset_months",
         )
     with offset_col3:
-        business_offset = st.number_input("工作日偏移", value=3, step=1, key="time_tool_business_offset")
+        business_offset = st.number_input(
+            "工作日偏移",
+            value=3,
+            step=1,
+            min_value=-MAX_BUSINESS_DAY_OFFSET,
+            max_value=MAX_BUSINESS_DAY_OFFSET,
+            key="time_tool_business_offset",
+        )
     with offset_col4:
         birthday = st.date_input("生日 / 出生日期", key="time_tool_birthday")
 
-    business_offset_date = DateTimeUtils.add_business_days(start_date, int(business_offset), country=holiday_country)
     safe_offset_months = _clamp_month_offset(offset_months)
-    result_rows = [
-        {"场景": "开始日期 + 自然日", "结果": DateTimeUtils.add_days(start_date, int(offset_days)).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 - 自然日", "结果": DateTimeUtils.subtract_days(start_date, int(offset_days)).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 + 月数", "结果": DateTimeUtils.add_months(start_date, safe_offset_months).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 - 月数", "结果": DateTimeUtils.subtract_months(start_date, safe_offset_months).strftime("%Y-%m-%d")},
-        {"场景": "开始日期 + 工作日偏移", "结果": business_offset_date.strftime("%Y-%m-%d")},
-        {"场景": "当月第一天", "结果": DateTimeUtils.get_first_day_of_month(start_date).strftime("%Y-%m-%d")},
-        {"场景": "当月最后一天", "结果": DateTimeUtils.get_last_day_of_month(start_date).strftime("%Y-%m-%d")},
-        {"场景": "差值可读化", "结果": DateTimeUtils.format_duration(abs(summary["signed_diff_days"]) * 86400)},
-        {"场景": "年龄", "结果": DateTimeUtils.get_age(birthday)},
-        {"场景": "生肖", "结果": DateTimeUtils.get_chinese_zodiac(birthday.year)},
-        {"场景": "星座", "结果": DateTimeUtils.get_constellation(birthday.month, birthday.day)},
-    ]
+    safe_business_offset = _clamp_business_offset(business_offset)
+    result_rows = _build_date_calculation_rows(
+        start_date, holiday_country,
+        offset_days=offset_days, offset_months=offset_months,
+        business_offset=business_offset, birthday=birthday,
+        signed_diff_days=summary["signed_diff_days"],
+    )
     st.dataframe(pd.DataFrame(result_rows), use_container_width=True, hide_index=True)
 
 
@@ -442,16 +568,23 @@ def _render_advanced_tab() -> None:
         start_date = st.date_input("SLA 开始日期", key="time_tool_sla_date")
         start_time = st.time_input("SLA 开始时间", key="time_tool_sla_time")
         sla_hours = st.number_input("SLA 时长(小时)", min_value=0.0, value=24.0, key="time_tool_sla_hours")
-        work_col1, work_col2 = st.columns(2)
+        work_col1, work_col2, work_col3 = st.columns(3)
         with work_col1:
             work_start = st.number_input("工作开始小时", min_value=0, max_value=23, value=9, key="time_tool_work_start")
         with work_col2:
             work_end = st.number_input("工作结束小时", min_value=1, max_value=24, value=18, key="time_tool_work_end")
+        with work_col3:
+            country_options = {"仅周末": None, **DateTimeUtils.get_supported_holiday_countries()}
+            sla_calendar_label = st.selectbox(
+                "节假日日历（含自定义调休表）", list(country_options.keys()), key="time_tool_sla_calendar")
+        sla_country = country_options[sla_calendar_label]
 
         try:
             start_dt = datetime.datetime.combine(start_date, start_time)
-            due_dt = DateTimeUtils.calculate_sla_due_date(start_dt, sla_hours, int(work_start), int(work_end))
-            business_hours = DateTimeUtils.calculate_business_hours_diff(start_dt, due_dt, (int(work_start), int(work_end)))
+            due_dt = DateTimeUtils.calculate_sla_due_date(
+                start_dt, sla_hours, int(work_start), int(work_end), country=sla_country)
+            business_hours = DateTimeUtils.calculate_business_hours_diff(
+                start_dt, due_dt, (int(work_start), int(work_end)), country=sla_country)
 
             metric_cols = st.columns(3)
             metric_cols[0].metric("工作时长", f"{business_hours:.2f} 小时")
@@ -462,8 +595,9 @@ def _render_advanced_tab() -> None:
                 _format_lines(
                     [
                         f"SLA 开始时间: {start_dt.strftime('%Y-%m-%d %H:%M:%S')}",
-                        f"SLA 到期时间: {due_dt.strftime('%Y-%m-%d %H:%M:%S')}",
+                        f"SLA 到期时间: {due_dt.strftime('%Y-%m-%d %H:%M:%S')} ({_weekday_label(due_dt)})",
                         f"工作时间差(小时): {business_hours:.2f}",
+                        f"节假日日历: {sla_calendar_label}",
                     ]
                 )
             )
@@ -471,35 +605,47 @@ def _render_advanced_tab() -> None:
             render_error_feedback(f"SLA 计算失败: {exc}")
 
     with cron_tab:
+        presets = get_cron_presets()
         preset_col, action_col = st.columns([2, 1])
         with preset_col:
-            selected_preset = st.selectbox("常用模板", list(CRON_PRESETS.keys()), key="time_tool_cron_preset")
+            selected_preset = st.selectbox("常用模板", list(presets.keys()), key="time_tool_cron_preset")
         with action_col:
             if secondary_action_button("载入模板", key="time_tool_load_cron_preset"):
-                st.session_state["time_tool_cron_expression"] = CRON_PRESETS[selected_preset]
+                st.session_state["time_tool_cron_expression"] = presets[selected_preset]
 
         cron_expression = st.text_input("Cron 表达式", key="time_tool_cron_expression")
         cron_base_date = st.date_input("Cron 基准日期", key="time_tool_cron_base")
         cron_count = st.number_input("生成次数", min_value=1, max_value=20, value=5, key="time_tool_cron_count")
 
         if primary_action_button("生成执行计划", key="time_tool_generate_cron"):
-            st.session_state["time_tool_cron_result"] = DateTimeUtils.generate_cron_next_runs(
+            st.session_state["time_tool_cron_result"] = DateTimeUtils.generate_cron_runs(
                 cron_expression,
                 cron_base_date,
                 int(cron_count),
             )
+            st.session_state["time_tool_cron_signature"] = _input_signature(
+                cron_expression, cron_base_date, int(cron_count))
 
-        cron_result = st.session_state.get("time_tool_cron_result", [])
-        if cron_result:
-            if isinstance(cron_result[0], str):
-                render_error_feedback(str(cron_result[0]), title="Cron 解析失败")
+        cron_result = st.session_state.get("time_tool_cron_result")
+        cron_signature = st.session_state.get("time_tool_cron_signature")
+        if cron_result and cron_signature != _input_signature(
+                cron_expression, cron_base_date, int(cron_count)):
+            render_info_feedback("输入已变更，请重新点击“生成执行计划”。", title="结果已过期")
+        elif cron_result:
+            if not cron_result["ok"]:
+                render_error_feedback(cron_result["error"], title="Cron 解析失败")
             else:
                 render_success_feedback("Cron 表达式已解析完成。")
+                runs = cron_result["runs"]
                 st.dataframe(
-                    pd.DataFrame({"下一次执行时间": [str(item) for item in cron_result]}),
+                    pd.DataFrame({
+                        "下一次执行时间": [item.strftime("%Y-%m-%d %H:%M:%S") for item in runs],
+                        "星期": [DateTimeUtils.weekday_name(item) for item in runs],
+                    }),
                     use_container_width=True,
                     hide_index=True,
                 )
+                st.caption("执行计划: " + " → ".join(item.strftime("%m-%d %H:%M") for item in runs))
         else:
             render_info_feedback("可直接用模板验证工作日任务、定时轮询和每日批处理的下次触发时间。")
 
@@ -530,13 +676,17 @@ def _render_advanced_tab() -> None:
                     "max": round(max(parsed_response_times), 3),
                     "avg": round(sum(parsed_response_times) / len(parsed_response_times), 3),
                     "percentiles": percentiles,
+                    "signature": _input_signature(duration, rps, response_times_text),
                 }
             except Exception as exc:
                 st.session_state["time_tool_perf_result"] = None
                 render_error_feedback(f"性能分析失败: {exc}")
 
         perf_result = st.session_state.get("time_tool_perf_result")
-        if perf_result:
+        if perf_result and perf_result.get("signature") != _input_signature(
+                duration, rps, response_times_text):
+            render_info_feedback("输入已变更，请重新点击“分析性能时间”。", title="结果已过期")
+        elif perf_result:
             percentiles = perf_result["percentiles"]
             metric_cols = st.columns(5)
             metric_cols[0].metric("计划请求数", len(perf_result["timestamps"]))
@@ -557,7 +707,23 @@ def _render_advanced_tab() -> None:
             render_info_feedback("输入压测持续时间、RPS 和响应时间列表后，可以快速估算计划请求点并查看 P95/P99。")
 
     with tz_tab:
-        tz_options = DateTimeUtils.get_timezones()
+        tz_options = _timezone_options_with_custom()
+        invalid_custom = str(st.session_state.get("time_tool_custom_tz") or "").strip()
+        if invalid_custom and not any(invalid_custom in key or key == f"自定义: {invalid_custom}" for key in tz_options):
+            render_warning_feedback(
+                f"自定义时区“{invalid_custom}”无法识别，请使用 IANA 名称（如 Asia/Ho_Chi_Minh）。",
+                title="自定义时区未生效",
+            )
+        custom_col, note_col = st.columns(2)
+        with custom_col:
+            st.text_input(
+                "自定义时区（IANA 名称，可选）",
+                key="time_tool_custom_tz",
+                placeholder="例如 Asia/Ho_Chi_Minh，留空使用常用列表",
+            )
+        with note_col:
+            st.caption("常用列表之外，可直接输入 IANA 时区名；会在下方对照表中以“自定义: …”出现。")
+
         from_col, to_col = st.columns(2)
         with from_col:
             source_tz = st.selectbox("源时区", list(tz_options.keys()), key="time_tool_from_tz")
@@ -566,18 +732,33 @@ def _render_advanced_tab() -> None:
         source_date = st.date_input("源日期", key="time_tool_tz_date")
         source_time = st.time_input("源时间", key="time_tool_tz_time")
         source_dt = datetime.datetime.combine(source_date, source_time)
-        converted = DateTimeUtils.get_timezone_conversion(source_dt, tz_options[source_tz], tz_options[target_tz])
+        try:
+            converted = DateTimeUtils.get_timezone_conversion(
+                source_dt, tz_options[source_tz], tz_options[target_tz])
+        except ValueError as exc:
+            render_error_feedback(f"时区转换失败: {exc}")
+            return
 
         comparison_labels = []
-        for label in [source_tz, target_tz, "UTC", "北京", "东京", "纽约", "伦敦"]:
+        custom_label = f"自定义: {str(st.session_state.get('time_tool_custom_tz') or '').strip()}"
+        candidates = [source_tz, target_tz]
+        if custom_label in tz_options:
+            candidates.append(custom_label)
+        candidates += [spec.label for spec in get_comparison_columns()]
+        for label in candidates:
             if label in tz_options and label not in comparison_labels:
                 comparison_labels.append(label)
 
-        snapshot_rows = DateTimeUtils.get_multi_timezone_snapshot(
-            source_dt,
-            [tz_options[label] for label in comparison_labels],
-            source_timezone_name=tz_options[source_tz],
-        )
+        try:
+            snapshot_rows = DateTimeUtils.get_multi_timezone_snapshot(
+                source_dt,
+                [tz_options[label] for label in comparison_labels],
+                source_timezone_name=tz_options[source_tz],
+            )
+        except ValueError as exc:
+            render_error_feedback(f"多时区对照失败: {exc}")
+            return
+
         timezone_label_map = {value: key for key, value in tz_options.items()}
         rendered_rows = [
             {
@@ -595,11 +776,12 @@ def _render_advanced_tab() -> None:
             _format_lines(
                 [
                     f"源时间: {source_dt.strftime('%Y-%m-%d %H:%M:%S')} ({tz_options[source_tz]})",
-                    f"转换结果: {converted.strftime('%Y-%m-%d %H:%M:%S %Z%z')}",
+                    f"转换结果: {converted.strftime('%Y-%m-%d %H:%M:%S %Z%z')} ({_weekday_label(converted)})",
                 ]
             )
         )
         st.dataframe(pd.DataFrame(rendered_rows), use_container_width=True, hide_index=True)
+        st.caption(f"对照时区: {'、'.join(row['时区'] for row in rendered_rows)}")
 
 
 def render_time_processor_page() -> None:
@@ -612,11 +794,12 @@ def render_time_processor_page() -> None:
         tags=["时间戳", "日期计算", "工作日", "SLA", "Cron", "时区转换"],
         accent="#0f766e",
     )
+    summary = get_registry_summary()
     render_tool_tips(
         "推荐路径",
         [
             "接口联调用“时间戳转换”，单条看精确结果，批量页统一清洗日志时间。",
-            "排查工单和测试计划时，优先在“日期计算”里看工作日、周末和节假日拆解。",
+            "排查工单和测试计划时，优先在“日期计算”里看工作日、周末和节假日拆解；中国调休可通过注册中心配置覆盖表。",
             "定时任务排查先载入 Cron 模板，再看“时区转换”里的多时区对照表。",
         ],
     )
