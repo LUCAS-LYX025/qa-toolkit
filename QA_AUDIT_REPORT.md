@@ -354,3 +354,39 @@
 - 全量 pytest：331 passed
 - e2e（新增 `07-regex-tester.e2e.ts`，入口 / 示例运行 / JSON 导出 / 代码生成 / 示例反推 / 字段提取）：4/4 passed，全套 28/28 passed
 - GitHub：issues #189-#207 全部关闭，仓库 open issues = 0
+
+---
+
+## 加密/解密工具专项审计（2026-11-25，Issues #209-#227）
+
+以测试专家（正确性 / 边界 / 安全 / 健壮性）+ 产品工程师（易用性 / **拓展性**，不局限于当前业务）双视角专项审计，实测确认 19 项问题并全部修复。PR #228 已合并，`fix/crypto-audit` → `master`，合并提交 `f91a5be`。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| Base64 空白与 URL-safe（#209/#210） | 标准 Base64 按每 8 字符换行后即报 `Non-base64 digit found`；`-__-LXRlc3Q=` 无法解码，JWT / query 参数场景不可用 |
+| URL 加号与 Unicode（#211/#212） | `q=hello+world` 解码后仍是 `+`；“Unicode 解码”直接输入 `中文原文` 静默产出 `ä¸­æ–‡åŽŸæ–‡` 且显示成功 |
+| 十六进制二进制（#213） | `bytes(range(0x80,0xa0)).hex()` 解码抛 `UnicodeDecodeError`；`hex_encode(bytes)` 变成字符串表示再编码，结果错误 |
+| 编码固定 UTF-8（#214） | GBK 编码的 Base64 解码即报错；摘要只能算 UTF-8 字节哈希，无法复现老系统签名 |
+| PBKDF2 无上限（#215） | `iterations=10**9` 超过 2 秒仍未返回，页面脚本线程被占用；页面控件仅设 `min_value=1` |
+| 结果误导（#217/#218） | 编码 `hello` 得 `aGVsbG8=` 后把输入改成 `world`，页面仍显示旧值；输出面板在所有 Tab 之外，切到对称加解密仍看到编码结果；空输出完全不显示 |
+| RSA 限制与覆盖（#219/#220） | 2048 位密钥加密 300 字节只报 `Encryption failed`；手工填入团队测试密钥后再点生成，被新密钥静默覆盖，且分享屏幕时私钥长期明文可见 |
+| 默认 ECB（#221） | 页面默认模式实测为 ECB，相同明文块产生相同密文块，DES / 3DES 无弃用提示 |
+| 扩展点（#224） | 编码器 / 摘要 / 对称算法清单散落在 4+ 处，新增 Base32 / SM4 / AES-GCM 要同时改核心函数与页面 selectbox；其他专项均已有注册表，唯独本工具全硬编码 |
+
+### 修复方案要点
+
+- **编码正确性**：Base64 解码统一清洗空白并自动兼容 URL-safe 字符集，新增“Base64 (URL-safe)”选项；URL 解码默认把 `+` 还原为空格；十六进制提供“文本 / Base64 / Hex”三种输出，`hex_encode` 直接接受 bytes；Unicode 解码遇到非转义输入明确报错并引导使用编码功能。
+- **安全与稳定性**：PBKDF2 迭代次数上限 1000 万、导出长度上限 1024 字节；RSA 按公钥位数计算 OAEP-SHA256 明文上限并在超限前给出中文提示，密钥长度限定 2048–8192 位；重新生成 RSA 密钥必须先勾选覆盖确认；默认模式改为 CBC，ECB / DES / 3DES / MD5 / SHA1 全部带风险提示；私钥默认掩码显示，公钥 / 私钥可分别下载。
+- **结果可信度**：每条结果与工具、算法、输入、参数组成的签名绑定，输入一变即提示“结果已过期”并隐藏旧结果；输出面板移入各自 Tab 内，跨 Tab 不再复用；空输出显示明确提示；解密失败按 Base64 / Padding / IV / 密钥长度分类给出可操作诊断。
+- **易用性**：编码、摘要、HMAC 增加 UTF-8 / GBK / GB18030 / UTF-16LE 字符编码选择；PBKDF2 盐值支持 text / hex / base64 并在结果标签回显全部参数；对称加解密实时显示密钥 / IV 长度是否合法并支持一键生成随机材料；导出文件名带来源与算法，避免同名覆盖。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/crypto_registry.py`，把**编码器、摘要算法、对称算法、加密模式、字符编码**做成可注册扩展点（`register_encoder` / `register_hash` / `register_symmetric_algorithm` / `register_symmetric_mode` / `register_text_encoding`）。页面选项与核心算法清单均从注册表读取，新增国密 SM4 或 AES-GCM 只需注册，不再改页面 if-else。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_crypto.py`：18 passed（逐条对应 issue）
+- 原加密工具测试：5 passed
+- 全量 pytest：349 passed
+- e2e（新增 `08-crypto-tools.e2e.ts`，入口 / 结果过期 / MD5 / CBC / RSA 上限）：4/4 passed，全套 32/32 passed
+- GitHub：issues #209-#227 全部关闭，仓库 open issues = 0
