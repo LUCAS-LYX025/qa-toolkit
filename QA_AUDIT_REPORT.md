@@ -247,3 +247,39 @@
 - 全量 pytest：272 passed
 - e2e（新增 `04-bi-analysis.e2e.ts`，含分号 CSV 上传、特殊字符交互、导出数据源）：4/4 passed
 - GitHub：issues #134-#151 全部关闭，仓库 open issues = 0 / closed = 148
+
+---
+
+## 文本对比工具专项审计（2026-11-25，Issues #153-#168）
+
+以测试专家（功能正确性 / 边界 / 健壮性 / 安全）+ 产品工程师（易用性 / **拓展性**，不局限于当前业务）双视角专项审计，实测确认 16 项问题并全部修复。PR #169 已合并，`fix/tc-audit` → `master`，合并提交 `8838d0c`。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 尾随换行误报（#153） | `compare_texts("alpha\nbeta\n", "alpha\nbeta")` → `changed=True`，凭空多出一条「删除」空行 |
+| autojunk 误报（#154） | 300 行重复日志改 1 行 → 报告 150 行「修改」、行相似度 0.5，差异定位完全失真 |
+| 中文词级高亮失效（#158） | `创建订单成功` vs `创建支付订单成功` → 整句 delete + insert，token 相似度 0.0 |
+| Markdown 报告注入（#159） | 来源名 `[假来源](http://evil.com)`、正文 `[click](javascript:alert(1))` 原样写入报告；diff 中的 ``` 提前闭合围栏 |
+| CSV 导出风险（#160） | 差异 CSV 无 BOM（Excel 中文乱码），`=HYPERLINK(...)` / `+SUM(...)` 原样保留 |
+| 忽略空行行号失真（#155） | `"A\n\nX\nB"` vs `"A\nB"` 开启忽略空行后，删除行号显示为 2（源文件实际为 3） |
+| Unicode 换行（#156） | `split_lines("a\u2028b\u2029c")` → 1 行，画像与差异定位错位 |
+| 大小写折叠（#157） | 忽略大小写下 `Straße` vs `STRASSE` 仍判为不同 |
+| 报告截断（#161） | 60 条差异只导出 50 条，无任何提示 |
+| 相似度呈现（#162） | 0.9999 显示成「100.0%」却同时提示有差异；两侧全空也显示 100% |
+
+### 修复方案要点
+
+- **正确性**：`split_lines` 去掉仅由末尾换行产生的空行；所有 `SequenceMatcher` 走注册式 matcher，默认 `autojunk=False`，超 5000 项降级并在结果中标注 `matching_mode`；规范化阶段保留原始行号映射，差异行号始终指回源文件；统一 U+2028/U+2029/NEL 换行；`lower()` 改 `casefold()`。
+- **中文体验**：默认分词器改为「中文单字 + 英文单词 + 符号/空白」，插入一个词只高亮该词，词相似度从 0.0 提升到 0.857。
+- **安全与导出**：新增 `_markdown_text()` 全量转义来源名、状态、差异正文，diff 围栏内的 ``` 转义；`safe_csv_bytes()` 统一加 UTF-8 BOM 并把 `= + - @` 前缀降级为文本；报告声明「仅展示前 50 条，共 N 条」；无差异时 diff 导出为 `# 两侧文本无差异`；新增 TXT 摘要导出且所有格式由注册表生成按钮。
+- **易用性**：明确区分「两侧为空 / 单侧输入 / 完全一致」；`format_similarity()` 避免 99.99% 显示成 100.0%；长行截断并显示数量提示、新增并排对照视图、首个差异跳转锚点、过滤结果计数；移除已弃用的 `use_container_width`。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/text_comparison_registry.py`，把**规范化规则、分词器、序列匹配算法、导出格式**做成可注册扩展点（`register_normalizer` / `register_tokenizer` / `register_matcher` / `register_exporter`），并内置忽略标点、忽略所有空白两条可选规则。新增业务规则或输出格式只需注册，不再改 `text_comparison.py` 的 if/elif 或页面里的按钮列表。
+
+### 专项验证
+
+- 专项回归 `tests/test_audit_tc.py`：16 passed（逐条对应 issue）
+- 全量 pytest：288 passed
+- e2e（新增 `05-text-comparison.e2e.ts`，空态 / 示例 / 扩展规则 / 动态导出）：4/4 passed
+- GitHub：issues #153-#168 全部关闭，open issues = 0
