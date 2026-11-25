@@ -15,6 +15,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List
 
+from qa_toolkit.core.text_analysis_registry import (
+    character_classes,
+    configure_settings,
+    configure_stopwords,
+    get_tokenizer,
+    settings,
+    stopwords,
+)
+
 
 DEFAULT_SAMPLE_TEXT = """这是一个示例文本，用于展示升级后的字数统计工具。
 
@@ -29,41 +38,29 @@ DEFAULT_SAMPLE_TEXT = """这是一个示例文本，用于展示升级后的字�
 """
 
 TEXT_UPLOAD_TYPES = ["txt", "md", "json", "csv", "log", "yaml", "yml", "doc", "docx"]
-LATIN_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*")
-READING_UNIT_RE = re.compile(r"[\u4e00-\u9fff]|[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*")
-KEYWORD_TOKEN_RE = re.compile(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9]+(?:['’_-][A-Za-z0-9]+)*")
+# 保留旧常量名以兼容外部引用，词提取统一走注册表中的 Unicode 分词器。
+LATIN_WORD_RE = re.compile(r"[^\W_]+(?:['’_-][^\W_]+)*", re.UNICODE)
+READING_UNIT_RE = re.compile(r"[^\W_]+(?:['’_-][^\W_]+)*", re.UNICODE)
+KEYWORD_TOKEN_RE = re.compile(r"[^\W_]+(?:['’_-][^\W_]+)*", re.UNICODE)
 SENTENCE_RE = re.compile(r"[^.!?。！？；;\n]+(?:[.!?。！？；;]+|$)")
 WORD_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
-STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "by",
-    "for",
-    "from",
-    "in",
-    "is",
-    "it",
-    "of",
-    "on",
-    "or",
-    "that",
-    "the",
-    "this",
-    "to",
-    "with",
-}
+# 兼容旧引用：实际停用词表由 text_analysis_registry.stopwords() 提供（含中文虚词、可扩展）。
+STOPWORDS = stopwords()
+
+INVISIBLE_CHARS = ("\u200b", "\u200c", "\u200d", "\ufeff", "\u2060", "\u00ad")
 
 
 def normalize_line_endings(text: str) -> str:
     normalized = (text or "").replace("\r\n", "\n").replace("\r", "\n")
     # 网页输入框、Mac 应用和部分日志系统会写入 Unicode 行分隔符，不统一会让行数与差异定位错位。
     return normalized.replace("\u2028", "\n").replace("\u2029", "\n").replace("\x85", "\n")
+
+
+def normalize_unicode(text: str) -> str:
+    """按注册配置做 Unicode 归一化（默认 NFC），让分解/组合形式的同一字符统计一致。"""
+    form = settings().get("unicode_normalization", "NFC")
+    return text if form == "none" else unicodedata.normalize(form, text or "")
 
 
 def _decode_plaintext_bytes(raw_bytes: bytes) -> str:
@@ -237,26 +234,43 @@ def split_sentences(text: str) -> List[str]:
 
 
 def _extract_latin_words(text: str) -> List[str]:
-    return LATIN_WORD_RE.findall(text or "")
+    """Unicode 拉丁词：走注册表 latin 分词器，支持重音字母（café/ÄPFEL）。"""
+    return get_tokenizer("latin")(normalize_unicode(text or ""))
 
 
 def _extract_reading_units(text: str) -> List[str]:
-    return READING_UNIT_RE.findall(text or "")
+    """阅读单元 = 每个表意文字 + 每个拉丁词，供阅读时长估算。"""
+    from qa_toolkit.core.text_analysis_registry import _is_cjk_ideograph, _is_emoji
+    normalized = normalize_unicode(text or "")
+    units: List[str] = []
+    for word in get_tokenizer("latin")(normalized):
+        units.append(word)
+    # 表意文字逐个计入（含扩展区），emoji 不计入阅读时长。
+    for char in normalized:
+        if _is_cjk_ideograph(char) and not _is_emoji(char):
+            units.append(char)
+    return units
 
 
-def _extract_keyword_tokens(text: str, *, ignore_case: bool = True, min_length: int = 2) -> List[str]:
+def _extract_keyword_tokens(text: str, *, ignore_case: bool = True, min_length: int | None = None) -> List[str]:
+    """关键词 token：拉丁词走 Unicode 分词器，中文连续块走 cjk_block 分词器。"""
+    if min_length is None:
+        min_length = settings().get("min_keyword_length", 2)
+    normalized = normalize_unicode(text or "")
+    stop = stopwords()
     tokens: List[str] = []
-    for raw_token in KEYWORD_TOKEN_RE.findall(text or ""):
-        token = raw_token.lower() if ignore_case and raw_token.isascii() else raw_token
-        if token.isascii():
-            normalized_token = token.strip(string.punctuation + "_-")
-            if len(normalized_token) < min_length or normalized_token in STOPWORDS:
-                continue
-            tokens.append(normalized_token)
-            continue
 
-        if len(token) >= min_length:
-            tokens.append(token)
+    latin_tokens = get_tokenizer("latin")(normalized)
+    for raw_token in latin_tokens:
+        token = raw_token.casefold() if ignore_case else raw_token
+        normalized_token = token.strip(string.punctuation + "_-")
+        if len(normalized_token) < min_length or normalized_token.casefold() in stop:
+            continue
+        tokens.append(normalized_token)
+
+    for raw_token in get_tokenizer("cjk_block")(normalized):
+        if len(raw_token) >= min_length and raw_token not in stop:
+            tokens.append(raw_token)
     return tokens
 
 
@@ -313,6 +327,18 @@ def _build_suggestions(analysis: Dict[str, Any]) -> List[Dict[str, str]]:
             }
         )
 
+    if diagnostics.get("invisible_chars", 0) > 0:
+        suggestions.append(
+            {
+                "level": "warning",
+                "title": "存在不可见字符",
+                "message": (
+                    f"检测到 {diagnostics['invisible_chars']} 个零宽字符或 BOM，"
+                    "它们计入字符数但界面不可见，建议清理后再统计。"
+                ),
+            }
+        )
+
     if diagnostics["repeated_line_count"] > 0:
         suggestions.append(
             {
@@ -343,6 +369,23 @@ def _build_suggestions(analysis: Dict[str, Any]) -> List[Dict[str, str]]:
     return suggestions
 
 
+def _build_char_types(
+    class_counts: Dict[str, int],
+    *,
+    whitespace_chars: int,
+    total_chars: int,
+    classified_total: int,
+) -> Dict[str, int]:
+    """把注册分类映射成导出结构：保留历史字段名，并纳入所有自定义分类。"""
+    result = dict(class_counts)
+    # 历史兼容字段：cjk_chars -> chinese_chars，invisible -> invisible_chars。
+    result["chinese_chars"] = class_counts.get("cjk_chars", 0)
+    result["invisible_chars"] = class_counts.get("invisible", 0)
+    result["whitespace_chars"] = whitespace_chars
+    result["other_chars"] = total_chars - classified_total
+    return result
+
+
 def analyze_text(
     text: str,
     *,
@@ -351,7 +394,7 @@ def analyze_text(
     char_top_n: int = 15,
     repeated_keyword_threshold: int = 2,
 ) -> Dict[str, Any]:
-    normalized_text = normalize_line_endings(text)
+    normalized_text = normalize_unicode(normalize_line_endings(text))
     lines = normalized_text.split("\n") if normalized_text else []
     non_empty_lines = [line for line in lines if line.strip()]
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", normalized_text.strip()) if part.strip()] if normalized_text.strip() else []
@@ -363,10 +406,12 @@ def analyze_text(
 
     char_frequency = Counter(normalized_text)
     keyword_frequency = Counter(keyword_tokens)
-    repeated_keywords = sorted(
-        [(token, count) for token, count in keyword_frequency.items() if count >= repeated_keyword_threshold],
-        key=lambda item: (-item[1], item[0]),
-    )
+    # 与 top_keywords 的 most_common 保持一致的排序口径（先按频次，再按首次出现）。
+    repeated_keywords = [
+        (token, count)
+        for token, count in keyword_frequency.most_common()
+        if count >= repeated_keyword_threshold
+    ]
 
     repeated_lines_counter = Counter(line.strip() for line in non_empty_lines if line.strip())
     repeated_lines = [
@@ -377,22 +422,33 @@ def analyze_text(
 
     sentence_lengths = [len(_extract_reading_units(sentence)) for sentence in sentences]
     paragraph_lengths = [len(_extract_reading_units(paragraph)) for paragraph in paragraphs]
+    long_line_threshold = settings().get("long_line_threshold", 40)
     long_lines = sorted(
         [
             {"line_number": index + 1, "length": len(line), "text": line}
             for index, line in enumerate(lines)
-            if len(line.strip()) >= 40
+            if len(line.strip()) >= long_line_threshold
         ],
         key=lambda item: (-item["length"], item["line_number"]),
     )[:10]
 
-    chinese_chars = sum(1 for char in normalized_text if "\u4e00" <= char <= "\u9fff")
-    latin_letters = sum(1 for char in normalized_text if char.isalpha() and not ("\u4e00" <= char <= "\u9fff"))
-    digits = sum(1 for char in normalized_text if char.isdigit())
-    punctuation = sum(1 for char in normalized_text if unicodedata.category(char).startswith("P"))
-    spaces = normalized_text.count(" ")
-    tabs = normalized_text.count("\t")
-    newlines = normalized_text.count("\n")
+    # 字符分类统一走注册表，保证每类可解释、可注册扩展，且分类数之和 = 总字符数。
+    active_classes = character_classes()
+    class_counts: Dict[str, int] = {spec.name: 0 for spec in active_classes}
+    for char in normalized_text:
+        for spec in active_classes:
+            if spec.predicate(char):
+                class_counts[spec.name] += 1
+                break
+    chinese_chars = class_counts.get("cjk_chars", 0)
+    latin_letters = class_counts.get("latin_letters", 0)
+    digits = class_counts.get("digits", 0)
+    punctuation = class_counts.get("punctuation", 0)
+    spaces = class_counts.get("spaces", 0)
+    tabs = class_counts.get("tabs", 0)
+    newlines = class_counts.get("newlines", 0)
+    invisible_count = class_counts.get("invisible", 0)
+    emoji_count = class_counts.get("emoji", 0)
     whitespace_chars = sum(1 for char in normalized_text if char.isspace())
     blank_lines = sum(1 for line in lines if not line.strip())
     lines_with_leading_spaces = sum(1 for line in lines if line.startswith((" ", "\t")) and line.strip())
@@ -403,12 +459,16 @@ def analyze_text(
     total_words = len(whitespace_words)
     total_sentences = len(sentences)
     total_paragraphs = len(paragraphs)
+    # 不含空格：剔除所有可见空白（含全角空格/NBSP），保持与 spaces 分类一致。
+    total_chars_no_spaces = total_chars - spaces
+    classified_total = sum(class_counts.values())
 
     avg_word_length = sum(len(word) for word in whitespace_words) / total_words if total_words else 0.0
     avg_sentence_length = sum(sentence_lengths) / total_sentences if total_sentences else 0.0
     avg_paragraph_length = sum(paragraph_lengths) / total_paragraphs if total_paragraphs else 0.0
     lexical_diversity = len(set(keyword_tokens)) / len(keyword_tokens) if keyword_tokens else 0.0
-    reading_time_minutes = len(reading_units) / 220 if reading_units else 0.0
+    reading_speed = settings().get("reading_speed_per_minute", 220)
+    reading_time_minutes = len(reading_units) / reading_speed if reading_units else 0.0
 
     analysis = {
         "normalized_text": normalized_text,
@@ -416,8 +476,8 @@ def analyze_text(
         "paragraphs": paragraphs,
         "basic": {
             "total_chars": total_chars,
-            "total_chars_no_spaces": len(normalized_text.replace(" ", "")),
-            "total_chars_no_whitespace": len(re.sub(r"\s+", "", normalized_text)),
+            "total_chars_no_spaces": total_chars_no_spaces,
+            "total_chars_no_whitespace": len(re.sub(r"\s+", "", normalized_text)) - invisible_count,
             "total_words": total_words,
             "reading_units": len(reading_units),
             "latin_words": len(latin_words),
@@ -426,17 +486,12 @@ def analyze_text(
             "total_sentences": total_sentences,
             "total_paragraphs": total_paragraphs,
         },
-        "char_types": {
-            "latin_letters": latin_letters,
-            "digits": digits,
-            "punctuation": punctuation,
-            "spaces": spaces,
-            "tabs": tabs,
-            "newlines": newlines,
-            "whitespace_chars": whitespace_chars,
-            "chinese_chars": chinese_chars,
-            "other_chars": total_chars - (latin_letters + digits + punctuation + spaces + tabs + newlines + chinese_chars),
-        },
+        "char_types": _build_char_types(
+            class_counts,
+            whitespace_chars=whitespace_chars,
+            total_chars=total_chars,
+            classified_total=classified_total,
+        ),
         "quality": {
             "avg_word_length": avg_word_length,
             "avg_sentence_length": avg_sentence_length,
@@ -454,6 +509,7 @@ def analyze_text(
             "double_space_runs": double_space_runs,
             "repeated_line_count": len(repeated_lines),
             "long_line_count": len(long_lines),
+            "invisible_chars": invisible_count,
         },
         "frequencies": {
             "top_characters": char_frequency.most_common(char_top_n),
@@ -518,6 +574,14 @@ def export_rows(payload: Dict[str, Any]) -> List[Dict[str, Any]]:
     return rows
 
 
+def sanitize_report_text(value: Any) -> str:
+    """把动态文本压成单行，防止来源/关键词中的换行与制表符伪造报告结构。"""
+    text = str(value if value is not None else "")
+    for char in ("\r\n", "\r", "\n", "\t", "\u2028", "\u2029", "\x85", "\u200b", "\ufeff"):
+        text = text.replace(char, " ")
+    return " ".join(text.split())
+
+
 def build_text_report(
     payload: Dict[str, Any],
     *,
@@ -525,19 +589,20 @@ def build_text_report(
 ) -> str:
     report_time = (generated_at or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
     preprocess_info = payload.get("preprocess", {})
-    preprocess_lines = preprocess_info.get("changes") or ["未启用预处理"]
+    preprocess_lines = [sanitize_report_text(line) for line in (preprocess_info.get("changes") or ["未启用预处理"])]
     suggestion_lines = payload.get("suggestions") or [{"title": "无", "message": "未生成建议"}]
 
     top_keywords = payload.get("top_keywords", [])
     keyword_text = "\n".join(
-        f"- {item['keyword']}: {item['count']} 次"
+        f"- {sanitize_report_text(item['keyword'])}: {item['count']} 次"
         for item in top_keywords[:10]
     ) or "- 无"
+    source_label = sanitize_report_text(payload.get("source", "手动输入"))
 
     return (
         "文本统计报告\n"
         f"生成时间: {report_time}\n"
-        f"来源: {payload.get('source', '手动输入')}\n"
+        f"来源: {source_label}\n"
         "==============================\n\n"
         "基础统计:\n"
         f"- 字符数（含空格）: {payload['basic']['total_chars']}\n"
@@ -560,6 +625,9 @@ def build_text_report(
         + "\n\n关键词 Top10:\n"
         + keyword_text
         + "\n\n建议:\n"
-        + "\n".join(f"- {item['title']}: {item['message']}" for item in suggestion_lines)
+        + "\n".join(
+            f"- {sanitize_report_text(item['title'])}: {sanitize_report_text(item['message'])}"
+            for item in suggestion_lines
+        )
         + "\n"
     )
