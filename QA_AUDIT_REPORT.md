@@ -890,7 +890,7 @@
 
 ### 需求与定位
 
-新增界面多语言能力：手动切换简体中文 / 繁體中文 / English / 한국어，并按访问者 IP 归属国家自动定位语言（例：美国 → English）。与前面几轮「审计 → issue → PR」专项不同，本次是功能交付，但仍按**拓展性 + 易用性**两条线做设计与验收，未创建 issue / PR，改动在本地提交，仓库 open issues 保持 0。
+新增界面多语言能力：手动切换简体中文 / 繁體中文 / English / 한국어，并按访问者 IP 归属国家自动定位语言（例：美国 → English）。与前面几轮「审计 → issue → PR」专项不同，本次是功能交付，但仍按**拓展性 + 易用性**两条线做设计与验收；因不存在待修问题故未创建 issue，改动经 PR #462 合并入 master（merge commit `d41be8d`），仓库 open issues 保持 0。
 
 ### 设计要点
 
@@ -907,6 +907,7 @@
 - 手动切换交互：侧边栏选择 `en-US` / `zh-TW` / `ko-KR` 后，`session_state` 值、侧边栏标签、hero 文案与 `?lang=` 参数同步生效，证明手动选择优先级真实可用（非仅 URL 注入）。
 - 全量 pytest：**667 passed**（此前 652 + 本次 15），0 failed / 0 error。
 - e2e：全套 **70/70 passed**（19 个测试文件，4m8s），中文定位器未受 i18n 改造影响。
+- GitHub：分支 `feat/i18n-locale-switcher`（远端 commit `49c82e1`），PR **#462** 已合并（merge commit `d41be8d`）；本次为功能交付无对应 issue，open issues = 0。
 
 ### 顺带修复的基础设施问题
 
