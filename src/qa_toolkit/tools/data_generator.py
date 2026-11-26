@@ -6,7 +6,9 @@ from typing import Any, Dict, List, Optional, Union
 import streamlit as st
 
 from qa_toolkit.config.constants import PROVINCE_CITY_AREA_CODES, LOWERCASE, UPPERCASE, PROVINCE_MAP, COUNTRY_FORMATS, \
-    MOBILE_PREFIXES, UNICON_PREFIXES, TELECON_PREFIXES, BROADCAST_PREFIXES, OPERATOR_PREFIXES, PASSWORD_OPTIONS
+    MOBILE_PREFIXES, UNICON_PREFIXES, TELECON_PREFIXES, BROADCAST_PREFIXES, OPERATOR_PREFIXES, PASSWORD_OPTIONS, \
+    CATEGORIES
+from qa_toolkit.core import data_generator_registry as dg_reg
 
 
 COMMON_LAST_NAMES = ["王", "李", "张", "刘", "陈", "杨", "黄", "赵", "周", "吴"]
@@ -17,6 +19,55 @@ REGISTER_SOURCES = ["Web", "iOS", "Android", "小程序", "OpenAPI"]
 ADDRESS_LABELS = ["家庭", "公司", "学校", "临时地址"]
 PAY_STATUSES = ["待支付", "支付成功", "退款中", "已退款"]
 COMMON_PRODUCTS = ["会员服务", "企业套餐", "测试账号包", "数据看板", "自动化插件", "短信包"]
+
+_ID_FACTORS = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2]
+_ID_CHECK_CODES = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2']
+
+
+def _is_leap_year(year: int) -> bool:
+    return (year % 4 == 0 and year % 100 != 0) or year % 400 == 0
+
+
+def _id_card_check_code_ok(card: str) -> bool:
+    if len(card) != 18 or not card[:17].isdigit():
+        return False
+    total = sum(int(card[idx]) * _ID_FACTORS[idx] for idx in range(17))
+    return card[17].upper() == _ID_CHECK_CODES[total % 11]
+
+
+def _password_matches_options(value: str, options: List[str]) -> bool:
+    checks = {
+        "包含小写字母": any(char.islower() for char in value),
+        "包含大写字母": any(char.isupper() for char in value),
+        "包含数字": any(char.isdigit() for char in value),
+        "包含特殊字符": any(not char.isalnum() for char in value),
+    }
+    return all(checks[option] for option in options if option in checks)
+
+
+def _age_on(birth: datetime.datetime, reference: datetime.datetime) -> int:
+    return reference.year - birth.year - ((reference.month, reference.day) < (birth.month, birth.day))
+
+
+def _identity_card_matches(card: str, province: Optional[str], gender: Optional[str],
+                           min_age: int, max_age: int, reference: datetime.datetime) -> bool:
+    """校验外部来源身份证是否真的满足地区、性别、年龄与校验位约束。"""
+    if not _id_card_check_code_ok(card):
+        return False
+    if province and province != "随机" and province in PROVINCE_MAP:
+        if not card.startswith(PROVINCE_MAP[province]):
+            return False
+    if gender == "男" and int(card[16]) % 2 == 0:
+        return False
+    if gender == "女" and int(card[16]) % 2 == 1:
+        return False
+    try:
+        birth = datetime.datetime.strptime(card[6:14], "%Y%m%d")
+    except ValueError:
+        return False
+    if birth > reference:
+        return False
+    return min_age <= _age_on(birth, reference) <= max_age
 
 
 class DataGenerator:
@@ -113,47 +164,21 @@ class DataGenerator:
         return id_card[:-1] + wrong_code
 
     def get_test_data_scenarios(self) -> Dict[str, Dict[str, Any]]:
-        """返回适用于测试/研发的结构化造数场景。"""
+        """返回注册中心里的结构化造数场景（含外部扩展）。"""
         return {
-            "注册登录账号": {
-                "description": "适合注册、登录、找回密码、账号绑定和用户中心场景。",
-                "fields": ["username", "password", "phone", "email", "real_name", "id_card", "register_source"]
-            },
-            "企业员工档案": {
-                "description": "适合后台导入员工、组织架构、审批流和通讯录场景。",
-                "fields": ["employee_no", "name", "department", "role", "phone", "email", "hire_date", "status"]
-            },
-            "收货地址簿": {
-                "description": "适合电商、物流、地址簿管理和联系人信息场景。",
-                "fields": ["receiver_name", "receiver_phone", "province", "city", "address", "postcode", "label"]
-            },
-            "订单支付记录": {
-                "description": "适合订单流、支付回调、账单对账和数据联调场景。",
-                "fields": ["order_no", "user_no", "product_name", "order_amount", "discount_amount", "pay_status", "order_status"]
+            spec.label: {
+                "description": spec.description,
+                "fields": list(spec.fields),
+                "key": spec.key,
             }
+            for spec in dg_reg.get_dataset_scenarios().values()
         }
 
     def get_boundary_field_templates(self) -> Dict[str, Dict[str, str]]:
-        """返回常用字段的边界值/异常值说明。"""
+        """返回注册中心里的边界值/异常值说明（含外部扩展）。"""
         return {
-            "用户名": {
-                "description": "默认规则：只允许字母、数字、下划线，长度受 min/max 约束。"
-            },
-            "密码": {
-                "description": "默认规则：需包含大小写字母、数字和特殊字符。"
-            },
-            "邮箱": {
-                "description": "默认规则：遵循常见邮箱格式校验。"
-            },
-            "手机号": {
-                "description": "默认规则：中国大陆 11 位手机号。"
-            },
-            "身份证号": {
-                "description": "默认规则：中国大陆 18 位身份证号，需满足校验位。"
-            },
-            "金额": {
-                "description": "默认规则：数值需在范围内，最多保留两位小数。"
-            }
+            spec.label: {"description": spec.description, "key": spec.key}
+            for spec in dg_reg.get_boundary_fields().values()
         }
 
     def safe_generate(self, generator_func, *args, **kwargs):
@@ -196,7 +221,8 @@ class DataGenerator:
 
             # 提取基本信息
             name = profile_dict.get('name', '未知')
-            sex = '女' if profile_dict.get('sex') == 'F' else '男'
+            raw_sex = str(profile_dict.get('sex') or '').strip().upper()
+            sex = {'F': '女', '女': '女', 'M': '男', '男': '男'}.get(raw_sex, '未知')
             birthdate = profile_dict.get('birthdate', '未知')
             mail = profile_dict.get('mail', '（信息缺失）')
             job = profile_dict.get('job', '（信息缺失）')
@@ -254,8 +280,10 @@ class DataGenerator:
             result.append(f"职位： {job}")
             result.append("其他信息")
 
+            if isinstance(website, str):
+                website = [website] if website else []
             if website:
-                website_str = "， ".join(website)
+                website_str = "， ".join(str(item) for item in website)
                 result.append(f"个人网站/主页： {website_str}")
             else:
                 result.append("个人网站/主页： （信息缺失）")
@@ -283,117 +311,125 @@ class DataGenerator:
         if not self.faker_available:
             return ["Faker库未安装，部分高级功能受限。请运行: pip install faker"]
 
+        if category not in CATEGORIES or subcategory not in CATEGORIES.get(category, []):
+            raise ValueError(
+                f"不支持的 Faker 数据组合: {category} / {subcategory}；可用类别: {'、'.join(CATEGORIES)}"
+            )
+        if count < 1:
+            raise ValueError("生成数量必须大于 0")
+
+        seed = kwargs.get("seed")
+        fake = self._build_fake(seed) if seed is not None else self.fake
         results = []
         try:
             for i in range(count):
                 if category == "人物信息":
                     if subcategory == "随机姓名":
-                        results.append(self.fake.name())
+                        results.append(fake.name())
                     elif subcategory == "随机姓":
-                        results.append(self.fake.last_name())
+                        results.append(fake.last_name())
                     elif subcategory == "随机名":
-                        results.append(self.fake.first_name())
+                        results.append(fake.first_name())
                     elif subcategory == "男性姓名":
-                        results.append(self.fake.name_male())
+                        results.append(fake.name_male())
                     elif subcategory == "女性姓名":
-                        results.append(self.fake.name_female())
+                        results.append(fake.name_female())
                     elif subcategory == "完整个人信息":
-                        raw_profile = self.fake.profile()
-                        formatted_profile = self.format_profile_data(raw_profile)
-                        results.append(formatted_profile)
+                        raw_profile = fake.profile()
+                        results.append(self.format_profile_data(raw_profile))
 
                 elif category == "地址信息":
                     if subcategory == "随机地址":
-                        results.append(self.fake.address())
+                        results.append(fake.address())
                     elif subcategory == "随机城市":
-                        results.append(self.fake.city())
+                        results.append(fake.city())
                     elif subcategory == "随机国家":
-                        results.append(self.fake.country())
+                        results.append(fake.country())
                     elif subcategory == "随机邮编":
-                        results.append(self.fake.postcode())
+                        results.append(fake.postcode())
                     elif subcategory == "随机街道":
-                        results.append(self.fake.street_address())
+                        results.append(fake.street_address())
 
                 elif category == "网络信息":
                     if subcategory == "随机邮箱":
-                        results.append(self.fake.email())
+                        results.append(fake.email())
                     elif subcategory == "安全邮箱":
-                        results.append(self.fake.safe_email())
+                        results.append(fake.safe_email())
                     elif subcategory == "公司邮箱":
-                        results.append(self.fake.company_email())
+                        results.append(fake.company_email())
                     elif subcategory == "免费邮箱":
-                        results.append(self.fake.free_email())
+                        results.append(fake.free_email())
                     elif subcategory == "随机域名":
-                        results.append(self.fake.domain_name())
+                        results.append(fake.domain_name())
                     elif subcategory == "随机URL":
-                        results.append(self.fake.url())
+                        results.append(fake.url())
                     elif subcategory == "随机IP地址":
-                        results.append(self.fake.ipv4())
+                        results.append(fake.ipv4())
                     elif subcategory == "随机用户代理":
-                        results.append(self.fake.user_agent())
+                        results.append(fake.user_agent())
 
                 elif category == "公司信息":
                     if subcategory == "随机公司名":
-                        results.append(self.fake.company())
+                        results.append(fake.company())
                     elif subcategory == "公司后缀":
-                        results.append(self.fake.company_suffix())
+                        results.append(fake.company_suffix())
                     elif subcategory == "职位":
-                        results.append(self.fake.job())
+                        results.append(fake.job())
 
                 elif category == "金融信息":
                     if subcategory == "信用卡号":
-                        results.append(self.fake.credit_card_number())
+                        results.append(fake.credit_card_number())
                     elif subcategory == "信用卡提供商":
-                        results.append(self.fake.credit_card_provider())
+                        results.append(fake.credit_card_provider())
                     elif subcategory == "信用卡有效期":
-                        results.append(self.fake.credit_card_expire())
+                        results.append(fake.credit_card_expire())
                     elif subcategory == "货币":
-                        results.append(self.fake.currency())
+                        results.append(fake.currency())
 
                 elif category == "日期时间":
                     if subcategory == "随机日期时间":
-                        results.append(str(self.fake.date_time()))
+                        results.append(str(fake.date_time()))
                     elif subcategory == "随机日期":
-                        results.append(self.fake.date())
+                        results.append(fake.date())
                     elif subcategory == "随机时间":
-                        results.append(self.fake.time())
+                        results.append(fake.time())
                     elif subcategory == "今年日期":
-                        results.append(str(self.fake.date_time_this_year()))
+                        results.append(str(fake.date_time_this_year()))
                     elif subcategory == "本月日期":
-                        results.append(str(self.fake.date_time_this_month()))
+                        results.append(str(fake.date_time_this_month()))
 
                 elif category == "文本内容":
                     if subcategory == "随机单词":
-                        results.append(self.fake.word())
+                        results.append(fake.word())
                     elif subcategory == "随机句子":
-                        results.append(self.fake.sentence())
+                        results.append(fake.sentence())
                     elif subcategory == "随机段落":
-                        results.append(self.fake.paragraph())
+                        results.append(fake.paragraph())
                     elif subcategory == "随机文本":
-                        results.append(self.fake.text(max_nb_chars=kwargs.get('length', 200)))
+                        results.append(fake.text(max_nb_chars=kwargs.get('length', 200)))
 
                 elif category == "电话号码":
                     if subcategory == "随机手机号":
-                        results.append(self.fake.phone_number())
+                        results.append(fake.phone_number())
                     elif subcategory == "号段前缀":
-                        results.append(self.fake.phonenumber_prefix())
+                        results.append(fake.phonenumber_prefix())
 
                 elif category == "其他信息":
                     if subcategory == "随机颜色":
-                        results.append(self.fake.color_name())
+                        results.append(fake.color_name())
                     elif subcategory == "随机UUID":
-                        results.append(self.fake.uuid4())
+                        results.append(fake.uuid4())
                     elif subcategory == "随机MD5":
-                        results.append(self.fake.md5())
+                        results.append(fake.md5())
                     elif subcategory == "随机SHA1":
-                        results.append(self.fake.sha1())
+                        results.append(fake.sha1())
                     elif subcategory == "随机文件扩展名":
-                        results.append(self.fake.file_extension())
+                        results.append(fake.file_extension())
                     elif subcategory == "随机MIME类型":
-                        results.append(self.fake.mime_type())
+                        results.append(fake.mime_type())
 
-        except Exception as e:
-            results = [f"生成数据时出错: {str(e)}"]
+        except Exception as exc:
+            raise RuntimeError(f"生成数据时出错: {exc}") from exc
 
         return results
 
@@ -431,14 +467,29 @@ class DataGenerator:
         Returns:
             随机密码
         """
+        if length < 1:
+            raise ValueError("密码长度必须为正整数")
+        requirements = [
+            "包含小写字母", "包含大写字母", "包含数字", "包含特殊字符",
+        ]
+        required_count = sum(1 for item in requirements if item in options)
+        if length < required_count:
+            raise ValueError(
+                f"密码长度 {length} 不足以覆盖所选的 {required_count} 类字符；"
+                f"请增加到至少 {required_count} 位或减少复杂度选项。"
+            )
+
         if self.faker_available and rng is None:
-            return self.fake.password(
+            value = self.fake.password(
                 length=length,
                 special_chars="包含特殊字符" in options,
                 digits="包含数字" in options,
                 upper_case="包含大写字母" in options,
                 lower_case="包含小写字母" in options
             )
+            if _password_matches_options(value, options):
+                return value
+            # Faker 不保证强制覆盖每类字符，回退到受控实现保证复杂度声明可信。
 
         # 备用方案
         rng = rng or random
@@ -492,7 +543,10 @@ class DataGenerator:
             else:
                 prefix = rng.choice(BROADCAST_PREFIXES)
 
-        suffix = ''.join([str(rng.randint(0, 9)) for _ in range(8)])
+        suffix_length = 11 - len(prefix)
+        if suffix_length <= 0:
+            raise ValueError(f"号段 {prefix!r} 长度已达或超过 11 位，无法生成手机号")
+        suffix = ''.join(str(rng.randint(0, 9)) for _ in range(suffix_length))
         return f"{prefix}{suffix}"
 
     def generate_random_address(self, province: str, city: str, detailed: bool = True, rng=None) -> str:
@@ -517,6 +571,10 @@ class DataGenerator:
         """生成随机身份证号码"""
         rng = rng or random
         reference_date = reference_date or datetime.datetime.now()
+        if min_age < 0 or max_age < 0:
+            raise ValueError("年龄不能为负数")
+        if min_age > max_age:
+            raise ValueError(f"最小年龄（{min_age}）不能大于最大年龄（{max_age}）")
 
         # 1. 生成前6位地区码
         province_code = PROVINCE_MAP.get(province, "11")  # 默认北京
@@ -539,6 +597,12 @@ class DataGenerator:
                 max_day = 28
 
         birth_day = rng.randint(1, max_day)
+        # 出生日期不得晚于参考时刻；跨年回退时同步修正 2 月 29 日。
+        if (birth_year, birth_month, birth_day) > (
+                reference_date.year, reference_date.month, reference_date.day):
+            birth_year -= 1
+            if birth_month == 2 and birth_day == 29 and not _is_leap_year(birth_year):
+                birth_day = 28
         birth_date = f"{birth_year:04d}{birth_month:02d}{birth_day:02d}"
 
         # 3. 生成顺序码
@@ -686,26 +750,23 @@ class DataGenerator:
 
     def generate_conditional_id_card(self, province: str = None, gender: str = None, min_age: int = 18,
                                      max_age: int = 60) -> str:
-        """根据条件生成身份证号码"""
-        if self.faker_available:
-            # Faker生成身份证
-            id_card = self.fake.ssn()
+        """根据条件生成身份证号码；Faker 结果也必须通过完整约束校验。"""
+        if min_age < 0 or max_age < 0 or min_age > max_age:
+            raise ValueError(f"年龄区间无效: {min_age}-{max_age}")
 
-            if province and province != "随机" and province in PROVINCE_MAP:
-                province_code = PROVINCE_MAP[province]
-                # 如果生成的身份证前两位不匹配指定省份，重新生成
-                if not id_card.startswith(province_code):
-                    return self.generate_random_id_card(province, gender or "随机", min_age, max_age)
+        if self.faker_available and self.fake is not None:
+            for _ in range(12):
+                candidate = str(self.fake.ssn())
+                if _identity_card_matches(
+                        candidate, province, gender, min_age, max_age, datetime.datetime.now()):
+                    return candidate
 
-            return id_card
-        else:
-            # 备用方案
-            return self.generate_random_id_card(
-                province if province != "随机" else "北京市",
-                gender or "随机",
-                min_age,
-                max_age
-            )
+        return self.generate_random_id_card(
+            province if province and province != "随机" else random.choice(list(PROVINCE_MAP.keys())),
+            gender or "随机",
+            min_age,
+            max_age,
+        )
 
     def generate_random_email(self, domain_option: str, custom_domain: str, selected_domains: List[str], rng=None) -> str:
         """生成随机邮箱"""
@@ -726,17 +787,12 @@ class DataGenerator:
         batch_token = self._normalize_batch_tag(batch_tag)
         rng, fake, base_now = self._get_random_context(seed)
 
-        builders = {
-            "注册登录账号": self._build_registration_record,
-            "企业员工档案": self._build_employee_record,
-            "收货地址簿": self._build_shipping_record,
-            "订单支付记录": self._build_order_record,
-        }
+        spec = dg_reg.get_dataset_scenario(scenario)
+        if spec is None or not spec.enabled:
+            available = "、".join(sorted(dg_reg.get_dataset_scenarios()))
+            raise ValueError(f"暂不支持的造数场景: {scenario}；已注册: {available}")
 
-        if scenario not in builders:
-            raise ValueError(f"暂不支持的造数场景: {scenario}")
-
-        builder = builders[scenario]
+        builder = spec.builder or getattr(self, spec.builder_name)
         return [
             builder(
                 index=i,
@@ -855,17 +911,18 @@ class DataGenerator:
                                      email_domain: str = "example.com",
                                      include_valid: bool = True, include_boundary: bool = True,
                                      include_invalid: bool = True) -> List[Dict[str, Any]]:
-        """生成常用字段的正常值、边界值和异常值。"""
+        """生成注册中心声明的字段正常值、边界值和异常值。"""
+        spec = dg_reg.get_boundary_field(field_type)
+        if spec is None or not spec.enabled:
+            available = "、".join(sorted(dg_reg.get_boundary_fields()))
+            raise ValueError(f"暂不支持的字段类型: {field_type}；已注册: {available}")
+
         rng, _, base_now = self._get_random_context(seed)
         records: List[Dict[str, Any]] = []
         field_code = {
-            "用户名": "USERNAME",
-            "密码": "PASSWORD",
-            "邮箱": "EMAIL",
-            "手机号": "PHONE",
-            "身份证号": "IDCARD",
-            "金额": "AMOUNT",
-        }.get(field_type, "CASE")
+            "用户名": "USERNAME", "密码": "PASSWORD", "邮箱": "EMAIL",
+            "手机号": "PHONE", "身份证号": "IDCARD", "金额": "AMOUNT",
+        }.get(spec.key, "CASE")
 
         def add_case(case_name: str, case_type: str, value: Any, expected: str, note: str = ""):
             case_type_map = {
@@ -877,7 +934,7 @@ class DataGenerator:
                 return
             records.append({
                 "case_id": f"{field_code}-{len(records) + 1:02d}",
-                "field_type": field_type,
+                "field_type": spec.label,
                 "case_name": case_name,
                 "case_type": case_type,
                 "value": value,
@@ -887,78 +944,114 @@ class DataGenerator:
 
         min_length = max(1, min_length)
         max_length = max(min_length, max_length)
+        if amount_min > amount_max:
+            raise ValueError(f"最小金额（{amount_min}）不能大于最大金额（{amount_max}）")
 
-        if field_type == "用户名":
-            normal_value = self.generate_random_string(max(min_length + 4, 6), ["小写字母", "数字"], rng=rng)
-            add_case("常规可用用户名", "正常值", normal_value, "应通过", "仅包含小写字母和数字")
-            add_case("最小长度边界", "边界值",
-                     self.generate_random_string(min_length, ["小写字母", "数字"], rng=rng), "应通过")
-            add_case("最大长度边界", "边界值",
-                     self.generate_random_string(max_length, ["小写字母", "数字"], rng=rng), "应通过")
-            add_case("空字符串", "异常值", "", "应拒绝", "模拟必填项为空")
-            add_case("长度不足", "异常值",
-                     self.generate_random_string(max(min_length - 1, 1), ["小写字母"], rng=rng), "应拒绝")
-            add_case("长度超限", "异常值",
-                     self.generate_random_string(max_length + 1, ["小写字母"], rng=rng), "应拒绝")
-            add_case("包含空格", "异常值", "qa user", "应拒绝", "命中非法空白字符")
-            add_case("包含特殊字符", "异常值", "qa_user@", "应拒绝", "命中非法特殊字符")
-
-        elif field_type == "密码":
-            options = ["包含小写字母", "包含大写字母", "包含数字", "包含特殊字符"]
-            safe_min = max(min_length, 8)
-            add_case("强密码示例", "正常值", self.generate_random_password(max(safe_min + 2, 10), options, rng=rng),
-                     "应通过")
-            add_case("最小长度边界", "边界值", self.generate_random_password(safe_min, options, rng=rng), "应通过")
-            add_case("最大长度边界", "边界值", self.generate_random_password(max_length, options, rng=rng), "应通过")
-            add_case("缺少大写字母", "异常值", "password1!", "应拒绝")
-            add_case("缺少数字", "异常值", "Password!", "应拒绝")
-            add_case("缺少特殊字符", "异常值", "Password1", "应拒绝")
-            add_case("长度不足", "异常值", "Aa1!", "应拒绝")
-            add_case("包含空格", "异常值", "Pass word1!", "应拒绝")
-
-        elif field_type == "邮箱":
-            local_part = self.generate_random_string(8, ["小写字母", "数字"], rng=rng)
-            add_case("常规邮箱", "正常值", f"{local_part}@{email_domain}", "应通过")
-            add_case("子域名邮箱", "边界值", f"{local_part}@qa.{email_domain}", "应通过")
-            add_case("缺少@", "异常值", f"{local_part}{email_domain}", "应拒绝")
-            add_case("缺少域名", "异常值", f"{local_part}@", "应拒绝")
-            add_case("连续两个@", "异常值", f"{local_part}@@{email_domain}", "应拒绝")
-            add_case("含中文字符", "异常值", f"测试{local_part}@{email_domain}", "应拒绝")
-            add_case("包含空格", "异常值", f"{local_part} @{email_domain}", "应拒绝")
-
-        elif field_type == "手机号":
-            add_case("常规手机号", "正常值", self.generate_conditional_phone("随机", rng=rng), "应通过")
-            add_case("号段边界示例", "边界值", "13000000000", "应通过", "常见联通号段")
-            add_case("长度不足", "异常值", "1380013800", "应拒绝")
-            add_case("长度超限", "异常值", "138001380000", "应拒绝")
-            add_case("非法号段", "异常值", "10100138000", "应拒绝")
-            add_case("含字母", "异常值", "13800ABC000", "应拒绝")
-            add_case("空字符串", "异常值", "", "应拒绝")
-
-        elif field_type == "身份证号":
-            valid_id = self.generate_random_id_card("北京市", "随机", 18, 45, rng=rng, reference_date=base_now)
-            add_case("常规身份证号", "正常值", valid_id, "应通过")
-            add_case("最小成年年龄边界", "边界值",
-                     self.generate_random_id_card("北京市", "随机", 18, 18, rng=rng, reference_date=base_now), "应通过")
-            add_case("校验位错误", "异常值", self._mutate_check_code(valid_id), "应拒绝")
-            add_case("长度不足", "异常值", valid_id[:-1], "应拒绝")
-            add_case("包含字母", "异常值", valid_id[:6] + "ABCDEF" + valid_id[12:], "应拒绝")
-            add_case("非法出生日期", "异常值", valid_id[:6] + "20240231" + valid_id[14:], "应拒绝")
-
-        elif field_type == "金额":
-            add_case("常规金额", "正常值", f"{round((amount_min + amount_max) / 2, 2):.2f}", "应通过")
-            add_case("最小值边界", "边界值", f"{amount_min:.2f}", "应通过")
-            add_case("最大值边界", "边界值", f"{amount_max:.2f}", "应通过")
-            add_case("负数金额", "异常值", f"{-abs(max(amount_min, 1.0)):.2f}", "应拒绝")
-            add_case("超出上限", "异常值", f"{amount_max + 0.01:.2f}", "应拒绝")
-            add_case("超出小数精度", "异常值", "88.888", "应拒绝")
-            add_case("非数字", "异常值", "amount_abc", "应拒绝")
-
-        else:
-            raise ValueError(f"暂不支持的字段类型: {field_type}")
-
+        ctx = {
+            "rng": rng, "base_now": base_now,
+            "min_length": min_length, "max_length": max_length,
+            "amount_min": amount_min, "amount_max": amount_max,
+            "email_domain": email_domain,
+        }
+        builder = spec.builder or _BOUNDARY_HANDLERS.get(spec.builder_name)
+        if builder is None:
+            raise ValueError(f"字段 {spec.label!r} 已注册但未绑定生成器")
+        builder(self, ctx, add_case)
         return records
 
     def is_faker_available(self) -> bool:
         """检查Faker是否可用"""
         return self.faker_available
+
+
+def _boundary_username(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    rng = ctx["rng"]
+    min_length, max_length = ctx["min_length"], ctx["max_length"]
+    normal_value = gen.generate_random_string(max(min_length + 4, 6), ["小写字母", "数字"], rng=rng)
+    add_case("常规可用用户名", "正常值", normal_value, "应通过", "仅包含小写字母和数字")
+    add_case("最小长度边界", "边界值",
+             gen.generate_random_string(min_length, ["小写字母", "数字"], rng=rng), "应通过")
+    add_case("最大长度边界", "边界值",
+             gen.generate_random_string(max_length, ["小写字母", "数字"], rng=rng), "应通过")
+    add_case("空字符串", "异常值", "", "应拒绝", "模拟必填项为空")
+    # min_length=1 时 1 位已经合规，再生成“长度不足”会与上面的边界样例自相矛盾。
+    if min_length > 1:
+        add_case("长度不足", "异常值",
+                 gen.generate_random_string(min_length - 1, ["小写字母"], rng=rng), "应拒绝")
+    add_case("长度超限", "异常值",
+             gen.generate_random_string(max_length + 1, ["小写字母"], rng=rng), "应拒绝")
+    add_case("包含空格", "异常值", "qa user", "应拒绝", "命中非法空白字符")
+    add_case("包含特殊字符", "异常值", "qa_user@", "应拒绝", "命中非法特殊字符")
+
+
+def _boundary_password(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    rng = ctx["rng"]
+    options = ["包含小写字母", "包含大写字母", "包含数字", "包含特殊字符"]
+    safe_min = max(ctx["min_length"], 8)
+    max_length = max(ctx["max_length"], safe_min)
+    add_case("强密码示例", "正常值",
+             gen.generate_random_password(max(safe_min + 2, 10), options, rng=rng), "应通过")
+    add_case("最小长度边界", "边界值",
+             gen.generate_random_password(safe_min, options, rng=rng), "应通过")
+    add_case("最大长度边界", "边界值",
+             gen.generate_random_password(max_length, options, rng=rng), "应通过")
+    add_case("缺少大写字母", "异常值", "password1!", "应拒绝")
+    add_case("缺少数字", "异常值", "Password!", "应拒绝")
+    add_case("缺少特殊字符", "异常值", "Password1", "应拒绝")
+    add_case("长度不足", "异常值", "Aa1!", "应拒绝")
+    add_case("包含空格", "异常值", "Pass word1!", "应拒绝")
+
+
+def _boundary_email(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    local_part = gen.generate_random_string(8, ["小写字母", "数字"], rng=ctx["rng"])
+    email_domain = ctx["email_domain"]
+    add_case("常规邮箱", "正常值", f"{local_part}@{email_domain}", "应通过")
+    add_case("子域名邮箱", "边界值", f"{local_part}@qa.{email_domain}", "应通过")
+    add_case("缺少@", "异常值", f"{local_part}{email_domain}", "应拒绝")
+    add_case("缺少域名", "异常值", f"{local_part}@", "应拒绝")
+    add_case("连续两个@", "异常值", f"{local_part}@@{email_domain}", "应拒绝")
+    add_case("含中文字符", "异常值", f"测试{local_part}@{email_domain}", "应拒绝")
+    add_case("包含空格", "异常值", f"{local_part} @{email_domain}", "应拒绝")
+
+
+def _boundary_phone(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    add_case("常规手机号", "正常值", gen.generate_conditional_phone("随机", rng=ctx["rng"]), "应通过")
+    add_case("号段边界示例", "边界值", "13000000000", "应通过", "常见联通号段")
+    add_case("长度不足", "异常值", "1380013800", "应拒绝")
+    add_case("长度超限", "异常值", "138001380000", "应拒绝")
+    add_case("非法号段", "异常值", "10100138000", "应拒绝")
+    add_case("含字母", "异常值", "13800ABC000", "应拒绝")
+    add_case("空字符串", "异常值", "", "应拒绝")
+
+
+def _boundary_id_card(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    rng, base_now = ctx["rng"], ctx["base_now"]
+    valid_id = gen.generate_random_id_card("北京市", "随机", 18, 45, rng=rng, reference_date=base_now)
+    add_case("常规身份证号", "正常值", valid_id, "应通过")
+    add_case("最小成年年龄边界", "边界值",
+             gen.generate_random_id_card("北京市", "随机", 18, 18, rng=rng, reference_date=base_now), "应通过")
+    add_case("校验位错误", "异常值", gen._mutate_check_code(valid_id), "应拒绝")
+    add_case("长度不足", "异常值", valid_id[:-1], "应拒绝")
+    add_case("包含字母", "异常值", valid_id[:6] + "ABCDEF" + valid_id[12:], "应拒绝")
+    add_case("非法出生日期", "异常值", valid_id[:6] + "20240231" + valid_id[14:], "应拒绝")
+
+
+def _boundary_amount(gen: "DataGenerator", ctx: Dict[str, Any], add_case) -> None:
+    amount_min, amount_max = ctx["amount_min"], ctx["amount_max"]
+    add_case("常规金额", "正常值", f"{round((amount_min + amount_max) / 2, 2):.2f}", "应通过")
+    add_case("最小值边界", "边界值", f"{amount_min:.2f}", "应通过")
+    add_case("最大值边界", "边界值", f"{amount_max:.2f}", "应通过")
+    add_case("负数金额", "异常值", f"{-abs(max(amount_min, 1.0)):.2f}", "应拒绝")
+    add_case("超出上限", "异常值", f"{amount_max + 0.01:.2f}", "应拒绝")
+    add_case("超出小数精度", "异常值", "88.888", "应拒绝")
+    add_case("非数字", "异常值", "amount_abc", "应拒绝")
+
+
+_BOUNDARY_HANDLERS = {
+    "用户名": _boundary_username,
+    "密码": _boundary_password,
+    "邮箱": _boundary_email,
+    "手机号": _boundary_phone,
+    "身份证号": _boundary_id_card,
+    "金额": _boundary_amount,
+}
