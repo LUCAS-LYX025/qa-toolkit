@@ -41,6 +41,7 @@ from qa_toolkit.config.tool_routes import INLINE_TOOL_CATEGORIES, PAGE_TOOL_CONF
 from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
+from qa_toolkit.core.data_generator_registry import get_dataset_scenarios, get_boundary_fields, get_locales, get_registry_summary
 from qa_toolkit.tools.data_generator import DataGenerator
 from qa_toolkit.tools.ip_lookup import IPQueryTool
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
@@ -596,13 +597,28 @@ def render_tool_card_click_bridge():
                     return doc.querySelector(`.st-key-${triggerKey} button`);
                 };
                 const activateTrigger = (event, trigger) => {
-                    const button = resolveTriggerButton(trigger);
-                    if (!button) {
+                    if (trigger.dataset.bridgePending === '1') {
                         return;
                     }
                     event.preventDefault();
                     event.stopPropagation();
-                    button.click();
+                    trigger.dataset.bridgePending = '1';
+                    let attempts = 0;
+                    const clickWhenReady = () => {
+                        const button = resolveTriggerButton(trigger);
+                        if (button) {
+                            delete trigger.dataset.bridgePending;
+                            button.click();
+                            return;
+                        }
+                        // 隐藏按钮随 Streamlit rerun 重建；短重试避免点击被渲染时序吞掉。
+                        if (attempts++ < 20) {
+                            setTimeout(clickWhenReady, 60);
+                        } else {
+                            delete trigger.dataset.bridgePending;
+                        }
+                    };
+                    clickWhenReady();
                 };
 
                 doc.addEventListener('click', (event) => {
@@ -747,8 +763,8 @@ def render_tool_picker():
 
 def display_generated_results(title, content, filename_prefix):
     """统一展示生成结果 + 复制 + 下载"""
-    st.markdown(f'<div class="category-card">📋 生成结果 - {title}</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="result-box">{content}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="category-card">📋 生成结果 - {html.escape(str(title))}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="result-box">{html.escape(str(content))}</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
@@ -840,7 +856,22 @@ render_tool_workspace_scroll_handler()
 # === 工具功能实现 ===
 if tool_category == "数据生成工具":
     show_doc("data_generator")
-    generator = DataGenerator()
+    locales = get_locales()
+    locale_key = st.selectbox(
+        "生成地区", list(locales),
+        format_func=lambda key: locales[key].label,
+        key="data_gen_locale",
+        help="切换地区后，Faker 生成的姓名、地址等数据会按当地规则生成。",
+    )
+    generator = DataGenerator(locale=locales[locale_key].faker_locale)
+    registry_summary = get_registry_summary()
+    st.caption(
+        f"注册式扩展：{len(registry_summary['造数场景'])} 个造数场景 / "
+        f"{len(registry_summary['边界字段'])} 个边界字段 / "
+        f"{len(registry_summary['生成地区'])} 个地区"
+        + (f"，含 {registry_summary['扩展场景数'] + registry_summary['扩展字段数']} 项外部扩展"
+           if registry_summary['扩展场景数'] + registry_summary['扩展字段数'] else "")
+    )
     if 'clear_data_gen_counter' not in st.session_state:
         st.session_state.clear_data_gen_counter = 0
 
@@ -883,6 +914,25 @@ if tool_category == "数据生成工具":
             if selected_subcategory == "随机文本":
                 text_length = st.slider("文本长度", min_value=10, max_value=1000, value=200)
                 extra_params['length'] = text_length
+            faker_seed_text = st.text_input(
+                "随机种子", value="", placeholder="留空则每次生成不同",
+                help="填写整数后，同一组参数可复现同一批 Faker 数据。",
+                key="faker_seed",
+            )
+            faker_seed = None
+            if faker_seed_text.strip():
+                try:
+                    faker_seed = int(faker_seed_text.strip())
+                except ValueError:
+                    st.warning("随机种子需为整数，当前已忽略。")
+            if faker_seed is not None:
+                extra_params['seed'] = faker_seed
+
+            current_faker_key = f"{locale_key}|{selected_category}|{selected_subcategory}|{faker_seed}|{extra_params.get('length')}"
+            if st.session_state.get("faker_result_key") != current_faker_key:
+                st.session_state.pop("faker_result", None)
+                st.session_state.pop("last_category", None)
+                st.session_state.faker_result_key = current_faker_key
 
             if st.button("🎯 生成数据", use_container_width=True):
                 with st.spinner("正在生成数据..."):
@@ -895,11 +945,13 @@ if tool_category == "数据生成工具":
 
             if 'faker_result' in st.session_state:
                 title = st.session_state.get("last_category", "")
-                if selected_subcategory == "完整个人信息":
+                if title.endswith("完整个人信息"):
                     st.text_area("生成结果", st.session_state.faker_result, height=300, key="profile_result")
                 else:
-                    st.markdown(f'<div class="result-box">{st.session_state.faker_result}</div>',
-                                unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="result-box">{html.escape(str(st.session_state.faker_result))}</div>',
+                        unsafe_allow_html=True,
+                    )
                 create_copy_button(st.session_state.faker_result, button_text="📋 复制结果", key="copy_faker_result")
                 st.download_button(
                     label="💾 下载结果",
@@ -958,6 +1010,9 @@ if tool_category == "数据生成工具":
                 st.write("💡 提示: 点击生成按钮后结果将保留在页面")
 
             if st.button("生成内容", key="gen_random_content"):
+                if gen_type == "随机数字" and min_val > max_val:
+                    st.error(f"最小值（{min_val}）不能大于最大值（{max_val}）。")
+                    st.stop()
                 results = []
                 with st.spinner(f"正在生成{count}个{gen_type}..."):
                     for _ in range(count):
@@ -1196,6 +1251,7 @@ if tool_category == "数据生成工具":
                 max_age = st.number_input("最大年龄", min_value=0, max_value=100, value=60)
                 if min_age > max_age:
                     st.error("最小年龄不能大于最大年龄")
+                    st.stop()
 
                 conditions = f"省份: {province}, 性别: {gender}, 年龄: {min_age}-{max_age}岁"
                 st.write("💡 提示: 生成的身份证将严格符合选择的省份、性别和年龄条件")

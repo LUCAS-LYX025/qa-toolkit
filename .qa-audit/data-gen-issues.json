@@ -1,0 +1,80 @@
+[
+  {
+    "id": "DG-01",
+    "title": "[数据生成] 密码长度小于复杂度选项数时生成超长密码",
+    "labels": ["p1", "correctness", "data-generator"],
+    "body": "**视角**：测试专家（正确性）\n\n**复现**：`generate_random_password(2, ['包含小写字母','包含大写字母','包含数字','包含特殊字符'], rng=Random(7))`。\n\n**实际**：备用实现先为每类字符各放 1 位，再用 `range(length - len(password))` 补齐；当 length=2 时 range 为负，直接返回 4 位密码，违反调用方指定的长度。\n\n**期望**：长度与复杂度冲突时显式报错并提示最小长度，绝不返回与参数不符的结果。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_01_password_length`"
+  },
+  {
+    "id": "DG-02",
+    "title": "[数据生成] 4 位手机号段生成 12 位号码",
+    "labels": ["p1", "correctness", "data-generator"],
+    "body": "**视角**：测试专家（数据质量）\n\n**复现**：`generate_random_phone_number('移动', rng=Random(seed))` 跑 300 个种子，出现 11 位与 12 位两种结果。号段常量含 `1703/1705/1706` 等 4 位号段，函数固定补 8 位尾号。\n\n**实际**：另一入口 `generate_conditional_phone()` 用 `11-len(prefix)` 补位，行为不一致；同一工具两条路径产出不同质量的数据。\n\n**期望**：所有手机号入口统一按总长 11 位补尾号，并加一致性断言。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_02_mobile_prefix_length`"
+  },
+  {
+    "id": "DG-03",
+    "title": "[数据生成] 0 岁身份证可生成晚于当前时刻的出生日期",
+    "labels": ["p1", "correctness", "data-generator"],
+    "body": "**视角**：测试专家（边界值）\n\n**复现**：`generate_random_id_card('北京市','男',0,100,rng=Random(66),reference_date=2026-01-01)` 得到出生日期 `2026-08-10`，晚于生成时刻。\n\n**实际**：只按年份区间取样，未校验月日是否超过参考日期；造出的“新生儿”尚未出生，且年龄实际为 -1 岁。\n\n**期望**：出生日期不得晚于参考日期；年龄边界按参考日期精确计算，跨年回退时保持生日不越界。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_03_future_birth_date`"
+  },
+  {
+    "id": "DG-04",
+    "title": "[数据生成] 最小年龄大于最大年龄时抛出底层随机库异常",
+    "labels": ["p2", "usability", "data-generator"],
+    "body": "**视角**：测试专家（易用性）\n\n**复现**：`generate_random_id_card('北京市','男',60,18, rng=...)` 抛出 `empty range for randrange`。\n\n**实际**：参数校验缺失。页面虽有 `st.error` 提示，生成按钮仍可点击，最终由 `safe_generate` 吞成一条晦涩错误；作为公共 API 调用时无防护。\n\n**期望**：入口先做参数校验，抛出可读的 `ValueError('最小年龄不能大于最大年龄')`，页面在参数非法时禁用生成。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_04_inverted_age_range`"
+  },
+  {
+    "id": "DG-05",
+    "title": "[数据生成] Faker 条件身份证完全忽略性别与年龄约束",
+    "labels": ["p1", "correctness", "data-generator"],
+    "body": "**视角**：测试专家（正确性）\n\n**复现**：把 Faker 的 `ssn()` 固定为 `110101199003072316`（1990 男），调用 `generate_conditional_id_card('北京市','男',60,70)` 原样返回。\n\n**实际**：仅当地区码不匹配时才回退到约束生成器；性别与年龄参数在 Faker 路径上从不校验。页面却明确写着“严格符合选择的省份、性别和年龄条件”。\n\n**期望**：Faker 结果先过约束校验（地区、性别顺序码、出生日期、年龄、校验位），不满足则回退到受控生成器。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_05_faker_ignores_identity_constraints`"
+  },
+  {
+    "id": "DG-06",
+    "title": "[数据生成] Faker 高级生成器传 seed 也无法复现结果",
+    "labels": ["p2", "usability", "data-generator"],
+    "body": "**视角**：产品工程师（易用性 / 可复现性）\n\n**复现**：连续调用 `generate_faker_data('人物信息','随机姓名',5, seed=20261126)` 两次，结果不同。\n\n**实际**：函数使用实例级 `self.fake`，`**kwargs` 里的 seed 从未被消费；结构化造数场景已支持 seed，Faker 模式却没有，用户无法复现同一批数据或写进回归用例。\n\n**期望**：seed 存在时用 `seed_instance()` 构造局部 Faker 实例，保证同参数同结果；页面提供“随机种子”输入。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_06_faker_seed_ignored`"
+  },
+  {
+    "id": "DG-07",
+    "title": "[数据生成] Faker 类别/子类别拼错时静默返回空结果",
+    "labels": ["p2", "usability", "data-generator"],
+    "body": "**视角**：测试专家（可观测性）\n\n**复现**：`generate_faker_data('不存在的类别','不存在的类型',3)` 返回 `[]`，不抛错也不告警。\n\n**实际**：Faker 可能性表是内部字典，任何拼写错误或未支持组合都被 if/elif 静默吞掉；页面上用户点了“生成数据”却看不到任何内容，也不知道哪里错了。内部异常同样被包装成字符串当“数据”返回。\n\n**期望**：未知组合抛出可读 `ValueError`，生成异常向上抛出由 `safe_generate` 统一展示；避免把错误文案伪装成生成结果。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_07_unknown_faker_combo_silent`"
+  },
+  {
+    "id": "DG-08",
+    "title": "[数据生成] 未知性别被格式化成“男”，凭空补数据",
+    "labels": ["p1", "data-quality", "data-generator"],
+    "body": "**视角**：测试专家（数据质量）\n\n**复现**：`format_profile_data({'name':'测试用户','sex':'X'})` 输出 `性别： 男`。\n\n**实际**：`sex == 'F' ? 女 : 男` 的二元兜底把未知、缺失、其他编码一律写成男；`website` 为字符串时还会被逐字符拼接。这类“看起来很完整”的假数据在测试断言里极易造成误判。\n\n**期望**：明确映射 F/女/M/男，其余显示“未知”；website 兼容字符串与列表。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_08_unknown_sex_defaults_to_male`"
+  },
+  {
+    "id": "DG-09",
+    "title": "[数据生成] 生成结果未转义直接拼进 HTML",
+    "labels": ["p1", "security", "data-generator"],
+    "body": "**视角**：测试专家（安全）\n\n**复现**：`display_generated_results()` 与 Faker 结果分支把 `content` 直接插进 `st.markdown(..., unsafe_allow_html=True)` 的 `<div class=\"result-box\">`。\n\n**实际**：同一文件已 `import html` 并在别处转义按钮文案，但生成结果区没有转义。任何包含 `<img onerror=...>` 的生成内容或自定义域名/文本都可能被浏览器当作 HTML 执行，测试工具自身成了注入入口。\n\n**期望**：把所有动态内容用 `html.escape()` 转义后再拼 HTML，标题同样处理；新增回归断言。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_09_raw_html_in_results`"
+  },
+  {
+    "id": "DG-10",
+    "title": "[数据生成] 造数场景与边界字段写死在单类里，无法注册扩展",
+    "labels": ["p1", "extensibility", "data-generator"],
+    "body": "**视角**：产品工程师（拓展性）\n\n**复现**：`DataGenerator` 单文件 964 行，`get_test_data_scenarios()`、`generate_test_dataset()` 的 builders、`get_boundary_field_templates()` 与 `generate_boundary_test_cases()` 的 if/elif 各自硬编码一份场景清单。\n\n**实际**：新增一个业务场景要同时改 4 处代码并发版；外部团队无法贡献自定义字段规则。项目其他模块已有注册中心惯例，唯独数据生成工具没有。\n\n**期望**：新增 `core/data_generator_registry.py`，用 frozen Spec 注册造数场景与边界字段，提供 `get_*`、`replace` 覆盖、返回副本、摘要与 reset；生成器从注册表驱动，内置项默认注册。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_10_no_registry_extension_point`"
+  },
+  {
+    "id": "DG-11",
+    "title": "[数据生成] locale 参数被页面写死，无法生成非中文数据",
+    "labels": ["p2", "extensibility", "data-generator"],
+    "body": "**视角**：产品工程师（拓展性 / 易用性）\n\n**复现**：`DataGenerator(locale='zh_CN')` 在页面顶部固定；类本身接受任意 Faker locale。\n\n**实际**：做海外业务测试时无法用这个工具生成 en_US/ja_JP 数据，只能改代码；与“不要局限于当前业务”的诉求相悖。\n\n**期望**：注册表声明支持的地区，页面加“生成地区”选择并传给 DataGenerator；内置中文为默认，不影响现有行为。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_11_locale_hardcoded_in_ui`"
+  },
+  {
+    "id": "DG-12",
+    "title": "[数据生成] 最小长度为 1 时“长度不足”反例自相矛盾",
+    "labels": ["p2", "correctness", "data-generator"],
+    "body": "**视角**：测试专家（边界值设计）\n\n**复现**：`generate_boundary_test_cases('用户名', min_length=1, max_length=1)` 生成“长度不足”样例，值为 1 位，同时标注“应拒绝”。\n\n**实际**：`max(min_length - 1, 1)` 在 min_length=1 时仍产出 1 位，与同批“最小长度边界应通过”的样例冲突，会直接误导测试人员写错断言。\n\n**期望**：min_length<=1 时不生成该反例（已有空字符串覆盖），或改用空串并明确说明。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_12_boundary_case_self_contradiction`"
+  },
+  {
+    "id": "DG-13",
+    "title": "[数据生成] 连续会话中工具卡片点击偶发不切换页面",
+    "labels": ["p1", "usability", "data-generator"],
+    "body": "**视角**：产品工程师（易用性 / 稳定性）\n\n**复现**：数据生成工具专项的 e2e 全套连跑中，从默认数据生成页点击其他工具卡片，偶发仍停留在该页；连续三次全套分别落在图片处理、JSON、外部 MCP 三个不同用例，单跑均通过。\n\n**实际**：`render_tool_card_click_bridge()` 的 `activateTrigger()` 只查一次隐藏 Streamlit 按钮，按钮还没就绪时直接 `return`，这次点击被静默丢弃。数据生成页新增地区选择后渲染时间变长，更容易踩中。\n\n**期望**：桥接层在隐藏按钮未就绪时短暂重试（有次数上限），并用 pending 标记避免重复派发；点击不应因渲染时序被吞掉。\n\n**探针**：`.qa-audit/data_gen_repro.py::probe_13_navigation_bridge_has_no_retry`"
+  }
+]
