@@ -1,0 +1,68 @@
+[
+  {
+    "id": "TRACK-01",
+    "title": "通用缺陷绩效分析页面缺少 show_doc 导入，首屏直接 NameError 全部功能不可用",
+    "body": "## 问题\n\n`src/qa_toolkit/ui/pages/tracking_performance_page.py` 在 `render_tracking_performance_page()` 里调用 `show_doc(\"zentao_performance_stats\")`，但文件头部没有 `from qa_toolkit.support.documentation import show_doc`。仓库其余 16 个页面均有该导入，唯独新页面遗漏。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-01：\n\n```python\nAppTest.from_string(script).run().exception\n# [\"name 'show_doc' is not defined\"]\n```\n\n页面一进入就抛异常，数据源连接、规则配置、报表导出全部不可达。`tests/test_tracking_performance_page.py` 两条冒烟均因此失败。\n\n## 期望行为\n\n补齐导入；页面可正常渲染首屏、数据源下拉与连接区；补 AppTest 冒烟回归，断言无异常且展示「缺陷绩效分析」「已接入数据源」。\n\n## 视角\n\n测试专家 + 产品工程师；正确性优先，兼顾可交付性。",
+    "labels": ["p0", "bug", "correctness", "usability"]
+  },
+  {
+    "id": "TRACK-02",
+    "title": "SLA 有效工时按闭区间逐小时计数，3 小时区间被算成 4 小时导致误判超时",
+    "body": "## 问题\n\n`integrations/tracking/rules.py::compute_effective_hours()` 把起点所在小时与终点所在小时都计入：`cursor = start.replace(minute=0...)` 后每次循环 `effective += 1.0`，直到 `cursor > end` 才 break，终点整点会被多算 1 小时。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-02：\n\n```python\ncompute_effective_hours(datetime(2026,1,5,9), datetime(2026,1,5,12))[0]\n# 4.0，期望 3.0\n```\n\n`tests/test_tracking_rules.py::test_effective_hours_counts_each_hour_once` 同样失败。SLA 阈值以小时为单位，逐小时偏差会直接影响超时判定与绩效数字。\n\n## 期望行为\n\n按半开区间 `[start, end)` 计算：起点整点计入、终点整点不计入；9:00→12:00 = 3 小时。周末/节假日排除逻辑保持，补区间边界回归。\n\n## 视角\n\n测试专家；正确性 / 数据质量。",
+    "labels": ["p1", "bug", "correctness", "sla"]
+  },
+  {
+    "id": "TRACK-03",
+    "title": "角色筛选与人员元数据均未接入产物链：页面空循环、rules 忽略 roles、角色标签恒为 —",
+    "body": "## 问题\n\n三处断点叠加，导致「按角色筛选」在通用页面上完全不可用：\n\n1. `tracking_performance_page.py::_run()` 里有一段无作用的双层循环（`for role_opt in adapter.get_roles(): for value in session_state[\"roles\"]: pass`），既没构建人员索引也没过滤；\n2. 页面没有渲染角色多选控件，`session_state[\"roles\"]` 永远是初始空列表；\n3. `rules.compute_performance()` 从不读取 `QuerySpec.roles`，且页面调用时没有传 `people=`，即使适配器能返回角色，`PerformanceRow.role_label` 也恒为 `—`。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-03：\n\n```python\nrows, _, _ = compute_performance([开发A项, 开发B项],\n    attribution_key=\"dev\", query=QuerySpec(roles=(\"开发B\",)))\n# 仍返回 2 人，role_label == \"—\"\n```\n\n## 期望行为\n\n- 页面渲染角色多选（由适配器 `get_roles()` 驱动），写回 `QuerySpec.roles`；\n- 规则引擎按 `person.match_values` 与 roles 做过滤；\n- `_run()` 把适配器角色映射为 `Person` 列表传给 `compute_performance(people=...)`，汇总表展示真实角色标签；\n- 删除空循环，补「选角色 → 只统计该角色 → 角色名可见」回归。\n\n## 视角\n\n测试专家 + 产品工程师；正确性、易用性与拓展性（产品声明支持角色过滤，实际是空转）。",
+    "labels": ["p1", "bug", "correctness", "usability", "extensibility"]
+  },
+  {
+    "id": "TRACK-04",
+    "title": "禅道两个适配器把明文密码写入 self.config，与 HTTP 适配器的凭据脱敏承诺不一致",
+    "body": "## 问题\n\n`zentao_db.py` / `zentao_proxy.py` 都是 `self.config = cfg` 直接保存 normalize 后的配置，密码 / token 以明文留在实例属性上；而 JIRA / TAPD / 云效适配器都调用 `redact_connection_config()` 后才赋值。注册中心 `get_registry_summary()` 还对外展示「默认产物保留凭据=False」，安全默认与实际行为矛盾。一旦异常堆栈、调试面板或下游产物序列化 adapter.config，就会泄露凭据。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-04：\n\n```python\n\"self.config = cfg\" in DB_SRC and \"redact_connection_config\" not in DB_SRC   # True\n\"self.config = cfg\" in PROXY_SRC and \"redact_connection_config\" not in PROXY_SRC  # True\n```\n\n## 期望行为\n\n两个禅道适配器统一走 `redact_connection_config()` 后再保存 `self.config`；真实连接参数只传给 exporter/client 构造，不留在可序列化属性上；补「构造后 config 中密码为空」回归。\n\n## 视角\n\n测试专家 + 产品工程师；安全性 / 一致性。",
+    "labels": ["p1", "security", "credentials"]
+  },
+  {
+    "id": "TRACK-05",
+    "title": "绩效维度注册中心无消费者：register_performance_dimension 注册后任何页面/计算都不感知",
+    "body": "## 问题\n\n`tracking_registry.py` 提供 `register_performance_dimension()` / `get_performance_dimensions()` 并默认注册 `qa`/`dev` 两个维度，但全仓库除注册中心自身外没有任何文件读取 `get_performance_dimensions()`；页面用的是 `get_attributions()`。下游注册 `register_performance_dimension(\"security\", \"安全绩效\")` 只会让摘要数字变化，页面下拉、规则计算、导出都不出现该维度，属于典型的「注册点空转」。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-05：注册 `track_dim` 后 `get_performance_dimensions()` 含该键，全 src 目录消费者列表为空。\n\n## 期望行为\n\n绩效维度必须进入产物链：要么页面维度下拉直接消费 `get_performance_dimensions()` 并与归因规则联动，要么移除该注册点避免误导扩展方；二选一后补「注册新维度 → 页面可见且可参与计算」回归。\n\n## 视角\n\n产品工程师；拓展性 / 架构一致性（与接口自动化专项 R3-07/R3-08 同类问题）。",
+    "labels": ["p1", "extensibility", "architecture"]
+  },
+  {
+    "id": "TRACK-06",
+    "title": "JIRA  roles 路径依赖 project_key，但该字段未声明到连接字段，页面无法配置多项目角色",
+    "body": "## 问题\n\n`JiraAdapter.get_roles()` 用 `config[\"project_key\"]` 决定 `/rest/api/3/project/{key}/roles` 路径，未配置时静默探测项目列表里的第一个 key；而 `ConnectionFieldSpec` 的 JIRA 字段只有 base_url / username / token / verify_ssl，页面不会渲染 project_key 输入框。多项目实例上，角色元数据永远取自第一个项目，归因与角色过滤都会错。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-06：`get_connection_fields(\"jira\")` 键集合为 `['base_url','token','username','verify_ssl']`，不含 `project_key`。\n\n## 期望行为\n\n把 `project_key` 作为声明式连接字段（非必填、placeholder 说明留空时取第一个项目），`JiraAdapter` 从 normalize 后的 cfg 读取，页面自动渲染；补多项目下显式 key 生效的契约测试。\n\n## 视角\n\n产品工程师；拓展性 / 易用性（数据源接入不应要求改代码才能配置项目）。",
+    "labels": ["p1", "extensibility", "usability", "jira"]
+  },
+  {
+    "id": "TRACK-07",
+    "title": "自定义 SLA 规则的 hours_key 被页面固定下发的 legacy 阈值键遮蔽，规则注册不生效",
+    "body": "## 问题\n\n`SlaRuleSpec` 允许通过 `normal_hours_key` / `weekend_hours_key` 自定义阈值键，但页面 `_build_spec()` 固定下发 `high_normal/high_weekend/normal_normal/normal_weekend`。`rules._threshold_for()` 用 `cfg.get(\"normal_normal\", cfg.get(normal_key, 72))` 取值，legacy 键永远先命中，注册自定义键的规则完全失效。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-07：注册 `normal_hours_key=\"custom_normal\"` 的规则，传入 `{\"custom_normal\":1,\"normal_normal\":72}`，4 小时工作项没有超时（按自定义规则应超时）。\n\n## 期望行为\n\n阈值查找以规则声明的键优先、legacy 键仅作兼容回落；或让页面按当前 SLA 规则动态渲染阈值字段键。补「注册自定义键 → 页面/引擎都生效」的回归。\n\n## 视角\n\n产品工程师 + 测试专家；拓展性 / 正确性（注册式规则必须真正驱动计算）。",
+    "labels": ["p1", "extensibility", "correctness", "sla"]
+  },
+  {
+    "id": "TRACK-08",
+    "title": "TAPD / 云效连接字段缺少超时与 SSL 开关，内网自签证书或慢服务无法接入",
+    "body": "## 问题\n\n`RequestsHttpTransport` 支持 timeout / verify，JIRA 也声明了 `verify_ssl`，但 TAPD 与云效的 `ConnectionFieldSpec` 既没有 `timeout_seconds` 也没有 `verify_ssl`，只能使用全局默认值（`TrackingLimits.default_verify_ssl=True`、`default_timeout_seconds=30`）。企业内网自签证书或响应慢的私有部署无法在页面上配置，只能改代码。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-08：`get_connection_fields(\"tapd\")` 与 `get_connection_fields(\"yunxiao\")` 均缺这两个键。\n\n## 期望行为\n\n两个数据源补齐 `timeout_seconds`（number，默认取注册上限）与 `verify_ssl`（select true/false，默认取注册上限）声明式字段，适配器从 normalize 后的 cfg 传给 transport；补字段存在与传参回归。\n\n## 视角\n\n产品工程师；易用性 / 拓展性（多环境适配是通用工具的基本能力）。",
+    "labels": ["p2", "usability", "extensibility", "http"]
+  },
+  {
+    "id": "TRACK-09",
+    "title": "汇总表「提交数」在 qa/dev 归因下恒为 0，指标口径误导用户",
+    "body": "## 问题\n\n`rules.compute_performance()` 仅在 `attribution.count_field == \"submitted\"` 且 `item.reporter == person.display_name` 时递增 `submitted`。qa 归因人员取 `closer`、dev 归因人员取 `resolver`，与 reporter 通常是不同人，因此导出的汇总表「提交数」列几乎永远为 0；而同表「基数」却按归因人数 +1，两列口径自相矛盾，用户无法解释报表。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-09：报告人「报告人」、归因人「测试A」，`PerformanceRow.submitted == 0`、`count == 1`。\n\n## 期望行为\n\n明确指标口径：若「提交数」指该人员提交的工作项，则按归因人员匹配 `reporter` 的语义重新定义并可在两种归因下正确计数；若该列无意义则从统一模型 / 导出表移除。无论哪种选择，都要让列名、数值与归因规则自洽，并补回归。\n\n## 视角\n\n测试专家 + 产品工程师；正确性 / 数据可读性（报表比代码更早被业务用户看到）。",
+    "labels": ["p1", "correctness", "data-quality", "usability"]
+  },
+  {
+    "id": "TRACK-10",
+    "title": "通用缺陷绩效分析页面仍展示禅道专属使用说明，JIRA/TAPD/云效用户被误导",
+    "body": "## 问题\n\n`tracking_performance_page.py` 调用 `show_doc(\"zentao_performance_stats\")`，页面首屏展开的是禅道专属文档：「数据库连接」「禅道角色体系」「禅道数据库」等。对 JIRA / TAPD / 云效用户完全不适用，且与页面首屏声明的「已接入 5 种数据源」自相矛盾，是典型的重构残留。\n\n## 复现与实测证据\n\n`.qa-audit/tracking_repro.py` TRACK-10：AppTest 首屏 markdown 中出现「禅道绩效统计工具使用说明」「数据库配置指南」。\n\n## 期望行为\n\n新增通用文档条目 `tracking_performance`（数据源无关的操作流程、归因/SLA 概念、凭据安全提示），页面改调该 key；旧禅道页面保留原文档不变。补冒烟断言不再出现禅道专属说明。\n\n## 视角\n\n产品工程师；易用性 / 一致性（通用工具不应残留单平台文案）。",
+    "labels": ["p2", "usability", "documentation"]
+  },
+  {
+    "id": "TRACK-11",
+    "title": "连接失败被包装成通用「请先确认」警告，用户无法判断数据源连接是否成功",
+    "body": "## 问题\n\n`tracking_performance_page.py::_connect()` 只在 `registry.create_adapter()` 抛异常时才输出「数据源连接失败」。但 5 个适配器都在构造函数里捕获初始化异常并只写 `last_error`，因此必填项缺失 / 连接参数错误时页面走的是 `render_warning_feedback(meta_err)`，展示成「请先确认 禅道直连数据库适配器初始化失败：zentao_db 缺少必填连接项：用户名」。用户看到的是通用警告而不是连接结论，也不知道下一步该改哪个连接项。\n\n## 复现与实测证据\n\n新增 e2e `17-tracking-performance.e2e.ts` 第二例：默认禅道配置缺用户名时点击「连接并加载」，body 只有「请先确认 ...初始化失败...」，断言「数据源连接失败」超时失败。\n\n## 期望行为\n\n连接阶段只要元数据取不到且 `last_error` 非空，就用 `render_error_feedback(f\"数据源连接失败：{err}\")` 给出明确结论与原始原因；若项目元数据可用但其他元数据调用失败，再降级为警告。连接失败后保持未连接状态。补 AppTest 与 e2e 回归。\n\n## 视角\n\n测试专家 + 产品工程师；易用性 / 状态反馈（连接结论必须明确、可行动）。",
+    "labels": ["p2", "usability", "status-feedback"]
+  }
+]
