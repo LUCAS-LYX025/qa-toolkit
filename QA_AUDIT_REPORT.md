@@ -790,3 +790,58 @@
 - 全量 pytest：**611 passed**。
 - e2e（新增 `17-tracking-performance.e2e.ts`：多数据源注册摘要与通用文档 / 连接失败明确结论且无异常）：2/2 passed，全套 **66/66 passed**。
 - GitHub：issues #425-#435 全部逐条评论并关闭，PR #436 已合并（merge commit `c2af82b`），仓库 open issues = 0。
+
+## 外部 MCP 消费层专项审计（2026-11-26，Issues #437-#446）
+
+### 背景：从「把自己暴露成 MCP」改为「消费外部 MCP」
+
+用户明确指出本机 Codex 已经接了云效 MCP，真实诉求是 **qa-toolkit 作为 MCP 客户端** 去消费外部能力：用禅道 / 云效 MCP 拿需求和缺陷，用飞书 / 蓝湖 MCP 读设计文档，再把非结构化需求变成可测试的结构化输入。因此不再先做 fake server，而是按真实协议对接。
+
+已确认的真实配置（**凭据只引用环境变量，不复制值**）：
+
+| 服务 | 形态 | 定义 | 用途 |
+| --- | --- | --- | --- |
+| 云效 | stdio | `npx -y alibabacloud-devops-mcp-server --toolsets=project-management` | 需求 / 任务 / 缺陷 / 评论 / 状态流转 |
+| 蓝湖 | HTTP | `http://10.0.6.111:8000/mcp?role=测试&name=Lucas` | 设计标注与交互说明 |
+| 禅道 | stdio | `mcp-zentao-11-3`（Cursor 已接） | 需求 / 任务 / 缺陷 |
+| MasterGo | stdio | `@mastergo/magic-mcp` | 设计稿，与蓝湖同类 |
+| 数据仓库 | stdio | 只读 MySQL MCP | 缺陷证据复核 |
+
+云效实战经验被固化为语义映射规则：标题搜索优先、`viewIdentifier` 不是工作项 ID、精确编号才用描述字段检索、状态流转必须遵守 `30→29→100085`。
+
+### 交付架构
+
+- `core/mcp_client_registry.py`：stdio / HTTP 两类外部 Server 注册化；凭据只登记环境变量名，命令参数用 `${ENV}` 占位；frozen Spec、返回副本、`replace` 覆盖、`RLock`、`reset` 隔离。
+- `core/mcp_config_import.py`：只读导入 Codex `config.toml` 与 Cursor `mcp.json`；明文凭据在导入瞬间替换为环境变量引用；别名归并 + 业务域过滤。
+- `integrations/mcp/`：`StdioTransport`（逐行 JSON-RPC，跳过噪声）/ `HttpTransport`（JSON 与 SSE）、受控 `McpClient`、`ExternalCapabilitySpec` 语义映射与不可信内容隔离。
+- `ui/components/mcp_import_panel.py`：用例生成器新增「从外部 MCP 导入需求 / 设计标注」入口，参数化 `target_key`，后续模块可直接复用。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 重复数据源（#437） | 导入后同时存在 `mastergo` / `mastergo-magic-mcp`、`zentao` / `zentao-11`、`adb_mysql` / `adb-mysql-mcp-server` |
+| 写操作可绕过（#438） | 不经页面直调 `update_work_item` 返回 `ok=True`，UI 二次确认是唯一防线 |
+| 工具缓存串源（#439） | 云效发现的工具在切到蓝湖后仍保留，可导致跨源误调用 |
+| 候选静默截断（#440） | 25 条候选只显示 10 条，无任何总数提示 |
+| 编号误判（#441） | `build_search_arguments('手机号 123')` 走 `subjectDescription` 宽泛搜索 |
+| 文本无上限（#442） | 80 万字符外部描述原样进入用例生成器，无截断无告警 |
+| stdio 噪声（#443） | stdout 混入 `npm warn deprecated` 后整次调用失败 |
+| trace 泄密（#444） | `token=abc…; password=…` 字符串值原样写进 trace |
+| 缺凭据无提示（#445） | 选中云效后不提示缺哪个环境变量，点到调用才报模糊错误 |
+| 导入无过滤（#446） | 一次导入 14 项，playwright / GitHub / Excel 等淹没业务数据源 |
+
+### 修复方案要点
+
+- **架构**：只读导入 + 语义映射，外部 tool 名与本地槽位解耦；换 MCP 提供商只改映射。
+- **安全**：写操作在客户端层默认拒绝，需显式 `allow_write`；按键名与字符串模式双重脱敏；HTTP 目标复用既有 SSRF 校验，私网默认拒绝；外部内容一律 `untrusted` 并做提示词注入检测。
+- **正确性**：server 切换清空工具缓存；编号识别收紧为 `XX-1234` 或独立长编号；stdio 只接受与请求 id 匹配的 JSON-RPC 响应。
+- **易用性**：别名归并、业务域过滤、候选总数提示、缺失环境变量提前展示。
+
+### 专项验证
+
+- 复现脚本 `.qa-audit/mcp_repro.py`：修复前 **10/10 坐实**，修复后 **0/10**。
+- 契约测试 `tests/test_mcp_external.py`：27 passed（含 AppTest 页面冒烟）；用例生成器页面零回归。
+- 全量 pytest：**638 passed**。
+- e2e（新增 `18-mcp-import.e2e.ts`）：2/2 passed，全套 **68/68 passed**（首次运行一条既有「文本对比工具」导航时序用例偶发失败，重跑全绿，与本次改动无关）。
+- GitHub：issues #437-#446 全部逐条评论并关闭，PR #447 已合并（merge commit `52ec407`），仓库 open issues = 0。
