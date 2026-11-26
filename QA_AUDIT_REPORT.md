@@ -750,3 +750,43 @@
 - 全量 pytest：**551 passed**（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）。
 - e2e（新增 `16-api-automation.e2e.ts`：首屏注册能力/安全默认值与 SSRF/凭据开关 / 生成阶段内网护栏告警可读 / 配置变更后产物过期 / 执行结果纯文字结论与精确清理二次确认）：4/4 passed，全套 **64/64 passed**；同时加固 07 号正则用例在全套串行下的会话污染，并修复 15 号研发辅助体检因共享解析器改动产生的跨模块回归。
 - GitHub：issues #389-#423 全部逐条评论并关闭，PR 已合并（PR #424，merge commit `76c2832`），仓库 open issues = 0。
+
+
+## 通用缺陷绩效分析重构专项审计（2026-11-26，Issues #425-#435）
+
+### 背景与范围
+
+- 原「禅道绩效统计」直接依赖禅道 MySQL `zt_bug`/`zt_product` 表与 SQL 聚合，绑定单一平台、归因方式写死、无统一模型与扩展点。用户要求重新设计为兼容 JIRA / TAPD / 云效 / 禅道等主流缺陷管理工具的通用能力，并明确「从拓展性、易用性考虑，不要局限于当前业务」。
+- 交付架构：`core/tracking_registry.py` 注册中心（数据源 / 连接字段 / 归因 / SLA / 绩效规则 / 运行上限，全部 frozen Spec + 返回副本 + `replace` + `RLock` + `reset`）；`integrations/tracking/` 统一模型与 `TrackingAdapter` 协议、纯 Python 绩效/SLA 规则引擎；5 个适配器（禅道直连 DB、禅道 HTTP 代理、JIRA REST、TAPD Open API、云效 OpenAPI，HTTP 适配器可注入 transport）；通用页面 `tracking_performance_page.py` 与首页工具入口。
+- 设计完成后按用户要求，以**测试专家 + 产品工程师**双视角再审一遍，问题不局限于 bug，覆盖正确性、安全性、易用性与拓展性，共坐实 11 项（TRACK-01~11 / #425-#435）；其中 TRACK-11 由新增 e2e 在浏览器层抓到。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 首屏不可用（#425） | 通用页面调用 `show_doc()` 但未导入，AppTest 异常 `name 'show_doc' is not defined`，全部功能不可达 |
+| SLA 多算 1 小时（#426） | `compute_effective_hours(9:00, 12:00)` 返回 `4.0`（闭区间），绩效超时判定被整体抬高 |
+| 角色链路空转（#427） | `QuerySpec(roles=('开发B',))` 仍返回 2 人；页面只有 `for ...: pass` 空循环，角色标签恒为 `—` |
+| 凭据明文（#428） | 禅道 DB / 代理适配器 `self.config = cfg` 保存明文密码 / token，与 HTTP 适配器脱敏行为不一致 |
+| 注册点空转（#429） | `register_performance_dimension()` 可注册，但全仓库无消费者，扩展方看不到任何变化 |
+| JIRA 项目键（#430） | `get_connection_fields('jira')` 无 `project_key`，但 roles 路径依赖它，多项目只能取第一个 |
+| 自定义 SLA 被遮蔽（#431） | 规则声明 `custom_normal=1`、页面下发 `normal_normal=72`，4 小时项未判超时 |
+| HTTP 连接项（#432） | TAPD / 云效无 `timeout_seconds` / `verify_ssl` 字段，内网自签与慢服务无法在页面配置 |
+| 误导性指标（#433） | qa / dev 归因下「提交数」恒为 0（归因人是 closer/resolver，不是 reporter），与「基数」口径自相矛盾 |
+| 文档残留（#434） | 通用页面首屏仍展开「禅道绩效统计工具使用说明 / 数据库配置指南」，误导 JIRA/TAPD/云效用户 |
+| **e2e 新发现：连接反馈（#435）** | 默认禅道配置缺用户名时点「连接并加载」，只显示「请先确认 禅道直连数据库适配器初始化失败…」，没有明确的连接失败结论 |
+
+### 修复方案要点
+
+- **架构**：注册中心 + 统一模型 + 适配器协议 + 纯 Python 规则引擎，页面只消费注册表；禅道旧页面与旧测试保持零回归。
+- **正确性**：SLA 改半开区间 `[start, end)`，不足整小时按实际占比计入；角色过滤按 `Person.match_values` 生效，角色元数据构造 `Person` 传入引擎；自定义 SLA 键优先于 legacy 键；移除与归因口径冲突的「提交数」列，仅保留自洽的「基数 / 超时响应率」。
+- **安全性**：禅道两个适配器统一走 `redact_connection_config()`，明文只用于建立连接 / 构造客户端，不留在可序列化属性上。
+- **易用性与拓展性**：页面补齐角色多选与真实角色标签；绩效维度接入页面展示；`project_key`、TAPD / 云效 `timeout_seconds` / `verify_ssl` 全部改为声明式连接字段；通用文档条目替代禅道专属说明；连接失败统一用 `render_error_feedback("数据源连接失败：<原因>")` 给出明确结论，并缓存项目元数据减少 rerun 重复请求。
+
+### 专项验证
+
+- 复现脚本 `.qa-audit/tracking_repro.py`：修复前 **11/11 坐实**，修复后 **0/11**。
+- 新架构契约测试 `tests/test_tracking_registry.py`、`tests/test_tracking_adapters.py`、`tests/test_tracking_rules.py`、`tests/test_tracking_performance_page.py`：60 passed；5 个禅道旧测试文件与 `test_tool_routes.py` 零回归，专项合计 **87 passed**。
+- 全量 pytest：**611 passed**。
+- e2e（新增 `17-tracking-performance.e2e.ts`：多数据源注册摘要与通用文档 / 连接失败明确结论且无异常）：2/2 passed，全套 **66/66 passed**。
+- GitHub：issues #425-#435 全部逐条评论并关闭，PR #436 已合并（merge commit `c2af82b`），仓库 open issues = 0。
