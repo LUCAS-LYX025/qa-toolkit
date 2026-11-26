@@ -586,6 +586,11 @@ TOOL_CATEGORIES = {
         "description": "禅道数据统计、绩效分析、报告生成",
         "color": "#4CAF50"
     },
+    "缺陷绩效分析": {
+        "icon": "📊",
+        "description": "连接 JIRA/TAPD/云效/禅道等多平台，按统一模型计算 SLA 绩效",
+        "color": "#2563eb"
+    },
     "日志分析工具": {
         "icon": "📜",
         "description": "日志解析、级别统计、模式识别",
