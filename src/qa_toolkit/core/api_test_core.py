@@ -9,6 +9,7 @@ import base64
 import subprocess
 import sys
 import time
+import uuid
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
@@ -17,35 +18,31 @@ import pandas as pd
 import requests
 
 from qa_toolkit.paths import API_CASES_DIR, REPORTS_DIR, UPLOADS_DIR
+from qa_toolkit.core import api_automation_registry as auto_reg
 
 
-SUBPROCESS_TIMEOUT_SECONDS = 300
+SUBPROCESS_TIMEOUT_SECONDS = 300  # 兼容旧引用；实际超时由 auto_reg.AutomationLimits 提供
 
 
 class InterfaceAutoTestCore:
-    """接口自动化测试核心类"""
+    """接口自动化测试核心类。
 
-    HTTP_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
-    REQUEST_FORMAT_MAP = {
-        "自动检测": "auto",
-        "auto": "auto",
-        "json=参数": "json",
-        "json": "json",
-        "data=json.dumps()": "data_json",
-        "json格式(data)": "data_json",
-        "data": "data_json",
-        "form-urlencoded": "form",
-        "form": "form",
-        "raw": "raw",
-        "text": "raw",
-    }
-    EXECUTION_MODE_MAP = {
-        "pytest": "pytest",
-        "unittest": "unittest",
-        "requests脚本": "requests_script",
-        "requests_script": "requests_script",
-        "requests": "requests_script",
-    }
+    HTTP 方法、请求格式、执行模式、鉴权方式、模板风格、状态码分桶与运行上限
+    不再硬编码，统一由 ``api_automation_registry`` 提供注册式扩展点。下面的
+    类属性仅作兼容快照，实际逻辑一律查询注册表。
+    """
+
+    @property
+    def HTTP_METHODS(self):
+        return set(auto_reg.get_http_methods())
+
+    @property
+    def REQUEST_FORMAT_MAP(self):
+        return {spec.label: key for key, spec in auto_reg.get_request_formats().items()}
+
+    @property
+    def EXECUTION_MODE_MAP(self):
+        return {spec.label: key for key, spec in auto_reg.get_execution_modes().items()}
 
     def __init__(self):
         self.base_dir = str(API_CASES_DIR.parent)
@@ -61,11 +58,28 @@ class InterfaceAutoTestCore:
         # parse_content 支持「贴一个 Swagger URL」自动拉取，这属于服务端发起请求，
         # 默认拒绝内网/回环/链路本地/元数据地址；页面可显式开启。
         self.allow_private_targets = False
+        self.warnings: List[str] = []
+        self.last_truncation: Dict[str, Any] = {}
         self.setup_directories()
 
+    def _warn(self, message: Any) -> None:
+        """收集告警（支持单条或列表），去重后供页面 / 导出件展示。"""
+        items = message if isinstance(message, (list, tuple)) else [message]
+        for item in items:
+            text = str(item or "").strip()
+            if text and text not in self.warnings:
+                self.warnings.append(text)
+
+    def get_warnings(self) -> List[str]:
+        return list(self.warnings)
+
     def set_allow_private_targets(self, flag: bool) -> None:
-        """是否允许从内网/本地地址拉取远程接口文档（默认关闭）。"""
+        """是否允许从内网/本地地址拉取远程接口文档（默认关闭）。
+
+        同步更新注册式目标策略，让「导入时」与「执行时」使用同一套护栏。
+        """
         self.allow_private_targets = bool(flag)
+        auto_reg.configure_automation_limits(allow_private_targets=bool(flag))
 
     def setup_directories(self):
         """创建必要的目录"""
@@ -484,37 +498,98 @@ class InterfaceAutoTestCore:
         base_url: str,
         timeout: int,
         retry_times: int,
-        verify_ssl: bool,
+        verify_ssl: Optional[bool] = None,
         request_format: str = "自动检测",
         template_style: str = "标准模板",
         environment_config: Optional[Dict[str, Any]] = None,
         auth_config: Optional[Dict[str, Any]] = None,
+        include_credentials: Optional[bool] = None,
     ) -> Dict[str, str]:
-        """生成测试文件"""
-        mode = self._normalize_execution_mode(framework)
-        cases = self._prepare_cases(interfaces)
+        """生成测试文件（上限、安全默认值、鉴权与凭据脱敏全部走注册式扩展点）。"""
+        self.warnings = []
+        self.last_truncation = {}
+        limits = auto_reg.get_automation_limits()  # AutomationLimits
+
+        mode, mode_warning = auto_reg.normalize_execution_mode(framework)
+        self._warn(mode_warning)
+
+        raw_count = len(interfaces or [])
+        effective_interfaces = list(interfaces or [])[: limits.max_interfaces]
+        if raw_count > limits.max_interfaces:
+            self._warn(f"接口数量 {raw_count} 超过上限 {limits.max_interfaces}，已截断")
+            self.last_truncation["interfaces"] = {"total": raw_count, "kept": len(effective_interfaces)}
+        cases = self._prepare_cases(effective_interfaces)
+
+        safe_timeout = auto_reg.clamp_int(
+            timeout, limits.default_timeout_seconds, limits.min_timeout_seconds, limits.max_timeout_seconds
+        )
+        if safe_timeout != auto_reg.to_int(timeout, safe_timeout):
+            self._warn(f"超时时间已钳制到 {safe_timeout} 秒（上限 {limits.max_timeout_seconds}）")
+        safe_retry = auto_reg.clamp_int(retry_times, 0, 0, limits.max_retry_times)
+        if safe_retry != auto_reg.to_int(retry_times, safe_retry):
+            self._warn(f"重试次数已钳制到 {safe_retry}（上限 {limits.max_retry_times}）")
+        if verify_ssl is None:
+            verify_ssl = limits.default_verify_ssl
+        if not bool(verify_ssl):
+            self._warn("已显式关闭 SSL 证书校验：HTTPS 存在中间人风险，请仅在可信网络下使用")
+
+        req_format, fmt_warning = auto_reg.normalize_request_format(request_format)
+        self._warn(fmt_warning)
+        style_key, style_warning = auto_reg.resolve_template_style(template_style)
+        self._warn(style_warning)
+
+        if str(base_url or "").strip():
+            ok, reason = auto_reg.validate_target_url(base_url)
+            if not ok:
+                self._warn(f"基础 URL 校验提示: {reason}")
+
         env_config = self._normalize_environment_config(environment_config, base_url)
-        normalized_auth = self._normalize_auth_config(auth_config)
-        auth_headers = self._build_auth_headers(normalized_auth)
-        for env_name, env_item in env_config.get("environments", {}).items():
-            merged_headers = dict(env_item.get("headers", {}))
-            for key, value in auth_headers.items():
-                merged_headers[key] = value
-            env_item["headers"] = merged_headers
+        normalized_auth = auto_reg.normalize_auth_config(auth_config)
+        self._warn(normalized_auth.get("mode_warning"))
+        auth_headers, auth_warnings = auto_reg.build_auth_headers(normalized_auth)
+        self._warn(auth_warnings)
+
+        include = (
+            limits.allow_credentials_in_artifacts if include_credentials is None else bool(include_credentials)
+        )
+        if include:
+            self._warn("已显式开启「产物中保留凭据」：token/密码会写入生成脚本与下载件，仅限本地调试")
+            for env_item in env_config.get("environments", {}).values():
+                merged_headers = dict(env_item.get("headers", {}))
+                merged_headers.update(auth_headers)
+                env_item["headers"] = merged_headers
+
+        redacted_auth, credential_env_vars, credential_warnings = auto_reg.redact_auth_config(
+            normalized_auth, include_credentials=include
+        )
+        self._warn(credential_warnings)
 
         active_env = env_config.get("active_env", "custom")
         active_env_config = env_config.get("environments", {}).get(active_env, {})
+        # 严格 JSON 会把 NaN/Infinity 静默清洗成 null：先把清洗动作变成可观测告警，
+        # 再一并写进 config / manifest / 页面，绝不静默改写用户的期望响应（#417/R3-05）。
+        # 非有限浮点只可能来自用户的接口数据（expected_response / headers），config 内均为规整值。
+        for json_warn in auto_reg.json_warnings(cases):
+            self._warn(json_warn)
         config = {
             "base_url": active_env_config.get("base_url") or self._normalize_base_url(base_url),
-            "timeout": int(timeout),
-            "retry_times": int(retry_times),
+            "timeout": safe_timeout,
+            "retry_times": safe_retry,
             "verify_ssl": bool(verify_ssl),
-            "request_format": self._normalize_request_format(request_format),
-            "template_style": template_style or "标准模板",
+            "request_format": req_format,
+            "template_style": style_key,
             "active_env": active_env,
             "environments": env_config.get("environments", {}),
             "default_headers": active_env_config.get("headers", {}),
-            "auth": normalized_auth,
+            "auth": redacted_auth,
+            "credential_env_vars": credential_env_vars,
+            "allow_private_targets": limits.allow_private_targets,
+            "max_response_body_chars": limits.max_response_body_chars,
+            "max_header_value_chars": limits.max_header_value_chars,
+            "max_retry_times": limits.max_retry_times,
+            "protocols": list(auto_reg.get_protocols()),
+            "warnings": list(self.warnings),
+            "truncation": deepcopy(self.last_truncation),
         }
 
         manifest = {
@@ -522,13 +597,24 @@ class InterfaceAutoTestCore:
             "mode": mode,
             "config": config,
             "cases": cases,
+            "input_signature": auto_reg.compute_signature(
+                {"interfaces": effective_interfaces, "config": config}
+            ),
+            "config_snapshot": deepcopy(config),
+            "registry_summary": auto_reg.get_registry_summary(),
+            "warnings": list(self.warnings),
+            "truncation": deepcopy(self.last_truncation),
         }
 
         files = {
-            "interface_manifest.json": json.dumps(manifest, ensure_ascii=False, indent=2),
+            "interface_manifest.json": auto_reg.strict_json_dumps(manifest, indent=2),
         }
 
-        if mode == "pytest":
+        spec = auto_reg.get_execution_modes().get(mode)
+        renderer = auto_reg.get_framework_renderer(mode)
+        if renderer:
+            files[spec.target_file] = renderer(cases, config)
+        elif mode == "pytest":
             files["test_interfaces.py"] = self._render_pytest_file(cases, config)
         elif mode == "unittest":
             files["test_interfaces.py"] = self._render_unittest_file(cases, config)
@@ -541,11 +627,7 @@ class InterfaceAutoTestCore:
 
     def save_test_files(self, test_files: Dict[str, str]) -> Dict[str, str]:
         """保存生成的测试文件"""
-        known_generated_files = {
-            "test_interfaces.py",
-            "run_interfaces.py",
-            "interface_manifest.json",
-        }
+        known_generated_files = set(auto_reg.get_known_generated_files())
 
         for stale_name in known_generated_files - set(test_files.keys()):
             stale_path = os.path.join(self.test_dir, stale_name)
@@ -662,7 +744,9 @@ class InterfaceAutoTestCore:
 </body>
 </html>
 """
-        report_path = os.path.join(self.report_dir, f"test_report_{int(time.time())}.html")
+        report_path = os.path.join(
+            self.report_dir, f"test_report_{int(time.time())}_{uuid.uuid4().hex[:8]}.html"
+        )
         with open(report_path, "w", encoding="utf-8") as file:
             file.write(html_content)
         return report_path
@@ -1111,12 +1195,13 @@ tests {
         if not path:
             raise ValueError("接口路径不能为空")
 
-        method = self._clean_text(raw_interface.get("method")) or "GET"
-        method = method.upper()
-        if method not in self.HTTP_METHODS:
-            method = "GET"
+        method, method_warning = auto_reg.normalize_method(raw_interface.get("method"), "GET")
+        self._warn(method_warning)
 
-        headers = self._ensure_mapping(raw_interface.get("headers"))
+        headers, header_warnings = auto_reg.sanitize_headers(
+            self._ensure_mapping(raw_interface.get("headers"))
+        )
+        self._warn(header_warnings)
         parameters = raw_interface.get("parameters")
         path_params = self._ensure_mapping(raw_interface.get("path_params"))
         query_params = self._ensure_mapping(raw_interface.get("query_params"))
@@ -1158,6 +1243,13 @@ tests {
             or raw_interface.get("body_type")
             or self._infer_request_format(headers, body)
         )
+        raw_input_status = raw_interface.get("expected_status")
+        expected_status, status_info = self._validate_expected_status(raw_input_status)
+        # 保真：非法原始值留给下游（如接口研发辅助的文档体检）继续判定风险，
+        # 但本工具生成脚本仍使用回落后的合法状态码，不发畸形请求。
+        raw_status = raw_interface.get("raw_expected_status")
+        if raw_status is None and not status_info["valid"]:
+            raw_status = raw_input_status
 
         expected_response = raw_interface.get("expected_response")
         if isinstance(expected_response, str):
@@ -1180,7 +1272,10 @@ tests {
             "path_params": path_params,
             "query_params": query_params,
             "body": body,
-            "expected_status": self._coerce_int(raw_interface.get("expected_status"), 200),
+            "expected_status": expected_status,
+            "raw_expected_status": raw_status,
+            "status_bucket": status_info["label"],
+            "status_valid": status_info["valid"],
             "expected_response": expected_response if expected_response is not None else {},
             "request_format": request_format,
             "tags": tags,
@@ -1297,13 +1392,112 @@ from copy import deepcopy
 
 import requests
 
-CONFIG = json.loads(__CONFIG_JSON_LITERAL__)
-CASES = json.loads(__CASES_JSON_LITERAL__)
+CONFIG = __CONFIG_JSON_LITERAL__
+CASES = __CASES_JSON_LITERAL__
 CASE_INDEX = {case["case_id"]: case for case in CASES}
+MAX_RESPONSE_BODY_CHARS = int(CONFIG.get("max_response_body_chars", 200000))
+MAX_HEADER_VALUE_CHARS = int(CONFIG.get("max_header_value_chars", 8000))
+MAX_RETRY_TIMES = int(CONFIG.get("max_retry_times", 5))
+ALLOWED_PROTOCOLS = tuple(CONFIG.get("protocols") or ("http", "https"))
+ALLOW_PRIVATE = bool(CONFIG.get("allow_private_targets", False))
+TOKEN_CHARS = set("!#$%&'*+.^_`|~0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-")
 
 
 def clone_value(value):
     return deepcopy(value)
+
+
+def _valid_header_name(name):
+    text = str(name or "")
+    return bool(text) and all(ch in TOKEN_CHARS for ch in text)
+
+
+def _valid_header_value(value):
+    text = "" if value is None else str(value)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in text):
+        return False
+    return len(text) <= MAX_HEADER_VALUE_CHARS
+
+
+def sanitize_headers(headers):
+    cleaned = {}
+    warnings = []
+    for name, value in (headers or {}).items():
+        if not _valid_header_name(name):
+            warnings.append("已丢弃非法 Header 名 " + repr(str(name)))
+            continue
+        if not _valid_header_value(value):
+            warnings.append("已丢弃非法 Header 值: " + str(name))
+            continue
+        cleaned[str(name)] = "" if value is None else str(value)
+    return cleaned, warnings
+
+
+def load_credential_headers(config):
+    injected = {}
+    warnings = []
+    for name, env_var in (config.get("credential_env_vars") or {}).items():
+        value = os.environ.get(str(env_var))
+        if not value:
+            warnings.append("凭据环境变量 " + str(env_var) + " 未设置，已跳过 " + str(name))
+            continue
+        if not _valid_header_name(name) or not _valid_header_value(value):
+            warnings.append("凭据头校验失败，已跳过 " + str(name))
+            continue
+        injected[str(name)] = value
+    return injected, warnings
+
+
+def _is_private_host(host):
+    import ipaddress
+    text = str(host or "").strip().lower().rstrip(".")
+    if not text:
+        return True
+    if text in {"localhost", "metadata", "metadata.google.internal"} or text.endswith(
+        (".localhost", ".internal", ".local")
+    ):
+        return True
+    try:
+        addr = ipaddress.ip_address(text.strip("[]"))
+    except ValueError:
+        return False
+    return bool(
+        addr.is_private or addr.is_loopback or addr.is_link_local
+        or addr.is_reserved or addr.is_multicast or addr.is_unspecified
+    )
+
+
+def validate_target_url(url):
+    from urllib.parse import urlsplit
+    parsed = urlsplit(str(url or "").strip())
+    if (parsed.scheme or "").lower() not in ALLOWED_PROTOCOLS:
+        return False, "不支持的协议 " + (parsed.scheme or "(空)") + "，仅允许：" + "/".join(ALLOWED_PROTOCOLS)
+    if parsed.username or parsed.password:
+        return False, "目标地址包含 userinfo，已拒绝"
+    if not parsed.hostname:
+        return False, "目标地址缺少主机名"
+    try:
+        port = parsed.port
+    except ValueError:
+        return False, "目标地址端口非法"
+    if port is not None and not (1 <= port <= 65535):
+        return False, "目标地址端口越界"
+    if not ALLOW_PRIVATE and _is_private_host(parsed.hostname):
+        return False, "内网/回环/链路本地/元数据地址默认被拦截，请显式开启「允许内网/本地目标」"
+    return True, ""
+
+
+def json_safe(value, depth=0):
+    import math as _math
+    if depth > 12:
+        return None
+    if isinstance(value, float) and not _math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): json_safe(v, depth + 1) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [json_safe(v, depth + 1) for v in value]
+    return value
 
 
 def get_current_env_name():
@@ -1324,15 +1518,30 @@ def get_env_config():
     return env_name, env_data
 
 
-def build_url(base_url, path, path_params):
+def build_url(base_url, path, path_params, query_params=None):
+    from urllib.parse import quote, urlsplit, urlunsplit, parse_qsl, urlencode
     actual_path = path or "/"
     for key, value in (path_params or {}).items():
-        actual_path = actual_path.replace("{" + str(key) + "}", str(value))
-    if actual_path.startswith(("http://", "https://")):
-        return actual_path
-    if not base_url:
-        return actual_path
-    return base_url.rstrip("/") + "/" + actual_path.lstrip("/")
+        marker = "{" + str(key) + "}"
+        raw = "" if value is None else str(value)
+        encoded = raw[4:] if raw.startswith("raw:") else quote(raw, safe="")
+        actual_path = actual_path.replace(marker, encoded)
+    base = urlsplit(str(base_url or ""))
+    target = urlsplit(actual_path)
+    if target.scheme and target.netloc:
+        merged = target
+    else:
+        merged_path = ((base.path or "").rstrip("/") + "/" + (target.path or "").lstrip("/")) or "/"
+        merged_path = re.sub(r"/{2,}", "/", merged_path)
+        merged = target._replace(scheme=base.scheme, netloc=base.netloc, path=merged_path)
+    pairs = list(parse_qsl(merged.query, keep_blank_values=True))
+    if base.scheme and base.netloc and base.query:
+        pairs = list(parse_qsl(base.query, keep_blank_values=True)) + pairs
+    for key, value in (query_params or {}).items():
+        values = value if isinstance(value, (list, tuple)) else [value]
+        for item in values:
+            pairs.append((str(key), "" if item is None else str(item)))
+    return urlunsplit(merged._replace(query=urlencode(pairs, doseq=True)))
 
 
 def merge_request_parts(case):
@@ -1376,84 +1585,87 @@ def response_json(response):
         return None
 
 
-def compare_standard(expected, actual, prefix):
+def compare_response(expected, actual, strategy, prefix="response"):
+    # 递归结构化比对，输出点号/索引路径，带深度与字段数上限。
+    # smoke 跳过响应体；standard 只校验期望中出现的字段；
+    # strict 额外要求键集合与数组长度一致。
+    if strategy == "smoke":
+        return []
+    max_depth = 12
+    max_paths = 500
     failures = []
-    if isinstance(expected, dict):
-        if not isinstance(actual, dict):
-            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
-        for key, value in expected.items():
-            if key not in actual:
-                failures.append(f"{prefix} 缺少字段 {key}")
-                continue
-            if isinstance(value, (dict, list)):
-                continue
-            if value not in (None, "", {}, []) and actual.get(key) != value:
-                failures.append(f"{prefix}.{key} 期望 {value!r}，实际 {actual.get(key)!r}")
-        return failures
+    counter = [0]
 
-    if isinstance(expected, list):
-        if all(isinstance(item, str) for item in expected):
-            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
-                for key in expected:
-                    if key not in actual[0]:
-                        failures.append(f"{prefix}[0] 缺少字段 {key}")
-                return failures
-            if isinstance(actual, dict):
-                for key in expected:
-                    if key not in actual:
-                        failures.append(f"{prefix} 缺少字段 {key}")
-                return failures
-        if not isinstance(actual, list) or not actual:
-            return [f"{prefix} 应返回非空数组"]
-        return []
+    def walk(exp, act, path, depth, strict):
+        counter[0] += 1
+        if counter[0] > max_paths:
+            if not failures:
+                failures.append("比对字段数超过上限 " + str(max_paths) + "，结果已截断")
+            return
+        if depth > max_depth:
+            failures.append(path + " 超过最大递归深度，已跳过")
+            return
+        if isinstance(exp, dict):
+            if not isinstance(act, dict):
+                failures.append(path + " 应为对象，实际为 " + type(act).__name__)
+                return
+            for key, value in exp.items():
+                child = path + "." + str(key)
+                if key not in act:
+                    failures.append(child + " 缺少字段")
+                    continue
+                numeric_pair = (
+                    isinstance(value, (int, float)) and isinstance(act[key], (int, float))
+                    and not isinstance(value, bool) and not isinstance(act[key], bool)
+                )
+                if type(value) is not type(act[key]) and not numeric_pair:
+                    failures.append(child + " 类型变化: " + type(value).__name__ + " -> " + type(act[key]).__name__)
+                    continue
+                walk(value, act[key], child, depth + 1, strict)
+            if strict:
+                for key in act:
+                    if key not in exp:
+                        failures.append(path + "." + str(key) + " 为多余字段（严格模板）")
+            return
+        if isinstance(exp, list):
+            if not isinstance(act, list):
+                failures.append(path + " 应为数组，实际为 " + type(act).__name__)
+                return
+            if exp and all(isinstance(item, str) for item in exp):
+                target = act[0] if act and isinstance(act[0], dict) else None
+                if isinstance(target, dict):
+                    for key in exp:
+                        if key not in target:
+                            failures.append(path + "[0] 缺少字段 " + str(key))
+                    return
+            if len(act) < len(exp):
+                failures.append(path + " 长度不足，期望至少 " + str(len(exp)) + "，实际 " + str(len(act)))
+            if strict and len(act) != len(exp):
+                failures.append(path + " 长度不一致（严格模板）")
+            for index, value in enumerate(exp):
+                if index >= len(act):
+                    break
+                walk(value, act[index], path + "[" + str(index) + "]", depth + 1, strict)
+            return
+        if isinstance(exp, str) and not isinstance(act, str):
+            if exp not in str(act):
+                failures.append(path + " 未包含期望文本 " + repr(exp))
+            return
+        if exp != act or type(exp) is not type(act):
+            failures.append(path + " 期望 " + repr(exp) + "，实际 " + repr(act))
 
-    if isinstance(expected, str):
-        if expected not in str(actual):
-            return [f"{prefix} 未包含期望文本 {expected!r}"]
-        return []
-
-    if expected not in (None, "", {}, []) and expected != actual:
-        return [f"{prefix} 期望 {expected!r}，实际 {actual!r}"]
+    walk(expected, actual, prefix, 0, strategy == "strict")
     return failures
+
+
+def compare_standard(expected, actual, prefix):
+    # 兼容旧入口：标准 = 递归校验期望中出现的字段。
+    return compare_response(expected, actual, "standard", prefix)
 
 
 def compare_strict(expected, actual, prefix):
-    failures = []
-    if isinstance(expected, dict):
-        if not isinstance(actual, dict):
-            return [f"{prefix} 应为对象，实际为 {type(actual).__name__}"]
-        for key, value in expected.items():
-            if key not in actual:
-                failures.append(f"{prefix} 缺少字段 {key}")
-                continue
-            failures.extend(compare_strict(value, actual[key], f"{prefix}.{key}"))
-        return failures
-
-    if isinstance(expected, list):
-        if all(isinstance(item, str) for item in expected):
-            if isinstance(actual, list) and actual and isinstance(actual[0], dict):
-                for key in expected:
-                    if key not in actual[0]:
-                        failures.append(f"{prefix}[0] 缺少字段 {key}")
-                return failures
-            if isinstance(actual, dict):
-                for key in expected:
-                    if key not in actual:
-                        failures.append(f"{prefix} 缺少字段 {key}")
-                return failures
-        if not isinstance(actual, list):
-            return [f"{prefix} 应为数组，实际为 {type(actual).__name__}"]
-        if len(actual) < len(expected):
-            failures.append(f"{prefix} 长度不足，期望至少 {len(expected)}，实际 {len(actual)}")
-        for index, value in enumerate(expected):
-            if index >= len(actual):
-                break
-            failures.extend(compare_strict(value, actual[index], f"{prefix}[{index}]"))
-        return failures
-
-    if expected != actual:
-        failures.append(f"{prefix} 期望 {expected!r}，实际 {actual!r}")
-    return failures
+    # 兼容旧入口：严格 = 递归校验且要求键集合/数组长度一致。
+    return compare_response(expected, actual, "strict", prefix)
 
 
 def build_assertions(case, response):
@@ -1471,15 +1683,14 @@ def build_assertions(case, response):
         failures.append(status_message)
 
     expected_response = case.get("expected_response")
-    if expected_response in (None, "", {}, []) or CONFIG.get("template_style") == "冒烟模板":
+    style = str(CONFIG.get("template_style") or "standard")
+    strategy = "smoke" if style in ("smoke", "冒烟模板") else "strict" if style in ("strict", "严格模板") else "standard"
+    if expected_response in (None, "", {}, []) or strategy == "smoke":
         return assertions, failures
 
     actual_payload = response_json(response)
-    actual_value = actual_payload if actual_payload is not None else response.text
-    if CONFIG.get("template_style") == "严格模板":
-        payload_failures = compare_strict(expected_response, actual_value, "response")
-    else:
-        payload_failures = compare_standard(expected_response, actual_value, "response")
+    actual_value = actual_payload if actual_payload is not None else response.text[:MAX_RESPONSE_BODY_CHARS]
+    payload_failures = compare_response(expected_response, actual_value, strategy, "response")
 
     assertions.append({
         "description": "响应内容断言",
@@ -1502,7 +1713,7 @@ def build_detail(case, status, response, response_time, url, error, assertions, 
         "response_time": round(response_time, 4),
         "headers": headers or case.get("headers") or {},
         "parameters": case.get("parameters"),
-        "response_body": response.text if response is not None else "",
+        "response_body": (response.text[:MAX_RESPONSE_BODY_CHARS] if response is not None else ""),
         "error": error or "",
         "assertions": assertions or [],
         "url": url,
@@ -1511,7 +1722,7 @@ def build_detail(case, status, response, response_time, url, error, assertions, 
 
 
 def emit_case_result(detail):
-    print("CASE_RESULT::" + json.dumps(detail, ensure_ascii=False))
+    print("CASE_RESULT::" + json.dumps(json_safe(detail), ensure_ascii=False, allow_nan=False))
 
 
 def send_request(session, case):
@@ -1519,32 +1730,39 @@ def send_request(session, case):
     env_name, env_config = get_env_config()
     headers = clone_value(env_config.get("headers") or {})
     headers.update(clone_value(case.get("headers") or {}))
+    headers.update(load_credential_headers(CONFIG)[0])
+    headers, header_warnings = sanitize_headers(headers)
+    for warning in header_warnings:
+        print("HEADER_WARNING::" + warning)
     method = str(case.get("method", "GET")).upper()
     request_format = resolve_request_format(case, headers, body)
-    url = build_url(env_config.get("base_url") or CONFIG.get("base_url", ""), case.get("path", ""), path_params)
+    if method == "GET" and isinstance(body, dict) and body and not query_params:
+        query_params = dict(body)
+    base_url = env_config.get("base_url") or CONFIG.get("base_url", "")
+    url = build_url(base_url, case.get("path", ""), path_params, query_params)
+    ok, reason = validate_target_url(url)
+    if not ok:
+        raise ValueError("目标地址校验失败：" + reason)
     request_kwargs = {
         "method": method,
         "url": url,
         "headers": headers,
-        "params": query_params or None,
         "timeout": int(CONFIG.get("timeout", 30)),
-        "verify": bool(CONFIG.get("verify_ssl", False)),
+        "verify": bool(CONFIG.get("verify_ssl", True)),
     }
 
     if method != "GET" and body is not None:
         if request_format == "data_json":
             headers.setdefault("Content-Type", "application/json")
-            request_kwargs["data"] = json.dumps(body, ensure_ascii=False)
+            request_kwargs["data"] = json.dumps(json_safe(body), ensure_ascii=False, allow_nan=False)
         elif request_format == "form":
-            request_kwargs["data"] = body
+            request_kwargs["data"] = json_safe(body)
         elif request_format == "raw":
-            request_kwargs["data"] = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False)
+            request_kwargs["data"] = body if isinstance(body, str) else json.dumps(json_safe(body), ensure_ascii=False, allow_nan=False)
         else:
-            request_kwargs["json"] = body
-    elif method == "GET" and body and not request_kwargs["params"] and isinstance(body, dict):
-        request_kwargs["params"] = body
+            request_kwargs["json"] = json_safe(body)
 
-    retry_times = int(CONFIG.get("retry_times", 0))
+    retry_times = min(int(CONFIG.get("retry_times", 0)), MAX_RETRY_TIMES)
     last_error = None
     for attempt in range(retry_times + 1):
         try:
@@ -1581,22 +1799,27 @@ def execute_case(session, case):
         emit_case_result(detail)
         raise
 """
+        # 用 base64 表达式注入，而不是 str.replace 一个 repr(JSON 字符串)：
+        # 后者会在用户配置/接口数据恰好含 "__CASES_JSON_LITERAL__" 等哨兵时
+        # 触发二次替换，把 CONFIG 内容改坏、生成脚本不可编译（#415/R3-01）。
+        # base64 字母表不含下划线，编码结果不可能与任何哨兵碰撞。
         return (
-            template.replace("__CONFIG_JSON_LITERAL__", repr(json.dumps(config, ensure_ascii=False)))
-            .replace("__CASES_JSON_LITERAL__", repr(json.dumps(cases, ensure_ascii=False)))
+            template.replace("__CONFIG_JSON_LITERAL__", auto_reg.encode_json_literal(config))
+            .replace("__CASES_JSON_LITERAL__", auto_reg.encode_json_literal(cases))
             .strip()
         )
 
     def _run_command(self, command: List[str], mode: str) -> Dict[str, Any]:
         """运行子进程并解析结构化输出"""
         start_time = time.time()
+        timeout_seconds = auto_reg.get_automation_limits().subprocess_timeout_seconds
         try:
             result = subprocess.run(
                 command,
                 capture_output=True,
                 text=True,
                 cwd=self.test_dir,
-                timeout=SUBPROCESS_TIMEOUT_SECONDS,
+                timeout=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
             output_parts = []
@@ -1605,7 +1828,7 @@ def execute_case(session, case):
                     continue
                 output_parts.append(part.decode("utf-8", "replace") if isinstance(part, bytes) else str(part))
             return self._build_runner_error(
-                f"测试执行超时（超过 {SUBPROCESS_TIMEOUT_SECONDS} 秒）",
+                f"测试执行超时（超过 {timeout_seconds} 秒）",
                 output="\n".join(output_parts),
             )
         except Exception as exc:
@@ -1759,9 +1982,9 @@ def execute_case(session, case):
                 f"<td>{html.escape(str(detail.get('name', '未命名接口')))}</td>"
                 f"<td>{html.escape(str(detail.get('method', 'GET')))}</td>"
                 f"<td>{html.escape(str(detail.get('path', '')))}</td>"
-                f"<td>{detail.get('status', 'unknown')}</td>"
-                f"<td>{detail.get('status_code', 0)}</td>"
-                f"<td>{detail.get('response_time', 0):.2f}s</td>"
+                f"<td>{html.escape(str(detail.get('status', 'unknown')))}</td>"
+                f"<td>{html.escape(str(detail.get('status_code', 0)))}</td>"
+                f"<td>{html.escape(str(auto_reg.to_float(detail.get('response_time', 0))))}s</td>"
                 "</tr>"
             )
         return "".join(rows) or "<tr><td colspan='6'>暂无测试详情</td></tr>"
@@ -2464,15 +2687,51 @@ def execute_case(session, case):
         }
         return self._normalize_interface(raw_interface)
 
+    @staticmethod
+    def _extract_braces_block(text: str, block_name: str) -> str:
+        """按花括号配对提取块内容，支持块内嵌套 { }（如 body:json 的 JSON 对象）。
+
+        历史实现用 ``(.*?)^\\s*\\}`` 非贪婪正则，遇到 JSON body 内部的 ``}``
+        就提前截断，导致 ``body:json`` 解析出半截非法 JSON（#416/R3-02）。
+        这里改为从 ``block_name {`` 的起始括号开始做深度计数，字符串内的花括号
+        不计入深度，直到配对括号闭合为止。
+        """
+        match = re.search(rf"(?m)^[ \t]*{re.escape(block_name)}[ \t]*\{{", text)
+        if not match:
+            return ""
+        start = match.end()  # 指向起始 '{' 之后
+        depth = 1
+        in_string = False
+        escaped = False
+        quote_char = ""
+        for idx in range(start, len(text)):
+            char = text[idx]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote_char:
+                    in_string = False
+                continue
+            if char in {'"', "'"}:
+                in_string = True
+                quote_char = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[start:idx].strip()
+        return text[start:].strip()
+
     def _extract_bruno_block(self, text: str, block_name: str) -> str:
         """提取 Bruno 普通块内容"""
-        match = re.search(rf"(?ms)^\s*{re.escape(block_name)}\s*\{{(.*?)^\s*\}}", text)
-        return match.group(1).strip() if match else ""
+        return self._extract_braces_block(text, block_name)
 
     def _extract_bruno_typed_block(self, text: str, block_name: str) -> str:
         """提取 Bruno 类型块内容"""
-        match = re.search(rf"(?ms)^\s*{re.escape(block_name)}\s*\{{(.*?)^\s*\}}", text)
-        return match.group(1).strip() if match else ""
+        return self._extract_braces_block(text, block_name)
 
     def _parse_bruno_key_value_block(self, block_text: str) -> Dict[str, str]:
         """解析 Bruno key/value 块"""
@@ -2564,15 +2823,30 @@ def execute_case(session, case):
         return f"test_{case_id}_{safe_name}"
 
     def _normalize_execution_mode(self, mode: str) -> str:
-        """归一化执行模式"""
-        return self.EXECUTION_MODE_MAP.get((mode or "").strip(), "pytest")
+        """归一化执行模式（注册表驱动，未知取值写告警而非静默回落）。"""
+        normalized, warning = auto_reg.normalize_execution_mode(mode)
+        self._warn(warning)
+        return normalized
 
     def _normalize_request_format(self, request_format: Any) -> str:
-        """归一化请求格式"""
+        """归一化请求格式（注册表驱动，未知取值写告警而非静默回落）。"""
         if request_format is None:
             return "auto"
-        key = str(request_format).strip()
-        return self.REQUEST_FORMAT_MAP.get(key, self.REQUEST_FORMAT_MAP.get(key.lower(), "auto"))
+        normalized, warning = auto_reg.normalize_request_format(request_format)
+        self._warn(warning)
+        return normalized
+
+    def _validate_expected_status(self, value: Any) -> Tuple[int, Dict[str, Any]]:
+        """校验期望状态码：非法值回落 200 并写告警，绝不生成永不可能通过的断言。"""
+        info = auto_reg.classify_status_code(value, 200)
+        if not info["valid"]:
+            self._warn(
+                f"接口期望状态码 {info['code']} 不在合法 HTTP 范围（100-599），已回落为 200，请确认契约"
+            )
+            return 200, info
+        if info["warn"]:
+            self._warn(f"接口期望状态码 {info['code']} 属于{info['label']}，请确认是刻意设计的错误场景")
+        return info["code"], info
 
     def _normalize_environment_config(self, environment_config: Any, base_url: str) -> Dict[str, Any]:
         """标准化环境配置"""
@@ -2592,11 +2866,20 @@ def execute_case(session, case):
                 for env_name, env_item in raw_envs.items():
                     if not isinstance(env_item, dict):
                         continue
+                    env_base_url = self._normalize_base_url(
+                        self._clean_text(env_item.get("base_url") or env_item.get("url")) or base_url
+                    )
+                    env_headers, env_warnings = auto_reg.sanitize_headers(
+                        self._ensure_mapping(env_item.get("headers"))
+                    )
+                    self._warn([f"环境 {env_name}: {w}" for w in env_warnings])
+                    if env_base_url:
+                        ok, reason = auto_reg.validate_target_url(env_base_url)
+                        if not ok:
+                            self._warn(f"环境 {env_name} 基础地址校验提示: {reason}")
                     environments[str(env_name)] = {
-                        "base_url": self._normalize_base_url(
-                            self._clean_text(env_item.get("base_url") or env_item.get("url")) or base_url
-                        ),
-                        "headers": self._ensure_mapping(env_item.get("headers")),
+                        "base_url": env_base_url,
+                        "headers": env_headers,
                     }
 
         fallback_base_url = self._normalize_base_url(base_url)
@@ -2617,59 +2900,16 @@ def execute_case(session, case):
         }
 
     def _normalize_auth_config(self, auth_config: Any) -> Dict[str, Any]:
-        """标准化鉴权配置"""
-        parsed = auth_config
-        if isinstance(auth_config, str) and auth_config.strip():
-            try:
-                parsed = json.loads(auth_config)
-            except json.JSONDecodeError:
-                parsed = {}
-
-        if not isinstance(parsed, dict):
-            parsed = {}
-
-        auth_type = self._clean_text(parsed.get("type")).lower() or "none"
-        return {
-            "enabled": bool(parsed.get("enabled")) and auth_type != "none",
-            "type": auth_type,
-            "header_name": self._clean_text(parsed.get("header_name")) or "Authorization",
-            "prefix": self._clean_text(parsed.get("prefix")) or "Bearer ",
-            "token": self._clean_text(parsed.get("token")),
-            "api_key_name": self._clean_text(parsed.get("api_key_name")) or "X-API-Key",
-            "api_key_value": self._clean_text(parsed.get("api_key_value")),
-            "username": self._clean_text(parsed.get("username")),
-            "password": self._clean_text(parsed.get("password")),
-            "custom_header_name": self._clean_text(parsed.get("custom_header_name")),
-            "custom_header_value": self._clean_text(parsed.get("custom_header_value")),
-        }
+        """标准化鉴权配置（注册表驱动，未知方式写告警）。"""
+        normalized = auto_reg.normalize_auth_config(auth_config)
+        self._warn(normalized.get("mode_warning"))
+        return normalized
 
     def _build_auth_headers(self, auth_config: Dict[str, Any]) -> Dict[str, str]:
-        """根据鉴权配置构建请求头"""
-        if not auth_config.get("enabled"):
-            return {}
-
-        auth_type = auth_config.get("type", "none")
-        if auth_type == "bearer" and auth_config.get("token"):
-            return {
-                auth_config.get("header_name", "Authorization"): f"{auth_config.get('prefix', 'Bearer ')}{auth_config.get('token')}"
-            }
-
-        if auth_type == "api_key" and auth_config.get("api_key_value"):
-            return {
-                auth_config.get("api_key_name", "X-API-Key"): auth_config.get("api_key_value", "")
-            }
-
-        if auth_type == "basic" and auth_config.get("username"):
-            credential = f"{auth_config.get('username', '')}:{auth_config.get('password', '')}"
-            encoded = base64.b64encode(credential.encode("utf-8")).decode("utf-8")
-            return {"Authorization": f"Basic {encoded}"}
-
-        if auth_type == "custom_header" and auth_config.get("custom_header_name"):
-            return {
-                auth_config.get("custom_header_name", "X-Custom-Auth"): auth_config.get("custom_header_value", "")
-            }
-
-        return {}
+        """根据注册式鉴权方式构建请求头；Header 名/值统一校验。"""
+        headers, warnings = auto_reg.build_auth_headers(auth_config)
+        self._warn(warnings)
+        return headers
 
     def _normalize_base_url(self, base_url: str) -> str:
         """标准化基础 URL"""

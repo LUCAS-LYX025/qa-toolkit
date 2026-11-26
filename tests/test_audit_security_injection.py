@@ -20,10 +20,12 @@ def test_pytest_script_cannot_be_injected_via_triple_single_quote():
     # 生成的脚本必须是合法 Python，且注入片段只能是字符串数据的一部分
     compile(code, "<generated>", "exec")
     ca_line = [line for line in code.splitlines() if line.startswith("CASES = ")][0]
-    # repr(json.dumps(...)) 会让三单引号变成转义序列，不再有裸的 ''' 边界
-    assert "\\'\\'\\'" in ca_line
+    # #415 起改用 base64 注入：编码串不含任何引号/三单引号，注入不可能逃逸为代码，
+    # 也不会与 __CASES_JSON_LITERAL__ 等模板哨兵碰撞。
+    assert "b64decode(" in ca_line
     assert "json.loads(" in ca_line
     assert "'''" not in ca_line  # 不再使用裸三单引号包裹数据
+    assert "system('touch /tmp/pwned')" not in ca_line  # 注入片段不出现在可执行位置
 
 
 def test_html_report_escapes_dynamic_fields():

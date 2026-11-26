@@ -4,6 +4,7 @@ import os
 import shutil
 import subprocess
 import sys
+import uuid
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import pandas as pd
@@ -12,6 +13,7 @@ import streamlit as st
 from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
 from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
+from qa_toolkit.core import api_automation_registry as auto_reg
 from qa_toolkit.reporting.report_generator import EnhancedReportGenerator
 from qa_toolkit.reporting.test_runner import EnhancedTestRunner
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
@@ -28,26 +30,150 @@ IMPORT_FORMAT_MAP = {
     "结构化文本": "text",
     "Bruno .bru": "bruno",
 }
-MIRROR_URLS = {
-    "清华镜像": "https://pypi.tuna.tsinghua.edu.cn/simple/",
-    "阿里云镜像": "https://mirrors.aliyun.com/pypi/simple/",
-    "豆瓣镜像": "https://pypi.douban.com/simple/",
-    "中科大镜像": "https://pypi.mirrors.ustc.edu.cn/simple/",
-}
-AUTOMATION_AUTH_LABEL_TO_MODE = {
-    "无": "none",
-    "Bearer Token": "bearer",
-    "API Key": "api_key",
-    "Basic Auth": "basic",
-    "自定义Header": "custom_header",
-}
-AUTOMATION_AUTH_MODE_TO_LABEL = {
-    "none": "无",
-    "bearer": "Bearer Token",
-    "api_key": "API Key",
-    "basic": "Basic Auth",
-    "custom_header": "自定义Header",
-}
+
+
+def get_mirror_urls() -> Dict[str, str]:
+    """镜像源来自注册式扩展点，下游可注册企业内部源。"""
+    return auto_reg.get_mirrors()
+
+
+def get_auth_mode_map() -> Dict[str, str]:
+    return {spec.label: spec.mode for spec in auto_reg.get_auth_modes().values() if spec.mode != "none"}
+
+
+def get_auth_label_map() -> Dict[str, str]:
+    return {spec.mode: spec.label for spec in auto_reg.get_auth_modes().values() if spec.mode != "none"}
+
+
+# ---------------------------------------------------------------------------
+# 统一导出 / 文字结论 / 配置签名
+# ---------------------------------------------------------------------------
+
+def _csv_bytes(rows: Sequence[Dict[str, Any]]) -> bytes:
+    """所有 CSV 导出统一走注册式公式注入清洗器。"""
+    return auto_reg.csv_bytes(rows)
+
+
+def _build_download_payload(
+    result: Dict[str, Any],
+    *,
+    config_snapshot: Optional[Dict[str, Any]] = None,
+    input_signature: str = "",
+    warnings: Optional[Sequence[str]] = None,
+    truncation: Optional[Dict[str, Any]] = None,
+) -> str:
+    """导出件统一附配置快照 / 输入签名 / 能力摘要 / 告警 / 截断信息。"""
+    payload = auto_reg.build_export_payload(
+        result,
+        config_snapshot=config_snapshot,
+        input_signature=input_signature,
+        warnings=warnings,
+        truncation=truncation,
+    )
+    return auto_reg.strict_json_dumps(payload, indent=2)
+
+
+def _render_registry_summary() -> None:
+    """首屏直接展示注册能力与安全默认值，不藏进折叠面板。"""
+    summary = auto_reg.get_registry_summary()
+    limits = auto_reg.get_automation_limits()
+    st.caption(
+        f"🧩 当前注册的能力：HTTP 方法 {summary['HTTP 方法']} 个 / 请求格式 {summary['请求格式']} 种 / "
+        f"执行模式 {summary['执行模式']} 种 / 鉴权方式 {summary['鉴权方式']} 种 / "
+        f"模板风格 {summary['模板风格']} 种 / 断言策略 {summary['断言策略']} 种 / "
+        f"状态码分桶 {summary['状态码分桶']} 类 / 导入模板 {summary['导入模板']} 份 / "
+        f"报告模板 {summary['报告模板']} 种 / 导出格式 {summary['导出格式']} 种 / 镜像源 {summary['镜像源']} 个。"
+    )
+    # 接入状态：只把真正接入产物链的项当成可用能力，仅登记项单独标注（#423/R3-09）。
+    _access = summary.get("接入状态", {})
+    st.caption(
+        "🔌 接入状态："
+        f"报告模板可用 {len(_access.get('已接入报告模板', []))}/{summary['报告模板']}、"
+        f"导出格式可用 {len(_access.get('已接入导出格式', []))}/{summary['导出格式']}、"
+        f"框架渲染器 {len(_access.get('已接入框架渲染器', []))} 种；"
+        f"仅登记（暂不可用）：报告 {_access.get('仅登记报告模板', []) or '无'}、"
+        f"导出 {_access.get('仅登记导出格式', []) or '无'}。"
+    )
+    st.caption(
+        f"安全默认：仅允许 {'/'.join(auto_reg.get_protocols())}；默认校验 SSL={limits.default_verify_ssl}；"
+        f"默认允许内网目标={limits.allow_private_targets}；默认产物保留凭据={limits.allow_credentials_in_artifacts}；"
+        f"运行上限：接口 {limits.max_interfaces} / 上传 {limits.max_upload_bytes} bytes / "
+        f"超时 {limits.max_timeout_seconds}s / 重试 {limits.max_retry_times} / "
+        f"响应体 {limits.max_response_body_chars} 字符。"
+    )
+
+
+def _render_warnings_panel(warnings: Sequence[str], truncation: Optional[Dict[str, Any]] = None) -> None:
+    items = [str(w) for w in (warnings or []) if str(w).strip()]
+    if items:
+        with st.expander(f"⚠️ 生成/执行告警（{len(items)}）", expanded=True):
+            for item in items:
+                st.caption(f"- {item}")
+    if truncation:
+        st.warning(f"存在截断，导出件已标注 truncation：{truncation}")
+
+
+def _render_text_summary(test_results: Dict[str, Any]) -> None:
+    """把结论渲染成纯文本（dataframe 是 canvas，读屏/e2e 读不到）。"""
+    total = int(test_results.get("total", 0) or 0)
+    passed = int(test_results.get("passed", 0) or 0)
+    failed = int(test_results.get("failed", 0) or 0)
+    errors = int(test_results.get("errors", 0) or 0)
+    details = list(test_results.get("test_details") or [])
+    failed_items = [d for d in details if d.get("status") in ("failed", "error")]
+    degrade = f" 执行说明：{test_results['runner_note']}" if test_results.get("runner_note") else ""
+    coverage = ""
+    if len(details) < total:
+        coverage = f" 注意：{total - len(details)} 个用例未采集到明细。"
+    text = auto_reg.build_text_summary("results", {
+        "total": total, "passed": passed, "failed": failed, "errors": errors,
+        "rate": (passed / total * 100) if total else 0.0,
+        "degrade": degrade,
+        "failed_hint": f" 失败/错误接口：{'、'.join(str(d.get('name') or d.get('path') or '未命名') for d in failed_items[:8])}。" if failed_items else " 无失败接口。",
+        "coverage": coverage,
+    })
+    st.markdown("#### 📝 本轮测试结论")
+    st.write(text)
+    for detail in failed_items[:10]:
+        st.caption(
+            f"- {detail.get('method', 'GET')} {detail.get('path', '')} {detail.get('name', '未知接口')} | "
+            f"{detail.get('status', 'unknown')} | 状态码 {detail.get('status_code', 'N/A')} | "
+            f"{str(detail.get('error') or '无错误信息')[:200]}"
+        )
+
+
+def _current_config_signature(
+    interfaces: Sequence[Dict[str, Any]],
+    execution_mode: str,
+    base_url: str,
+    timeout: int,
+    retry_times: int,
+    verify_ssl: bool,
+    request_format: str,
+    template_style: str,
+    environment_config: Optional[Dict[str, Any]],
+    auth_config: Dict[str, Any],
+    allow_private_targets: bool,
+    include_credentials: bool,
+) -> str:
+    """接口清单 + 全部执行配置一起签名，改任何一项都会让旧产物过期。"""
+    auth_fingerprint = hashlib.sha256(
+        json.dumps(auth_config or {}, sort_keys=True, default=str, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
+    return auto_reg.compute_signature({
+        "interfaces": _interfaces_signature(interfaces),
+        "execution_mode": execution_mode,
+        "base_url": str(base_url or "").strip(),
+        "timeout": int(timeout),
+        "retry_times": int(retry_times),
+        "verify_ssl": bool(verify_ssl),
+        "request_format": request_format,
+        "template_style": template_style,
+        "environment_config": environment_config,
+        "auth_fingerprint": auth_fingerprint,
+        "allow_private_targets": bool(allow_private_targets),
+        "include_credentials": bool(include_credentials),
+    })
 
 
 def _install_missing_packages(packages: Sequence[str], mirror_url: str) -> bool:
@@ -116,9 +242,10 @@ def _check_interface_dependencies(selected_mode: str, for_execution: bool = Fals
             st.write(f"- {dep}")
 
     with col2:
+        mirror_options = get_mirror_urls()
         mirror = st.selectbox(
             "选择镜像源",
-            list(MIRROR_URLS.keys()),
+            list(mirror_options.keys()),
             key=f"interface_mirror_{selected_mode}_{'exec' if for_execution else 'page'}",
         )
         if st.button(
@@ -127,7 +254,7 @@ def _check_interface_dependencies(selected_mode: str, for_execution: bool = Fals
             key=f"install_interface_deps_{selected_mode}_{'exec' if for_execution else 'page'}",
         ):
             with st.spinner("正在安装依赖..."):
-                success = _install_missing_packages(missing_packages, MIRROR_URLS[mirror])
+                success = _install_missing_packages(missing_packages, mirror_options[mirror])
             if success:
                 st.success("✅ 依赖安装成功，请刷新页面后重试")
             else:
@@ -299,7 +426,7 @@ def _build_env_template_with_base_url(base_url: str) -> str:
 
 def _capture_interface_env_profile() -> Dict[str, Any]:
     auth_mode_label = str(st.session_state.get("interface_auth_mode", "无") or "无")
-    auth_mode = AUTOMATION_AUTH_LABEL_TO_MODE.get(auth_mode_label, "none")
+    auth_mode = get_auth_mode_map().get(auth_mode_label, "none")
     auth: Dict[str, Any] = {"mode": auth_mode}
 
     if auth_mode == "bearer":
@@ -341,7 +468,7 @@ def _apply_interface_env_profile(profile: Dict[str, Any]) -> None:
 
     auth = profile.get("auth") if isinstance(profile.get("auth"), dict) else {}
     auth_mode = str(auth.get("mode") or "none").strip().lower()
-    st.session_state.interface_auth_mode = AUTOMATION_AUTH_MODE_TO_LABEL.get(auth_mode, "无")
+    st.session_state.interface_auth_mode = get_auth_label_map().get(auth_mode, "无")
 
     st.session_state.interface_bearer_token = str(auth.get("token") or "").strip()
     st.session_state.interface_api_key_name = str(auth.get("header_name") or "X-API-Key").strip() or "X-API-Key"
@@ -363,9 +490,14 @@ def _generate_artifacts(
     template_style: str,
     environment_config: Optional[Dict[str, Any]] = None,
     auth_config: Optional[Dict[str, Any]] = None,
+    config_signature: str = "",
+    allow_private_targets: bool = False,
+    include_credentials: bool = False,
 ) -> Dict[str, str]:
+    tool = st.session_state.auto_test_tool
+    tool.set_allow_private_targets(bool(allow_private_targets))
     with st.spinner("正在生成测试用例..."):
-        test_files = st.session_state.auto_test_tool.generate_test_cases(
+        test_files = tool.generate_test_cases(
             interfaces=interfaces,
             framework=execution_mode,
             base_url=base_url,
@@ -376,15 +508,25 @@ def _generate_artifacts(
             template_style=template_style,
             environment_config=environment_config,
             auth_config=auth_config,
+            include_credentials=bool(include_credentials),
         )
-        st.session_state.auto_test_tool.save_test_files(test_files)
+        tool.save_test_files(test_files)
+        manifest = json.loads(test_files["interface_manifest.json"])
         st.session_state.interface_last_generated_files = test_files
         st.session_state.interface_generated_signature = _interfaces_signature(interfaces)
+        # 配置也纳入签名：改 base_url / 鉴权 / 模板风格 / 执行模式都会让旧产物过期。
+        st.session_state.interface_generated_config_signature = config_signature
+        st.session_state.interface_generated_config_snapshot = manifest.get("config_snapshot", {})
+        st.session_state.interface_generated_warnings = tool.get_warnings()
+        st.session_state.interface_generated_truncation = manifest.get("truncation", {})
+        st.session_state.interface_result_config_signature = config_signature
+        st.session_state.pop("api_auto_download_items_cache", None)
     return test_files
 
 
-def _ensure_generated_file(execution_mode: str) -> bool:
-    target_file = "run_interfaces.py" if execution_mode == "requests脚本" else "test_interfaces.py"
+def _ensure_generated_file(execution_mode: str, current_signature: str = "") -> bool:
+    spec = auto_reg.get_execution_modes().get(auto_reg.normalize_execution_mode(execution_mode)[0])
+    target_file = spec.target_file if spec else "test_interfaces.py"
     manifest_file = os.path.join(st.session_state.auto_test_tool.test_dir, "interface_manifest.json")
     target_path = os.path.join(st.session_state.auto_test_tool.test_dir, target_file)
     if not (os.path.exists(manifest_file) and os.path.exists(target_path)):
@@ -393,6 +535,9 @@ def _ensure_generated_file(execution_mode: str) -> bool:
     loaded_signature = st.session_state.get("interface_loaded_signature")
     generated_signature = st.session_state.get("interface_generated_signature")
     if not loaded_signature or generated_signature != loaded_signature:
+        return False
+    # 配置变更同样让磁盘产物失效，避免用旧脚本跑新配置。
+    if current_signature and st.session_state.get("interface_generated_config_signature") != current_signature:
         return False
     try:
         with open(manifest_file, "r", encoding="utf-8") as file:
@@ -438,8 +583,34 @@ def _build_result_markdown(test_results: Dict[str, Any], execution_mode: str) ->
     return "\n".join(lines).strip() + "\n"
 
 
+def _ensure_report_path(test_results: Dict[str, Any], execution_mode: str, interfaces: List[Dict[str, Any]]) -> str:
+    """报告只在结果签名变化时生成一次（惰性），避免每次 rerun 都写盘。"""
+    signature = auto_reg.compute_signature({
+        "results": test_results,
+        "interfaces": interfaces,
+        "execution_mode": execution_mode,
+    })
+    cached = st.session_state.get("api_auto_report_cache")
+    if cached and cached.get("signature") == signature and cached.get("path") and os.path.exists(cached["path"]):
+        return cached["path"]
+    path = st.session_state.enhanced_report.generate_detailed_report(
+        test_results=test_results,
+        framework=execution_mode,
+        interfaces=interfaces,
+        test_details=test_results.get("test_details", []),
+    )
+    st.session_state.api_auto_report_cache = {"signature": signature, "path": path or ""}
+    return path or ""
+
+
 def _render_test_results(test_results: Dict[str, Any], execution_mode: str, interfaces: List[Dict[str, Any]]) -> None:
     st.markdown("### Step 4. 查看执行结果")
+    _render_text_summary(test_results)
+    _render_warnings_panel(
+        list(test_results.get("warnings") or [])
+        + list(st.session_state.get("interface_generated_warnings") or []),
+        test_results.get("truncation") or st.session_state.get("interface_generated_truncation"),
+    )
     actual_mode = test_results.get("executed_mode") or execution_mode
     total = test_results.get("total", 0)
     passed = test_results.get("passed", 0)
@@ -468,12 +639,7 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
 
     download_items: List[Dict[str, Any]] = []
     if total > 0:
-        report_path = st.session_state.enhanced_report.generate_detailed_report(
-            test_results=test_results,
-            framework=execution_mode,
-            interfaces=interfaces,
-            test_details=test_results.get("test_details", []),
-        )
+        report_path = _ensure_report_path(test_results, execution_mode, interfaces)
         if report_path and os.path.exists(report_path):
             with open(report_path, "rb") as file:
                 report_data = file.read()
@@ -529,33 +695,59 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
                             else:
                                 st.error(f"❌ {assertion.get('description')}: {assertion.get('message')}")
 
-    download_items.extend(
-        [
-            {
-                "label": "🧾 下载 JSON 结果",
-                "data": json.dumps(test_results, ensure_ascii=False, indent=2),
-                "file_name": f"api_automation_result_{actual_mode}.json",
-                "mime": "application/json",
-                "caption": "适合后续二次分析或排查执行细节。",
-            },
-            {
-                "label": "📥 下载 CSV 摘要",
-                "data": pd.DataFrame(summary_rows).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
-                if summary_rows
-                else None,
-                "file_name": f"api_automation_summary_{actual_mode}.csv",
-                "mime": "text/csv",
-                "caption": "适合给测试日报或结果汇总直接引用。",
-            },
-            {
-                "label": "📝 下载 Markdown 摘要",
-                "data": _build_result_markdown(test_results, execution_mode),
-                "file_name": f"api_automation_summary_{actual_mode}.md",
-                "mime": "text/markdown",
-                "caption": "适合发评审记录或同步到文档系统。",
-            },
-        ]
-    )
+    # 下载数据按结果签名缓存：只有结果变化时才重建 JSON/CSV/Markdown，
+    # 避免每次 rerun 都急切构造全量导出件（callable / lazy 语义）。
+    result_signature = auto_reg.compute_signature({"results": test_results, "mode": actual_mode})
+    cache = st.session_state.get("api_auto_download_items_cache")
+    if cache and cache.get("signature") == result_signature:
+        download_items = cache["items"]
+    else:
+        config_snapshot = st.session_state.get("interface_generated_config_snapshot", {})
+        input_signature = st.session_state.get("interface_generated_config_signature", "")
+        warnings = list(test_results.get("warnings") or []) + list(
+            st.session_state.get("interface_generated_warnings") or []
+        )
+        truncation = test_results.get("truncation") or st.session_state.get("interface_generated_truncation") or {}
+        markdown_text = _build_result_markdown(test_results, execution_mode)
+        markdown_text += (
+            "\n\n## 导出快照\n\n"
+            f"- 输入签名: `{input_signature}`\n"
+            f"- 配置快照: `{auto_reg.strict_json_dumps(config_snapshot, sort_keys=True)}`\n"
+            f"- 告警数: {len(warnings)}\n"
+        )
+        # 导出项由注册中心统一生成：新增一种导出格式只需 register_export_format，
+        # 下载区会自动出现，不再硬编码 JSON/CSV/Markdown 三项（#421/R3-07）。
+        json_payload = _build_download_payload(
+            test_results,
+            config_snapshot=config_snapshot,
+            input_signature=input_signature,
+            warnings=warnings,
+            truncation=truncation,
+        )
+        export_ctx = {
+            "test_results": test_results,
+            "payload": json_payload,
+            "summary_rows": summary_rows,
+            "markdown_text": markdown_text,
+            "config_snapshot": config_snapshot,
+            "input_signature": input_signature,
+            "warnings": warnings,
+            "truncation": truncation,
+        }
+        _emoji = {"json": "🧾", "csv": "📥", "markdown": "📝", "html": "📄"}
+        for item in auto_reg.get_export_items(export_ctx):
+            key = item["file_name"].rsplit(".", 1)[-1] if "." in item["file_name"] else ""
+            label = f"{_emoji.get(key, '📥')} 下载 {item['label']}"
+            # 保持既有文件名带执行模式后缀，方便历史脚本比对。
+            item["label"] = label
+            item["file_name"] = item["file_name"].replace(
+                ".", f"_{actual_mode}.", 1
+            )
+            download_items.append(item)
+        st.session_state.api_auto_download_items_cache = {
+            "signature": result_signature,
+            "items": download_items,
+        }
 
     render_download_panel(
         title="统一导出区",
@@ -577,99 +769,25 @@ def _render_test_results(test_results: Dict[str, Any], execution_mode: str, inte
 
 
 def _build_template_download_items(auto_test_tool: InterfaceAutoTestCore) -> List[Dict[str, Any]]:
-    return [
-        {
-            "label": "📥 Excel 模板",
-            "data": auto_test_tool.build_excel_template_bytes(),
-            "file_name": "api_automation_template.xlsx",
-            "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "caption": "适合表格方式维护接口清单。",
-        },
-        {
-            "label": "📥 JSON 模板",
-            "data": auto_test_tool.build_json_template(),
-            "file_name": "api_automation_template.json",
-            "mime": "application/json",
-            "caption": "适合结构化接口列表导入。",
-        },
-        {
-            "label": "📥 文本模板",
-            "data": auto_test_tool.build_text_template(),
-            "file_name": "api_automation_template.txt",
-            "mime": "text/plain",
-            "caption": "适合快速手工拼装接口块。",
-        },
-        {
-            "label": "📥 curl 模板",
-            "data": auto_test_tool.build_curl_template(),
-            "file_name": "api_automation_curl_template.txt",
-            "mime": "text/plain",
-            "caption": "适合终端命令或抓包回放。",
-        },
-        {
-            "label": "📥 OpenAPI JSON",
-            "data": auto_test_tool.build_openapi_template(),
-            "file_name": "api_automation_openapi.json",
-            "mime": "application/json",
-            "caption": "适合 Swagger/OpenAPI 文档导入。",
-        },
-        {
-            "label": "📥 OpenAPI YAML",
-            "data": auto_test_tool.build_openapi_yaml_template(),
-            "file_name": "api_automation_openapi.yaml",
-            "mime": "text/yaml",
-            "caption": "适合 YAML 版 OpenAPI 文档。",
-        },
-        {
-            "label": "📥 Postman 模板",
-            "data": auto_test_tool.build_postman_template(),
-            "file_name": "api_automation_postman.json",
-            "mime": "application/json",
-            "caption": "适合集合导出后直接导入。",
-        },
-        {
-            "label": "📥 HAR 模板",
-            "data": auto_test_tool.build_har_template(),
-            "file_name": "api_automation_sample.har",
-            "mime": "application/json",
-            "caption": "适合浏览器抓包回放。",
-        },
-        {
-            "label": "📥 Apifox 模板",
-            "data": auto_test_tool.build_apifox_template(),
-            "file_name": "api_automation_apifox.json",
-            "mime": "application/json",
-            "caption": "提供 Apifox 兼容骨架。",
-        },
-        {
-            "label": "📥 Bruno 模板",
-            "data": auto_test_tool.build_bruno_template(),
-            "file_name": "api_automation_sample.bru",
-            "mime": "text/plain",
-            "caption": "适合 Bruno 单接口文件导入。",
-        },
-        {
-            "label": "📥 Insomnia 模板",
-            "data": auto_test_tool.build_insomnia_template(),
-            "file_name": "api_automation_insomnia.json",
-            "mime": "application/json",
-            "caption": "适合 Insomnia 导出 JSON 回放。",
-        },
-        {
-            "label": "📥 环境配置模板",
-            "data": auto_test_tool.build_environment_template(),
-            "file_name": "api_automation_environment.json",
-            "mime": "application/json",
-            "caption": "维护 dev/staging/prod 基础地址和公共头。",
-        },
-        {
-            "label": "📥 鉴权模板",
-            "data": auto_test_tool.build_auth_template(),
-            "file_name": "api_automation_auth.json",
-            "mime": "application/json",
-            "caption": "统一配置 Bearer / API Key / Basic / 自定义 Header。",
-        },
-    ]
+    """导入模板清单由注册式扩展点驱动，新增模板只需 register_import_template。"""
+    items: List[Dict[str, Any]] = []
+    for spec in auto_reg.get_import_templates().values():
+        builder = getattr(auto_test_tool, spec.builder_key, None)
+        if builder is None:
+            continue
+        try:
+            data = builder()
+        except Exception as exc:
+            st.caption(f"模板 {spec.label} 暂不可用: {type(exc).__name__}: {exc}")
+            continue
+        items.append({
+            "label": spec.label,
+            "data": data,
+            "file_name": spec.file_name,
+            "mime": spec.mime,
+            "caption": spec.caption,
+        })
+    return items
 
 
 def _render_generated_files(generated_files: Dict[str, str]) -> None:
@@ -705,20 +823,34 @@ def _render_generated_files(generated_files: Dict[str, str]) -> None:
 
 
 def _load_uploaded_document(uploaded_file) -> None:
+    """安全导入：大小上限 + 后缀白名单 + uuid 文件名 + finally 删除临时文件。"""
+    limits = auto_reg.get_automation_limits()
     file_bytes = uploaded_file.getbuffer()
+    if len(file_bytes) > limits.max_upload_bytes:
+        raise ValueError(
+            f"上传文件 {len(file_bytes)} bytes 超过上限 {limits.max_upload_bytes} bytes，请先精简文档"
+        )
     upload_signature = f"{uploaded_file.name}:{hashlib.sha256(file_bytes).hexdigest()}"
     if st.session_state.get("interface_upload_signature") == upload_signature:
         return
 
-    # 文件名净化：只保留安全 basename，避免 ../ 越界写入与覆盖已有产物。
-    safe_name = os.path.basename(str(uploaded_file.name or "upload.json"))
-    safe_name = "".join(c for c in safe_name if c.isalnum() or c in "._-") or "upload.json"
-    file_path = os.path.join(st.session_state.auto_test_tool.upload_dir, safe_name)
-    with open(file_path, "wb") as file:
-        file.write(file_bytes)
-
-    with st.spinner("正在解析接口文档..."):
-        interfaces = st.session_state.auto_test_tool.parse_document(file_path)
+    original_name = os.path.basename(str(uploaded_file.name or "upload.json"))
+    safe_name = "".join(c for c in original_name if c.isalnum() or c in "._-") or "upload.json"
+    suffix = os.path.splitext(safe_name)[1].lower().lstrip(".")
+    if suffix and suffix not in INTERFACE_FILE_TYPES:
+        raise ValueError(f"不支持的文件后缀: .{suffix}（仅允许 {', '.join(INTERFACE_FILE_TYPES)}）")
+    file_path = os.path.join(
+        st.session_state.auto_test_tool.upload_dir,
+        f"upload_{uuid.uuid4().hex[:12]}_{safe_name}",
+    )
+    try:
+        with open(file_path, "wb") as file:
+            file.write(file_bytes)
+        with st.spinner("正在解析接口文档..."):
+            interfaces = st.session_state.auto_test_tool.parse_document(file_path)
+    finally:
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
     detected_base_url = st.session_state.auto_test_tool.last_parse_meta.get("detected_base_url", "")
     _set_interface_state(interfaces, detected_base_url, uploaded_file.name)
@@ -748,6 +880,7 @@ def render_api_automation_test_page() -> None:
     auto_test_tool = st.session_state.auto_test_tool
 
     st.markdown('<div class="category-card">🤖 接口自动化测试工具</div>', unsafe_allow_html=True)
+    _render_registry_summary()
     render_workflow_guide(
         title="三步完成接口自动化回归",
         description="先导入接口定义，再配置环境与鉴权，最后生成脚本并执行。页面会统一保留生成产物和执行结果，方便回看与导出。",
@@ -761,10 +894,27 @@ def render_api_automation_test_page() -> None:
 
     execution_mode = st.radio(
         "选择执行模式",
-        ["pytest", "unittest", "requests脚本"],
+        auto_reg.get_execution_mode_labels(),
         horizontal=True,
         key="interface_execution_mode",
     )
+
+    # 安全默认值与 SSRF 护栏放在首屏，导入与执行共用同一套策略。
+    st.checkbox(
+        "允许内网/本地目标（导入 Swagger 与执行测试共用同一 SSRF 护栏，默认关闭）",
+        key="api_auto_allow_private_targets",
+        value=False,
+        help="默认仅允许公网 http/https 地址。联调本机或内网服务时再开启；开启后仍会校验协议、userinfo、端口与重定向目标。",
+    )
+    st.checkbox(
+        "在生成产物中保留鉴权凭据（默认脱敏，仅限本地调试）",
+        key="api_auto_include_credentials",
+        value=False,
+        help="默认把 token/密码从 manifest、生成脚本、页面展示与下载件里移除，执行时改从环境变量读取。",
+    )
+    allow_private_targets = bool(st.session_state.get("api_auto_allow_private_targets", False))
+    include_credentials = bool(st.session_state.get("api_auto_include_credentials", False))
+    auto_test_tool.set_allow_private_targets(allow_private_targets)
 
     if not _check_interface_dependencies(execution_mode, for_execution=False):
         st.stop()
@@ -787,12 +937,16 @@ def render_api_automation_test_page() -> None:
             st.success("✅ 已清空接口数据和生成产物缓存")
 
     with st.expander("📚 模板与导入说明", expanded=not st.session_state.interface_loaded_interfaces):
+        template_items = st.session_state.get("api_auto_template_items_cache")
+        if template_items is None:
+            template_items = _build_template_download_items(auto_test_tool)
+            st.session_state.api_auto_template_items_cache = template_items
         render_download_panel(
             title="导入模板下载",
             description="模板统一收口到这里，避免文件入口分散。优先使用 Excel、JSON 或 OpenAPI 模板，对齐字段后再导入最稳。",
-            items=_build_template_download_items(auto_test_tool),
+            items=template_items,
             key_prefix="api_auto_templates",
-            metrics=[{"label": "模板数", "value": "13"}],
+            metrics=[{"label": "模板数", "value": f"{len(template_items)}"}],
         )
         st.markdown(
             """
@@ -921,28 +1075,42 @@ def render_api_automation_test_page() -> None:
     )
 
     st.markdown("### Step 3. 测试配置")
+    limits = auto_reg.get_automation_limits()
     config_col1, config_col2 = st.columns(2)
     with config_col1:
         base_url = st.text_input(
             "基础 URL 或默认 URL",
             value=st.session_state.interface_loaded_base_url,
-            placeholder="例如: http://10.0.3.54:3000",
+            placeholder="例如: https://api.example.com",
             key="interface_base_url_input_v2",
         )
-        timeout = st.number_input("请求超时时间(秒)", min_value=1, value=30, key="interface_timeout_v2")
+        timeout = st.number_input(
+            "请求超时时间(秒)",
+            min_value=limits.min_timeout_seconds,
+            max_value=limits.max_timeout_seconds,
+            value=limits.default_timeout_seconds,
+            key="interface_timeout_v2",
+        )
         request_format = st.selectbox(
             "请求格式",
-            ["自动检测", "json=参数", "data=json.dumps()", "form-urlencoded"],
+            auto_reg.get_request_format_labels(),
             index=0,
             key="interface_request_format_v2",
         )
     with config_col2:
-        retry_times = st.number_input("重试次数", min_value=0, value=0, key="interface_retry_times_v2")
-        verify_ssl = st.checkbox("验证 SSL 证书", value=False, key="interface_verify_ssl_v2")
+        retry_times = st.number_input(
+            "重试次数",
+            min_value=0,
+            max_value=limits.max_retry_times,
+            value=0,
+            key="interface_retry_times_v2",
+        )
+        verify_ssl = st.checkbox("验证 SSL 证书", value=limits.default_verify_ssl, key="interface_verify_ssl_v2")
+        style_labels = auto_reg.get_template_style_labels()
         template_style = st.selectbox(
             "模板风格",
-            ["冒烟模板", "标准模板", "严格模板"],
-            index=1,
+            style_labels,
+            index=min(1, len(style_labels) - 1),
             key="interface_template_style_v2",
         )
 
@@ -1004,7 +1172,7 @@ def render_api_automation_test_page() -> None:
     with env_auth_col2:
         auth_mode = st.selectbox(
             "鉴权方式",
-            ["无", "Bearer Token", "API Key", "Basic Auth", "自定义Header"],
+            ["无"] + auto_reg.get_auth_labels(),
             key="interface_auth_mode",
         )
         if auth_mode == "Bearer Token":
@@ -1047,6 +1215,16 @@ def render_api_automation_test_page() -> None:
             st.info("不附加统一鉴权头，接口自身 headers 保持不变。")
 
     st.markdown("### Step 3. 生成与执行")
+    # 接口清单 + 全部执行配置一起签名：改任何一项，旧产物与旧结果都标记过期。
+    current_sig = _current_config_signature(
+        interfaces, execution_mode, base_url, timeout, retry_times, verify_ssl,
+        request_format, template_style, environment_config, auth_config,
+        allow_private_targets, include_credentials,
+    )
+    generated_config_sig = st.session_state.get("interface_generated_config_signature")
+    artifacts_stale = bool(generated_config_sig and generated_config_sig != current_sig)
+    if artifacts_stale:
+        st.warning("⚠️ 配置已变更，当前生成产物与执行结果已过期，请重新生成测试用例后再执行。")
     action_col1, action_col2, action_col3 = st.columns(3)
     with action_col1:
         if st.button("🧪 生成测试用例", use_container_width=True, key="generate_tests_v2"):
@@ -1067,6 +1245,9 @@ def render_api_automation_test_page() -> None:
                         template_style,
                         environment_config,
                         auth_config,
+                        config_signature=current_sig,
+                        allow_private_targets=allow_private_targets,
+                        include_credentials=include_credentials,
                     )
                     logger(f"测试文件生成完成，文件数量={len(generated)}。")
                     return {"file_count": len(generated)}
@@ -1087,7 +1268,7 @@ def render_api_automation_test_page() -> None:
 
     with action_col2:
         if st.button("▶️ 执行测试", use_container_width=True, key="run_tests_v2"):
-            if not _ensure_generated_file(execution_mode):
+            if not _ensure_generated_file(execution_mode, current_sig):
                 st.error("❌ 当前接口清单与已生成的测试文件不一致，请先重新生成测试用例")
             elif _check_interface_dependencies(execution_mode, for_execution=True):
                 try:
@@ -1141,6 +1322,9 @@ def render_api_automation_test_page() -> None:
                         template_style,
                         environment_config,
                         auth_config,
+                        config_signature=current_sig,
+                        allow_private_targets=allow_private_targets,
+                        include_credentials=include_credentials,
                     )
                     logger("测试文件生成完成，准备执行。")
                     if not _check_interface_dependencies(execution_mode, for_execution=True):
@@ -1178,25 +1362,57 @@ def render_api_automation_test_page() -> None:
     generated_files = st.session_state.get("interface_last_generated_files", {})
     if generated_files:
         _render_generated_files(generated_files)
+        # 生成阶段就展示告警（目标地址护栏、凭据脱敏、上限钳制等），
+        # 不必等到执行出结果才看得见。
+        _render_warnings_panel(
+            st.session_state.get("interface_generated_warnings") or [],
+            st.session_state.get("interface_generated_truncation"),
+        )
 
     cached_results = st.session_state.get("interface_last_test_results")
     if cached_results:
+        result_sig = st.session_state.get("interface_result_config_signature")
+        if result_sig and result_sig != current_sig:
+            st.warning("⚠️ 当前展示的是上一次配置的执行结果（已过期），请重新生成并执行后再看结论。")
         _render_test_results(cached_results, execution_mode, interfaces)
 
     st.markdown("---")
     clean_col = st.columns([1, 2, 1])[1]
     with clean_col:
+        # 只删除本工具已知的产物文件，绝不 rmtree 整个共享 test_dir。
+        known_generated_files = auto_reg.get_known_generated_files()
+        existing = [
+            name for name in known_generated_files
+            if os.path.exists(os.path.join(auto_test_tool.test_dir, name))
+        ]
+        st.caption(f"待清理产物：{', '.join(existing) or '无'}")
+        confirm_clean = st.checkbox(
+            f"确认删除上述 {len(existing)} 个产物文件（不会删除目录里的其它文件）",
+            key="api_auto_clean_confirm",
+            value=False,
+        )
         if st.button("🗑️ 清理生成文件", use_container_width=True, key="clean_generated_interface_files"):
-            try:
-                if os.path.exists(auto_test_tool.test_dir):
-                    shutil.rmtree(auto_test_tool.test_dir)
-                os.makedirs(auto_test_tool.test_dir)
-                st.session_state.pop("interface_last_generated_files", None)
-                st.session_state.pop("interface_last_test_results", None)
-                st.session_state.pop("interface_generated_signature", None)
-                st.success("✅ 生成文件已清理")
-            except Exception as exc:
-                st.error(f"❌ 清理失败: {exc}")
+            if not confirm_clean:
+                st.warning("请先勾选确认，再执行清理")
+            else:
+                removed = []
+                for name in existing:
+                    path = os.path.join(auto_test_tool.test_dir, name)
+                    try:
+                        os.remove(path)
+                        removed.append(name)
+                    except OSError as exc:
+                        st.error(f"删除 {name} 失败: {exc}")
+                for key in [
+                    "interface_last_generated_files",
+                    "interface_last_test_results",
+                    "interface_generated_signature",
+                    "interface_generated_config_signature",
+                    "api_auto_download_items_cache",
+                    "api_auto_report_cache",
+                ]:
+                    st.session_state.pop(key, None)
+                st.success(f"✅ 已清理 {len(removed)} 个产物：{', '.join(removed) or '无'}")
 
     render_task_run_panel(
         run_center=run_center,
