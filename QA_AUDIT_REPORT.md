@@ -650,3 +650,50 @@
 - 全量 pytest：485 passed（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）
 - e2e（新增 `14-api-security.e2e.ts`：注册能力摘要与安全默认 / 范围护栏与空选择不发请求 / 方案+被动审计全链路不崩溃 / 下载页签不隐式探测）：4/4 passed，全套 **56/56 passed**
 - GitHub：issues #334-#355 全部评论并关闭，PR #356 已合并，仓库 open issues = 0
+
+
+## 接口研发辅助工具专项审计（2026-11-26，Issues #357-#387）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/core/api_dev_tools.py`（InterfaceDevTools 全量执行引擎：接口变更对比 / 标准化导出 / 文档质量体检 / 回归清单 / 断言模板 / Mock 服务脚本 / 请求代码片段）+ `src/qa_toolkit/ui/pages/api_dev_tools_page.py`（Streamlit 七页签工作台：标准化导出、回归清单生成、接口变更分析、接口文档体检、断言模板生成、Mock 服务生成、请求代码片段）+ 共享解析器 `src/qa_toolkit/core/api_test_core.py`（`parse_content` 远程文档拉取）。
+- 方式：**两轮走查**。第一轮把候选问题写成 `.qa-audit/dev_repro.py` 实测坐实 21 项（DEV-01 ~ DEV-21，#357-#377）；完成注册式重构后，从测试专家 + 产品工程师视角对**重构后的代码**做二次走查，写 `.qa-audit/dev_round2_repro.py` 又坐实 10 项（DEV-22 ~ DEV-31，#378-#387），共 **31 项**。第二轮专门验证「重构没有覆盖到的边界」，例如字符串归一化篡改、`json.dumps` 生成的 Python 片段运行时崩溃、内联 `<script>` 闭合、远程拉取 SSRF、`True == 1` 掩盖类型变更、深层差异只报顶层 key 等。
+- 视角：测试专家关注正确性（数据保真、URL 构造、类型比较、深层差异、循环引用、严格 JSON）、安全性（代码注入、Header CRLF、SSRF、XSS、CSV/Markdown 注入、路径穿越）、边界（运行上限、截断、非法状态码）；产品工程师关注**拓展性、易用性**（注册式扩展点、首屏安全默认值、结果过期反馈、文字摘要、统一导出快照、状态码分桶），不局限于当前业务。
+- 修复分支 `fix/api-dev-tools-audit`（commit `478a5cc`），PR #388 已合并至 `master`（merge commit `31cc51e`）；全套 e2e 60/60 通过。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 调试代码默认关闭 SSL（#357） | Python requests 片段固定输出 `verify=False`，复制到真实项目即静默关闭 HTTPS 证书校验 |
+| method 代码注入（#358） | `method='GET\nimport os; os.system(...)\nrequests.get'` 真的生成独立 `os.system(...)` 语句；接口文档来自上传文件，属不可信输入 |
+| 未知语言静默回落（#359） | `language='Go'` 仍返回 `import requests ...`，无告警；语言/渲染器/后缀/高亮在 core 与 page 两处硬编码 |
+| URL 构造（#360/#361） | `path_params={'id':'1/../../admin?debug=1#frag'}` 直接改变请求路径；同名 query 被覆盖、list 被 `str()` 成 `"['c','d']"` |
+| 危险协议（#362） | `base_url='file:///etc/passwd'` 仍生成 curl，无协议白名单 / userinfo / 内网校验 |
+| Mock 服务（#363~#366） | 自定义响应头只留两个固定 key 且静默丢弃；生成脚本无请求体/响应体上限；Header CRLF 未过滤；默认监听 `0.0.0.0`、CORS `*`、`port='abc'` 无反馈 |
+| 稳定性（#367） | 循环引用 body 触发 `RecursionError`；断言风格与 `max_depth` 无校验 |
+| 导出与页面（#368~#376） | Markdown/结构化文本注入、CSV 公式注入、上传文件名路径穿越且临时文件不删除、`RAW_FORMAT_MAP[...]` KeyError、复制按钮 `button_text` 未转义、结果过期无提示、7 个 dataframe 页签无文字结论、导出无 config snapshot / signature / warnings、无运行上限与截断告警、重复 method+path 被字典推导静默覆盖 |
+| 拓展性（#373） | 质量规则、评分权重、词表、清单文案、优先级、Mock 默认值、运行上限全部硬编码，零注册扩展点 |
+| **二次走查：数据保真（#378）** | `_normalize_value` 对所有字符串 `strip()`，`body={'token':'  ABC  '}` 归一化成 `'ABC'`，差异对比因此漏报真实变更 |
+| **二次走查：Python 片段（#379）** | `json.dumps` 输出 `payload = {"enabled": true, "note": null}`，`compile()` 能过但运行 `NameError: name 'true' is not defined` |
+| **二次走查：XSS（#380）** | `_create_copy_button('</script><img src=x onerror=alert(1)>')` 生成的 HTML 含裸 `</script>`，可提前闭合脚本块 |
+| **二次走查：SSRF（#381）** | `parse_content` 贴 `http://169.254.169.254/latest/meta-data/` 即 `requests.get`，无内网/元数据拦截，也不校验重定向目标 |
+| **二次走查：差异定位（#382/#383）** | `_describe_value_change(True, 1)` 返回「无变更」；`user.profile.level` 从 1 改成 2 只报「字段值变化: user」，无法定位深层字段 |
+| **二次走查：参数与状态码（#384/#385）** | `path='/users/{id}'` + `parameters={'id':'7','verbose':'1'}` 让 `id` 混进请求体；`expected_status=99999` 体检零提示，也无 2xx/4xx/5xx 分桶 |
+| **二次走查：URL 与 JSON（#386/#387）** | `_normalize_path('api/v1/users?page=1')` 保留 query，构造出双份 `?`；`NaN` 直接进导出 JSON，严格解析抛 `ValueError: NaN` |
+
+### 修复方案要点
+
+- **调试代码与 Mock 安全**：新增 HTTP 方法白名单与 `requests.request("METHOD", ...)` 参数化兜底，历史 `requests.post(` 契约靠 `REQUESTS_VERBS` 注册表保持兼容；默认 `verify=True`；`quote()` 编码 path_params + `raw:` 显式跳过 + 同名 query append + list doseq 展开 + 目标地址协议/userinfo/端口/内网护栏；Mock 脚本改静态模板 + `__QA_DEV_*__` 占位符，内置请求体/响应体/头/路由上限、413 处理、Header 清洗、默认 `127.0.0.1` 与安全 CORS 来源；端口/延迟钳制并写明确告警（同时修正默认端口 `0` 被钳成 `1` 的问题）。
+- **两轮新发现的安全边界**：Python 渲染器改用 `format_python_literal()` 输出合法字面量 `True/False/None`；内联 `<script>` 字符串统一转义 `<`/`>`/`&`/U+2028/U+2029，杜绝 `</script>` 闭合；`api_test_core.py` 的 `_fetch_remote_content()` 复用目标地址校验，逐跳校验重定向、默认拒绝内网/元数据，页面提供「允许从内网/本地 URL 导入 Swagger 文档」显式开关并在首屏展示默认值；`_normalize_value` 不再 strip，非有限浮点清洗为 `null`，导出统一 `strict_json_dumps(..., allow_nan=False)`。
+- **差异与契约正确性**：重复 method+path 分组逐条精确配对，无法配对的定义显式计入新增/删除并告警；`_describe_value_change` 先判类型再比值，bool/int/float 互换一律高风险；`_collect_field_changes()` 递归输出点号字段路径并受注册式 `max_field_paths` 上限约束；`parameters` 回落时剥离路径占位符；相对路径用 `urlparse` 拆出 path/query/fragment，原有 query 合并到 `query_params` 并写告警；循环引用用 visited id 集合压缩、深度上限钳制。
+- **状态码与可读性**：新增注册式 `StatusCodeBucketSpec`（1xx/2xx/3xx/4xx/5xx），`invalid_expected_status` 定为高风险、`unexpected_status_bucket` 给 4xx/5xx 显式提示，分桶写入体检 summary 与回归清单 `status_bucket` 列；**高风险结论补进 `text_summary`**，不再只躺在 dataframe（canvas）里；注册式 `build_text_summary()` 给七个页签补中文结论；配置签名 + 结果过期醒目提示；统一导出 `config_snapshot` / `input_signature` / `registry_summary` / `warnings` / `truncation`。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/api_dev_registry.py`——HTTP 方法、代码片段语言/渲染器/下载后缀/高亮、断言风格、质量规则与评分权重、严重级别/风险等级、健康阈值、词表、清单文案、优先级策略、Mock 默认响应头与白名单、CSV/Markdown/结构化文本清洗器、协议白名单、Header 校验、状态码分桶、`DevLimits` 运行上限全部通过 `register_*` / `configure_*` / `get_*` 暴露；frozen dataclass Spec、查询返回副本、重复注册需 `replace=True`、`reset_dev_registry()` 保证测试隔离；页面能力摘要、radio、下载后缀、高亮语言、状态摘要全部注册表驱动。
+
+### 专项验证
+
+- 两轮复现脚本：`.qa-audit/dev_repro.py` 修复前 21/21 坐实、修复后 **0/21**；`.qa-audit/dev_round2_repro.py` 修复前 10/10 坐实、修复后 **0/10**（4 条静态口径已改为语义断言：自定义头显式告警、Markdown 无独立注入标题行、CSV 全部走 `_csv_bytes`、重复定义显式列出）。
+- 专项回归 `tests/test_audit_dev.py`：**31 passed**（逐条对应 #357-#387）；`tests/test_audit_core_regressions.py` 的 Mock 脚本哈希随安全加固更新为 `cbb48436…`，并补可编译 + 资源护栏 + 安全默认值语义断言。
+- 全量 pytest：**516 passed**（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）。
+- e2e（新增 `15-api-dev-tools.e2e.ts`：首屏注册能力/安全默认与 SSRF 开关 / 标准化文字结论与结果过期 / 代码片段内网拦截与 SSL 默认 / 体检非法状态码可读结论）：4/4 passed，全套 **60/60 passed**。
+- GitHub：issues #357-#387 全部逐条评论并关闭，PR #388 已合并（merge commit `31cc51e`），仓库 open issues = 0。
