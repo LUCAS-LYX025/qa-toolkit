@@ -195,3 +195,115 @@ def test_app_default_falls_back_to_simplified_chinese():
     app = _run_app()
     assert not app.exception
     assert "界面语言" in [item.label for item in app.sidebar.selectbox]
+
+
+# ---------------------------------------------------------------------------
+# 渲染回归：i18n 文案必须真正求值，不能把模板表达式原样输出到页面上
+# ---------------------------------------------------------------------------
+# 背景：render_back_to_top_button() 的 HTML 内含大量 CSS 大括号，是普通字符串，
+# 不能改成 f-string。i18n 改造时曾把 {th(...)} 直接写进去，导致四种语言下
+# 快捷操作面板都显示 Python 源码。这里从渲染结果层面守住这条底线。
+
+_LEAK_PATTERN = re.compile(
+    r"\{th\(|\{t\(|\{html\.escape\(|\{tool_label\(|\{tool_description\("
+    r"|\{_\w+\}|__QA_[A-Z_]+__"
+)
+
+_FLOATING_LABELS = {
+    "zh-CN": ("⚡ 快捷操作", "💬 意见反馈", "↑ 返回顶部"),
+    "zh-TW": ("⚡ 快捷操作", "💬 意見回饋", "↑ 返回頂部"),
+    "en-US": ("⚡ Quick actions", "💬 Feedback", "↑ Back to top"),
+    "ko-KR": ("⚡ 빠른 작업", "💬 의견 보내기", "↑ 맨 위로"),
+}
+
+
+@pytest.mark.parametrize("lang,labels", list(_FLOATING_LABELS.items()))
+def test_rendered_markdown_has_no_template_source(lang, labels):
+    """页面上不允许出现 {th(...)} / {t(...)} 这类未求值的 Python 模板源码。"""
+    app = _run_app(lang)
+    assert not app.exception, (lang, [e.value for e in app.exception])
+    rendered = "\n".join(item.value for item in app.markdown)
+    leaks = _LEAK_PATTERN.findall(rendered)
+    assert not leaks, (lang, leaks[:8])
+
+    panel = next(
+        (item.value for item in app.markdown if "qa-toolkit-floating-shell" in item.value),
+        "",
+    )
+    assert panel, "悬浮快捷操作面板未渲染"
+    assert "__QA_" not in panel
+    for label in labels:
+        assert label in panel, (lang, label, panel[-300:])
+
+
+def _load_copy_button_function(overrides=None):
+    """只抽取 escape_js_string / create_copy_button 执行，避免启动整页 App。"""
+    import ast
+    import html as html_module
+
+    source = (
+        Path(__file__).resolve().parents[1] / "src" / "qa_toolkit" / "streamlit_app.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    wanted = {"escape_js_string", "create_copy_button"}
+    funcs = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in wanted
+    ]
+    assert len(funcs) == 2
+
+    class _Capture:
+        def __init__(self):
+            self.calls = []
+
+        def html(self, content, height=None):
+            self.calls.append(content)
+
+    capture = _Capture()
+    namespace = {
+        "json": json,
+        "html": html_module,
+        "components": capture,
+        "t": t,
+        "th": th,
+        "hash": hash,
+    }
+    namespace.update(overrides or {})
+    exec(compile(ast.Module(body=funcs, type_ignores=[]), "<copy_button>", "exec"), namespace)
+    return namespace["create_copy_button"], capture
+
+
+def _js_button_literals(script):
+    """提取 button.innerHTML = <字面量>;（跳过恢复态的 originalText 变量）。"""
+    found = re.findall(r"button\.innerHTML = (.*?);", script)
+    return [item for item in found if item.strip().startswith('"')]
+
+
+@pytest.mark.parametrize("lang", list(_FLOATING_LABELS))
+def test_copy_button_script_uses_valid_js_literals(lang):
+    """复制按钮的三处提示文案必须是合法 JS 字符串字面量，且无模板残留。"""
+    localized_t = lambda source, **kwargs: t(source, locale=lang, **kwargs)
+    create_copy_button, capture = _load_copy_button_function({"t": localized_t})
+    button_label = t("📋 复制结果", locale=lang)
+    create_copy_button("hello", button_text=button_label, key=7)
+
+    assert len(capture.calls) == 1
+    script = capture.calls[0]
+    assert "{_" not in script and "{th(" not in script and "{t(" not in script
+    literals = _js_button_literals(script)
+    assert len(literals) == 3, literals
+    for literal in literals:
+        assert isinstance(json.loads(literal), str), literal
+    assert json.loads(literals[2]) == button_label
+
+
+def test_copy_button_script_survives_apostrophe_in_translation():
+    """译文含单引号时（英文常见）不能破坏 JS 字符串边界。"""
+    create_copy_button, capture = _load_copy_button_function(
+        {"t": lambda source, **kwargs: "Can't copy"}
+    )
+    create_copy_button("hello", button_text="Can't copy", key=9)
+    literals = _js_button_literals(capture.calls[0])
+    assert len(literals) == 3, literals
+    for literal in literals:
+        assert json.loads(literal) == "Can't copy", literal

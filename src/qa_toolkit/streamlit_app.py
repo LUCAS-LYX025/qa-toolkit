@@ -228,7 +228,8 @@ def escape_js_string(text):
 
 def create_copy_button(text, button_text=None, key=None):
     button_text = button_text or t("📋 复制到剪贴板")
-    _safe_button_text = json.dumps(str(button_text), ensure_ascii=False)[1:-1]
+    # 三处文案都用完整 JSON 字面量注入 JS：译文里若出现单引号也不会破坏脚本。
+    _button_text_js = json.dumps(str(button_text), ensure_ascii=False)
     _copied_text = json.dumps(t("✅ 复制成功！"), ensure_ascii=False)
     _failed_text = json.dumps(t("❌ 复制失败"), ensure_ascii=False)
     """创建一键复制按钮"""
@@ -297,7 +298,7 @@ def create_copy_button(text, button_text=None, key=None):
                         button.style.fontWeight = '800';
                         button.style.textShadow = '0 1px 1px rgba(127,29,29,0.54)';
                         setTimeout(function() {{
-                            button.innerHTML = '{_safe_button_text}';
+                            button.innerHTML = {_button_text_js};
                             button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
                             button.style.color = '#ffffff';
                             button.style.fontWeight = '700';
@@ -325,8 +326,9 @@ def create_copy_button(text, button_text=None, key=None):
 
 def render_back_to_top_button():
     """渲染固定在右下角的悬浮操作按钮。"""
-    st.markdown(
-        """
+    # 这段 HTML 内含大量 CSS 大括号，必须保持普通字符串，不能改成 f-string。
+    # 多语言文案通过占位符注入；切勿直接写模板表达式，否则会原样渲染成源码。
+    floating_html = """
         <style>
         .qa-toolkit-floating-shell {
             position: fixed;
@@ -458,16 +460,20 @@ def render_back_to_top_button():
         </style>
         <div class="qa-toolkit-floating-shell">
             <details class="qa-toolkit-floating-menu">
-                <summary class="qa-toolkit-floating-summary">{th("⚡ 快捷操作")}</summary>
+                <summary class="qa-toolkit-floating-summary">__QA_QUICK_ACTIONS__</summary>
                 <div class="qa-toolkit-floating-items">
-                    <a class="qa-toolkit-floating-link qa-toolkit-feedback-link" href="#tool-feedback-anchor">{th("💬 意见反馈")}</a>
-                    <a class="qa-toolkit-floating-link qa-toolkit-back-to-top" href="#page-top">{th("↑ 返回顶部")}</a>
+                    <a class="qa-toolkit-floating-link qa-toolkit-feedback-link" href="#tool-feedback-anchor">__QA_FEEDBACK__</a>
+                    <a class="qa-toolkit-floating-link qa-toolkit-back-to-top" href="#page-top">__QA_BACK_TO_TOP__</a>
                 </div>
             </details>
         </div>
-        """,
-        unsafe_allow_html=True,
+        """
+    floating_html = (
+        floating_html.replace("__QA_QUICK_ACTIONS__", th("⚡ 快捷操作"))
+        .replace("__QA_FEEDBACK__", th("💬 意见反馈"))
+        .replace("__QA_BACK_TO_TOP__", th("↑ 返回顶部"))
     )
+    st.markdown(floating_html, unsafe_allow_html=True)
     components.html(
         """
         <script>

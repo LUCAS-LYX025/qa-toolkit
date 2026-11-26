@@ -914,3 +914,40 @@
 - **依赖缺陷（真实可复现）**：`requirements.txt` 未锁定 `pyarrow`，venv 中被升级到 26.0.1，与锁定的 `numpy==1.26.3` 冲突（`pyarrow requires NumPy 2.0 or newer`），导致 20 个用例中 `st.dataframe` 连锁报错、`st_cropper` 直接抛 `StreamlitAPIException`。已降级 pyarrow 至 17.0.0 并在 `requirements.txt` 显式 pin，避免新环境按 README 的 `pip install -r requirements.txt` 安装后必现。
 - **沙箱临时目录噪声**：40 个 `tmp_path` 用例因宿主 broker 对 `/private/var/folders/.../T/pytest-of-root` 报 `EEXIST` 而 error，属运行环境限制；改用工作区内 `--basetemp` 后全部通过，非代码问题。
 - **回归断言适配**：`test_tool_card_icons.py` 与 `test_dg09` 两条源码字符串断言随 i18n 改写更新，并补了 `th("<script>alert(1)</script>")` 的运行时转义断言，XSS 防护语义未被削弱。
+
+## 国际化渲染回归专项审计（2026-11-26，Issues #463-#465）
+
+### 触发与定位
+
+上一轮 i18n 功能交付（PR #462，merge `d41be8d`）合并后，用户反馈右下角「⚡ 快捷操作」按钮疑似显示源码。用四语言 AppTest 扫描所有 `st.markdown` 渲染结果坐实：**简体中文 / 繁體中文 / English / 한국어 四种语言各泄漏 3 处 `{th(...)}`**，页面直接显示 Python 模板表达式而非文案。这是上一轮改造引入的真实回归，且 667 passed + e2e 70/70 的验收没能拦住它。
+
+### 问题清单
+
+| Issue | 视角 | 结论 |
+| --- | --- | --- |
+| #463 | 正确性 / 界面回归（P0） | 悬浮快捷操作面板三处文案在四种语言下均显示 `{th(...)}` 源码 |
+| #464 | 健壮性 / 拓展性 | 复制按钮恢复态文案用「去引号 + 单引号手工拼接」注入 JS，译文含单引号即破坏脚本；国际化后词库由外部提供，风险随语种增加 |
+| #465 | 测试策略 / 工程化 | i18n 现有 15 条测试只测 `t()` 返回值与 hero/侧栏标签，没有扫描完整渲染输出，导致「翻译没落地」类缺陷静默合入 master |
+
+### 根因
+
+`render_back_to_top_button()` 的 HTML 块内含大量 CSS 规则（成对的 `{` `}`），是**普通字符串**，不能改成 f-string。i18n 改造把 f-string 占位符 `{th("⚡ 快捷操作")}` 等直接写了进去，Python 不求值，浏览器原样渲染。同一函数里 `create_copy_button()` 的 JS 文案则存在单引号拼接不一致，属于多语言化后被放大的历史写法。
+
+### 修复方案
+
+- **文案注入**：保持 HTML 为普通字符串，三处标签改为 `__QA_QUICK_ACTIONS__` / `__QA_FEEDBACK__` / `__QA_BACK_TO_TOP__` 占位符，渲染前用 `.replace()` 注入 `th(...)` 结果；并在代码注释标明「该块含 CSS 大括号，必须保持普通字符串、不得写模板表达式」，防止后续维护者再次踩坑。
+- **JS 注入统一**：`create_copy_button()` 三处提示文案一律用完整 `json.dumps()` JSON 字面量注入，去掉 `[1:-1]` + 单引号手工拼接；译文含单引号 / 换行 / HTML 特殊字符均安全。
+- **渲染层防线**：`tests/test_i18n.py` 新增 9 条回归——四语言扫描全部 markdown 输出，断言无 `{th(` / `{t(` / `{html.escape(` / 占位符残留；正向断言悬浮面板确实出现当前语言译文；抽取 `create_copy_button` 验证四语言 + 含单引号译文下三处 JS 字面量均可被 `json.loads` 解析。
+- **可复现探针**：`.qa-audit/i18n_render_repro.py` 支持对指定版本源码做静态分析 + 对当前工作区做四语言运行时扫描；对修复前提交 `aa89ed8` 报 `3/3 泄漏 → exit 1`，对修复后报 `0/3 → exit 0`。
+
+### 验收证据
+
+- 复现探针：修复前静态 3 处未求值模板、四语言运行时各 3 处泄漏；修复后静态 0 处、四语言 0 处，三条文案分别为「⚡ 快捷操作 / 💬 意见反馈 / ↑ 返回顶部」「⚡ 快捷操作 / 💬 意見回饋 / ↑ 返回頂部」「⚡ Quick actions / 💬 Feedback / ↑ Back to top」「⚡ 빠른 작업 / 💬 의견 보내기 / ↑ 맨 위로」。
+- `tests/test_i18n.py`：**24 passed**（原 15 + 新增 9）。
+- 全量 pytest：**676 passed**，0 failed / 0 error（沙箱临时目录仍用工作区 `--basetemp` 绕开 broker 冲突）。
+- e2e：最终单独全量 **70/70 passed**（19 个文件，4m13s）。噪声说明：① 最初把全量 pytest 与 e2e 并行执行时，6 个用例因机器负载出现 `locator("body")` 超时，无并行负载下单独重跑 **6/6 passed（17s）**；② 第一次单独全量 69/70，`08-crypto-tools` 一例因工具卡片切换后 `textarea` 未就绪失败，单独重跑 **1/1 passed（3.29s）**，随后第二次全量 70/70。本次修复未触及工具卡片导航逻辑，判定为既有偶发时序噪声而非本轮回归。
+- GitHub：issues #463 / #464 / #465 逐条评论并关闭，修复经 PR 合并入 master，仓库 open issues = 0。
+
+### 遗留观察项（非本轮引入，未纳入本次 issue）
+
+浮动操作面板的 `components.html` iframe 会持续上报 `streamlit:setFrameHeight`（trace 中从 768 递增到 1500+），使页面高度缓慢增长。该现象在上一轮 70/70 验收时同样存在，单独全量 e2e 未受影响；并行高负载时会放大定位器超时。建议后续单独评估是否改为固定高度或去掉动态高度上报。
