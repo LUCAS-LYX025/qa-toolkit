@@ -2,7 +2,7 @@ import streamlit as st
 import html
 import re
 from qa_toolkit.config.constants import TOOL_CATEGORIES
-from qa_toolkit.core.i18n import t
+from qa_toolkit.core.i18n import t, th
 from qa_toolkit.support.feedback_store import FeedbackStore
 
 # === 留言反馈区域 ===
@@ -49,13 +49,13 @@ class FeedbackSection:
                     0 14px 28px rgba(15, 23, 42, 0.08);
             ">
                 <div style="font-size: 12px; font-weight: 700; color: #b45309; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px;">
-                    用户反馈
+                    {th("用户反馈")}
                 </div>
                 <div style="font-size: 18px; font-weight: 700; color: #17324a; margin-bottom: 6px;">
-                    刚用完「{tool_name}」？给个快速反馈
+                    {th("刚用完「{tool}」？给个快速反馈", tool=html.escape(str(t(tool_name))))}
                 </div>
                 <div style="font-size: 14px; color: #476179; line-height: 1.7;">
-                    详细表单改成弹出式，不再占一整段页面。当前工具已收到 {tool_feedback_count} 条反馈，全站累计 {total_feedback_count} 条。
+                    {th("详细表单改成弹出式，不再占一整段页面。当前工具已收到 {n} 条反馈，全站累计 {m} 条。", n=tool_feedback_count, m=total_feedback_count)}
                 </div>
             </div>
             """,
@@ -219,7 +219,7 @@ class FeedbackSection:
             else "希望新增什么能力？用在什么场景？"
         )
 
-        st.caption(t("当前工具: `{name}`，提交时间和工具名会自动记录。", name=tool_name))
+        st.caption(t("当前工具: `{name}`，提交时间和工具名会自动记录。", name=t(tool_name)))
         with st.form(key=form_key):
             col1, col2 = st.columns(2)
             with col1:

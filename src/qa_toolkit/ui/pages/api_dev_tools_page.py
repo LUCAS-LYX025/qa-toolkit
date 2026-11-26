@@ -13,6 +13,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from qa_toolkit.core import api_dev_registry as dev_reg
+from qa_toolkit.core.i18n import t
 from qa_toolkit.core.api_dev_tools import InterfaceDevTools
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.support.documentation import show_doc
@@ -395,19 +396,28 @@ def _render_registry_summary() -> None:
     summary = dev_reg.get_registry_summary()
     limits = dev_reg.get_dev_limits()
     st.caption(
-        f"🧩 当前注册的能力：HTTP 方法 {summary['HTTP 方法']} 个 / 代码片段语言 {summary['代码片段语言']} 种 / "
-        f"代码渲染器 {summary['代码渲染器']} 个 / 质量规则 {summary['质量规则']} 条 / "
-        f"状态码分桶 {summary['状态码分桶']} 类 / "
-        f"断言风格 {summary['断言风格']} 种 / 词表分组 {summary['词表分组']} 组 / "
-        f"清单文案 {summary['清单文案']} 条 / Mock 默认响应头 {summary['Mock 默认响应头']} 个 / "
-        f"CSV 清洗器 {summary['CSV 清洗器']} 个"
+        t(
+            "🧩 当前注册的能力：HTTP 方法 {m} 个 / 代码片段语言 {lang} 种 / 代码渲染器 {cr} 个 / "
+            "质量规则 {qr} 条 / 状态码分桶 {sb} 类 / 断言风格 {ast} 种 / 词表分组 {wt} 组 / "
+            "清单文案 {ct} 条 / Mock 默认响应头 {mh} 个 / CSV 清洗器 {cs} 个",
+            m=summary["HTTP 方法"], lang=summary["代码片段语言"], cr=summary["代码渲染器"],
+            qr=summary["质量规则"], sb=summary["状态码分桶"], ast=summary["断言风格"],
+            wt=summary["词表分组"], ct=summary["清单文案"], mh=summary["Mock 默认响应头"],
+            cs=summary["CSV 清洗器"],
+        )
     )
     st.caption(
-        f"安全默认：仅允许 {'/'.join(dev_reg.get_protocols())}；默认校验 SSL={limits.verify_ssl_by_default}；"
-        f"默认监听 {limits.default_mock_host}:{limits.default_mock_port}；默认 CORS 来源 {limits.default_cors_origin}；"
-        f"默认允许内网目标={limits.allow_private_targets}；"
-        f"运行上限：接口 {limits.max_interfaces} / Mock 路由 {limits.max_mock_routes} / "
-        f"递归深度 {limits.max_recursion_depth} / 延迟 {limits.max_delay_ms}ms / 请求体 {limits.max_request_body_bytes} bytes"
+        t(
+            "安全默认：仅允许 {proto}；默认校验 SSL={ssl}；默认监听 {host}:{port}；"
+            "默认 CORS 来源 {cors}；默认允许内网目标={priv}；运行上限：接口 {mi} / Mock 路由 {mr} / "
+            "递归深度 {depth} / 延迟 {delay}ms / 请求体 {body} bytes",
+            proto="/".join(dev_reg.get_protocols()), ssl=limits.verify_ssl_by_default,
+            host=limits.default_mock_host, port=limits.default_mock_port,
+            cors=limits.default_cors_origin, priv=limits.allow_private_targets,
+            mi=limits.max_interfaces, mr=limits.max_mock_routes,
+            depth=limits.max_recursion_depth, delay=limits.max_delay_ms,
+            body=limits.max_request_body_bytes,
+        )
     )
     st.checkbox(
         "允许从内网/本地 URL 导入 Swagger 文档（SSRF 护栏，默认关闭）",

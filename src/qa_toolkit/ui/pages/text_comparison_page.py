@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core.i18n import t
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.status_feedback import (
     render_error_feedback,
@@ -80,7 +81,7 @@ def _render_source_panel(side: str, label: str):
     load_button_key = f"text_comparison_{side}_load_button"
 
     st.markdown(f"### {label}")
-    st.caption(f"当前来源: `{st.session_state[source_key]}`")
+    st.caption(t("当前来源: `{src}`", src=st.session_state[source_key]))
 
     uploaded_file = st.file_uploader(
         f"导入{label}",

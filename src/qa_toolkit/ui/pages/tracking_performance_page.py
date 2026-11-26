@@ -13,6 +13,7 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.core import tracking_registry as registry
+from qa_toolkit.core.i18n import t
 from qa_toolkit.integrations.tracking import rules
 from qa_toolkit.integrations.tracking.models import Option, Person, QuerySpec, WorkItem
 from qa_toolkit.support.documentation import show_doc
@@ -75,15 +76,28 @@ def _render_registry_summary() -> None:
     limits = registry.get_tracking_limits()
     live = summary["已接入数据源"]
     listed = summary["仅登记数据源"]
+    sep = t("、")
+    adapters_text = sep.join(registry.get_adapters()[k].label for k in live if k in registry.get_adapters()) or t("无")
+    listed_text = sep.join(listed) or t("无")
     st.caption(
-        "🧩 已接入数据源：" + ("、".join(registry.get_adapters()[k].label for k in live if k in registry.get_adapters()) or "无")
-        + f"（共 {summary['数据源']} 个）；仅登记：" + ("、".join(listed) or "无")
+        t(
+            "🧩 已接入数据源：{adapters}（共 {n} 个）；仅登记：{listed}",
+            adapters=adapters_text,
+            n=summary["数据源"],
+            listed=listed_text,
+        )
     )
     st.caption(
-        f"归因规则 {len(summary['归因规则'])} 种 / SLA 规则 {len(summary['SLA 规则'])} 种 / "
-        f"绩效规则 {len(summary['绩效规则'])} 种；"
-        f"安全默认：校验 SSL={limits.default_verify_ssl}、产物保留凭据={limits.allow_credentials_in_artifacts}、"
-        f"单次取数上限 {limits.max_items} 条。"
+        t(
+            "归因规则 {attr} 种 / SLA 规则 {sla} 种 / 绩效规则 {perf} 种；"
+            "安全默认：校验 SSL={ssl}、产物保留凭据={keep}、单次取数上限 {limit} 条。",
+            attr=len(summary["归因规则"]),
+            sla=len(summary["SLA 规则"]),
+            perf=len(summary["绩效规则"]),
+            ssl=limits.default_verify_ssl,
+            keep=limits.allow_credentials_in_artifacts,
+            limit=limits.max_items,
+        )
     )
 
 

@@ -9,6 +9,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from qa_toolkit.core.i18n import t
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.status_feedback import (
     push_status_feedback,
@@ -283,8 +284,11 @@ def _render_import_tab():
             st.rerun()
     with action_cols[2]:
         st.caption(
-            f"当前来源: `{st.session_state.log_analyzer_source_name}` | "
-            f"类型: `{st.session_state.log_analyzer_source_type}`"
+            t(
+                "当前来源: `{src}` | 类型: `{type}`",
+                src=st.session_state.log_analyzer_source_name,
+                type=st.session_state.log_analyzer_source_type,
+            )
         )
 
     if import_method == "文件上传":
