@@ -1,0 +1,62 @@
+[
+  {
+    "id": "MCP-01",
+    "title": "[外部MCP] 配置导入产生重复数据源，用户无法分辨该选哪个",
+    "labels": ["p1", "usability", "external-mcp"],
+    "body": "**视角**：产品工程师（易用性）\n\n**复现**：运行 `import_mcp_configs()` 读取本机 Codex/Cursor 配置后，注册中心同时存在 `mastergo` 与 `mastergo-magic-mcp`、`zentao` 与 `zentao-11`、`adb_mysql` 与 `adb-mysql-mcp-server`。用例生成器的「外部数据源」下拉框出现功能重复的两组。\n\n**实际**：同一服务被登记两次，用户不知道选哪个；切换后工具白名单和语义映射行为不一致。\n\n**期望**：导入时按别名归并到统一 key，已有同义注册项时合并而非新增；页面上不出现重复业务数据源。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_01_duplicate_aliases`"
+  },
+  {
+    "id": "MCP-02",
+    "title": "[外部MCP] 写操作确认只做在界面层，客户端可被直接绕过",
+    "labels": ["p0", "security", "external-mcp"],
+    "body": "**视角**：测试专家（安全）\n\n**复现**：构造允许 `update_work_item` 的 spec，不经页面直接调用 `McpClient.call_tool('update_work_item', {...})`，返回 `ok=True`。\n\n**实际**：UI 的二次确认是唯一防线；任何其他工具、脚本或未来的 Agent 编排层都能绕过确认直接写外部系统。\n\n**期望**：客户端层提供写操作保护，默认拒绝 side_effect=write 的能力调用；只有显式传入确认令牌/开关才放行，并在 trace 中记录。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_02_write_not_blocked_in_client`"
+  },
+  {
+    "id": "MCP-03",
+    "title": "[外部MCP] 切换数据源后工具列表缓存未清空",
+    "labels": ["p1", "correctness", "external-mcp"],
+    "body": "**视角**：测试专家（正确性）\n\n**复现**：在云效上点「发现可用工具」得到 `search_workitems`，切到蓝湖后工具下拉框仍显示云效工具，点击调用会打到错误的数据源。\n\n**实际**：工具缓存与当前选中的 server 没有绑定关系。\n\n**期望**：server 选择变化时清空工具缓存与候选结果，并要求重新发现。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_03_tool_cache_not_cleared`"
+  },
+  {
+    "id": "MCP-04",
+    "title": "[外部MCP] 需求候选静默截断到 10 条，用户不知道还有更多",
+    "labels": ["p2", "data-quality", "external-mcp"],
+    "body": "**视角**：测试专家（数据质量）\n\n**复现**：搜索返回 25 条候选，页面只列出 10 条且无任何提示。\n\n**实际**：用户以为结果只有 10 条，可能漏掉真正的需求；与云效实战中「候选可能很多、要按标题判别」的经验冲突。\n\n**期望**：候选列表函数返回总数与截断标记，页面明确展示「共 N 条，仅显示前 10 条」，并引导补充更精确的关键词。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_04_candidates_silently_truncated`"
+  },
+  {
+    "id": "MCP-05",
+    "title": "[外部MCP] 精确编号识别过宽，自然语言里的数字被当需求号",
+    "labels": ["p1", "correctness", "external-mcp"],
+    "body": "**视角**：测试专家（正确性）\n\n**复现**：`build_search_arguments('手机号 123')` 返回 `subjectDescription: '手机号 123'`，走宽泛的描述搜索。\n\n**实际**：任何含数字的症状描述都会被误判为精确编号，结果噪声大；正是云效实战里踩过的坑。\n\n**期望**：只有 `XX-1234` 形式的工单号，或独立成词的较长编号，才使用描述字段；其余一律标题搜索。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_05_serial_detection_too_broad`"
+  },
+  {
+    "id": "MCP-06",
+    "title": "[外部MCP] 外部文档抽取文本无长度上限，可能撑爆用例生成器",
+    "labels": ["p1", "security", "external-mcp"],
+    "body": "**视角**：产品工程师（成本与稳定性）\n\n**复现**：外部返回 80 万字符描述，`extract_semantic_text()` 原样返回，无告警。\n\n**实际**：超长文本进入后续模型调用与导出的成本/超时不可控，也可能覆盖用户已填内容。\n\n**期望**：抽取阶段按可配置上限截断并给出告警，预览与回填都使用截断后文本。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_06_unbounded_extracted_text`"
+  },
+  {
+    "id": "MCP-07",
+    "title": "[外部MCP] stdio 响应混入安装提示即整体失败",
+    "labels": ["p1", "robustness", "external-mcp"],
+    "body": "**视角**：测试专家（健壮性）\n\n**复现**：fake 进程 stdout 先输出 `npm warn deprecated package`，再输出合法 JSON-RPC 响应；`StdioTransport.send()` 直接抛「响应不是合法 JSON」。\n\n**实际**：`npx -y` 首次拉包时的提示、server 的调试输出都可能污染 stdout，导致连接看似随机失败。\n\n**期望**：按行跳过非 JSON-RPC 行（保留有限次数上限），只读匹配的响应行；超过上限明确报错。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_07_stdio_noise_line`"
+  },
+  {
+    "id": "MCP-08",
+    "title": "[外部MCP] trace 中字符串值里的凭据未脱敏",
+    "labels": ["p1", "security", "external-mcp"],
+    "body": "**视角**：测试专家（安全）\n\n**复现**：`redact_payload({'note': 'token=abc123secret; password=hunter2'})` 原样返回字符串。\n\n**实际**：调用方常把连接串、curl 命令、命令行参数放进字符串参数，这些会原样写进 trace 和导出物。\n\n**期望**：对字符串值也做模式化脱敏（`token=xxx`、`password=xxx`、Bearer 后跟的串等），与按键名脱敏叠加。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_08_trace_string_secret`"
+  },
+  {
+    "id": "MCP-09",
+    "title": "[外部MCP] 缺少凭据时不提前提示，用户点到调用才知道",
+    "labels": ["p2", "usability", "external-mcp"],
+    "body": "**视角**：产品工程师（易用性）\n\n**复现**：选择云效后页面只显示「凭据引用：YUNXIAO_ACCESS_TOKEN」，如果环境变量未设置，要点击发现工具才得到模糊的连接失败。\n\n**实际**：用户不知道该去哪里配什么；排障成本高。\n\n**期望**：选中数据源时立即列出缺失的环境变量名（只显示名字，不显示值），并说明从哪里读取。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_09_missing_env_not_surfaced`"
+  },
+  {
+    "id": "MCP-10",
+    "title": "[外部MCP] 配置导入不做过滤，无关服务淹没业务数据源",
+    "labels": ["p2", "usability", "external-mcp"],
+    "body": "**视角**：产品工程师（拓展性与易用性）\n\n**复现**：导入本机配置得到 14 项，包括 playwright-extension、github、excel-mcp-server 等与测试需求无关的服务。\n\n**实际**：下拉框被非业务服务占满，云效/蓝湖/禅道反而不突出；新接入一个 MCP 就会让列表更乱。\n\n**期望**：导入支持按业务域白名单/关键词过滤，默认只导入已知或明确声明可接入的服务；其余可按需手动登记。\n\n**探针**：`.qa-audit/mcp_repro.py::probe_10_unfiltered_import_list`"
+  }
+]
