@@ -697,3 +697,56 @@
 - 全量 pytest：**516 passed**（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）。
 - e2e（新增 `15-api-dev-tools.e2e.ts`：首屏注册能力/安全默认与 SSRF 开关 / 标准化文字结论与结果过期 / 代码片段内网拦截与 SSL 默认 / 体检非法状态码可读结论）：4/4 passed，全套 **60/60 passed**。
 - GitHub：issues #357-#387 全部逐条评论并关闭，PR #388 已合并（merge commit `31cc51e`），仓库 open issues = 0。
+
+
+## 接口自动化测试工具专项审计（2026-11-26，Issues #389-#423）
+
+### 审计范围与方式
+
+- 对象：`src/qa_toolkit/core/api_test_core.py`（InterfaceAutoTestCore：多格式解析、用例/脚本生成、执行、简要 HTML 报告）+ `src/qa_toolkit/ui/pages/api_automation_page.py`（Streamlit 工作台：示例/导入 → 预览 → 配置/环境/鉴权 → 生成/执行 → 结果导出）+ `src/qa_toolkit/reporting/report_generator.py`（EnhancedReportGenerator 详细 HTML 报告）+ 被「接口研发辅助」复用的共享解析器链路。
+- 方式：**三轮走查**。第一轮把候选问题写成 `.qa-audit/auto_repro.py` 实测坐实 24 项（AUTO-01 ~ AUTO-24，#389-#412）；完成注册式重构后，写 `.qa-audit/auto_round2_repro.py` 对**重构后的代码**做 23 项边界探针（生成脚本注入/可执行性、报告与导出安全、断言/JSON/URL/注册中心隔离），坐实 AUTO-25；全套 e2e 又抓到由本轮修复引入的跨模块回归 AUTO-26；第三轮合并后台独立审计的 9 个新发现，写 `.qa-audit/auto_round3_repro.py` 坐实 AUTO-27 ~ AUTO-35（#415-#423）。共 **35 项**。
+- 视角：测试专家关注正确性（递归断言假绿、统计篡改、非法状态码、严格 JSON、URL 编码、运行上限）、安全性（XSS、凭据明文、SSRF、Header CRLF、CSV 公式注入、TLS 默认关闭、上传临时文件不清理）、边界（大数据、循环引用、配置过期）；产品工程师关注**拓展性、易用性**（注册式扩展中心、首屏安全默认值、配置变更过期反馈、纯文字结论、惰性下载、精确清理二次确认），不局限于当前业务。
+- 修复分支 `fix/api-automation-audit`，PR 合并至 `master`（PR #424，merge commit `76c2832`）；全套 e2e 64/64 通过。
+
+### 关键实测证据（修复前）
+
+| 问题 | 实测结果 |
+| --- | --- |
+| 详细报告 XSS（#389） | `name='<script>alert(1)</script>'`、`path='/x"><script>…'`、`error` 进 `<pre>`，全文件无 `html.escape`，报告下载后在浏览器打开即执行 |
+| 凭据明文（#390） | Bearer token / Basic 密码原样写进 `interface_manifest.json` 的 `config.auth` 与生成脚本 `CONFIG` |
+| TLS 与 SSRF（#391/#393/#408） | 默认 `verify=False`；`base_url='http://169.254.169.254/...'` 无协议/内网/元数据校验；Swagger URL 导入缺「允许内网/本地」开关，本地联调被护栏误伤 |
+| 注入与路径（#392/#394/#395） | path_params 不 `quote()` 可路径穿越；Header 无 RFC 7230 / CRLF 校验；CSV 单元格以 `= + - @` 开头直接导出 |
+| 上传（#396） | 无大小/后缀上限，文件名不隔离，临时文件不删除 |
+| 断言假绿（#397） | `compare_standard()` 跳过所有嵌套 dict/list，`response.data.user.id` 从 1 改成 2 仍判通过 |
+| 统计与文件名（#398/#399） | 详细报告用 `test_details` 数量静默改写 `test_results.total`；`detailed_test_report_{秒}.html` 同秒覆盖 |
+| 静默回落与非法值（#400/#401/#402） | 未知 method/format/mode 静默回落；`expected_status=99999` 生成永不可能通过的断言；manifest 含 `NaN`/`Infinity` 非法 JSON |
+| 上限与签名（#403/#404） | timeout/retry/接口数/响应体无上限；生成签名只签接口清单，改 base_url/鉴权/模板后仍跑旧脚本 |
+| 可读性与导出（#405/#406） | 结论只有 `st.dataframe`（canvas 读屏/e2e 读不到）；导出件无 `config_snapshot`/`input_signature`/`registry_summary`/`warnings`/`truncation` |
+| 性能与清理（#407/#410） | 每次 rerun 急切构造 13 个模板下载项并写盘生成报告；清理按钮 `shutil.rmtree(test_dir)` 删掉整个共享目录且无二次确认 |
+| 拓展性（#409/#411/#412） | 首屏不展示安全默认值与已注册能力；方法/格式/模式/鉴权/模板/上限/镜像全部硬编码，零 `register_*` 扩展点，模板数写死 13 |
+| **第二轮：凭据脱敏分支（#413）** | `redact_auth_config()` 在 `enabled=False` 时提前 `return`，「填了凭据没勾启用」或 Basic Auth 只填密码时，token/密码仍明文落盘且 `get_warnings()` 为空 |
+| **第二轮：跨模块回归（#414）** | 全套 e2e `15-api-dev-tools` 体检用例稳定失败：共享解析器把 `99999` 回落成 200 后，文档体检结论「高 0 / 中 1 / 低 2」，`不在合法 HTTP 范围（100-599）` 高风险消失 |
+| **第三轮：哨兵碰撞（#415）** | `base_url='https://x.example/__CASES_JSON_LITERAL__.com'` 时 `str.replace` 二次污染，`compile()` 生成脚本抛 `SyntaxError` |
+| **第三轮：Bruno 解析（#416）** | `build_bruno_template()` 的 `body:json` 块被非贪婪正则截在第一个 `}`，解析出半截 `{"username":"test","password":"123456"` 非法 JSON |
+| **第三轮：统计溢出（#417）** | `total=1/passed=5` 时报告仍渲染 `500.0%` 成功率 |
+| **第三轮：CSV 清洗绕过（#418）** | `\n/\r/\t/\x00/\u3000` 前缀 + `=1+1` 不被 `sanitize_csv_value` 前置单引号，Excel 仍执行公式 |
+| **第三轮：静默清洗（#419）** | `expected_response` 里的 `NaN`/`Infinity` 被清洗为 `null` 但 `manifest.warnings=[]`，用户无感知 |
+| **第三轮：注册点空转（#420/#421/#422/#423）** | 断言 comparator、报告模板、导出格式只登记 label 未被产物链消费；内置三种框架渲染器未注册（摘要计数 0）；首屏摘要把「仅登记」项也算作可用能力 |
+
+### 修复方案要点
+
+- **安全默认值与护栏**：新增注册式 `AutomationLimits`（接口/上传/超时/重试/响应体/Header/导出/脚本上限、`default_verify_ssl=True`、`allow_private_targets=False`、`allow_credentials_in_artifacts=False`）；`validate_target_url()` 做协议白名单、userinfo、端口、内网/回环/链路本地/元数据拦截；`sanitize_headers()` 按 RFC 7230 校验 Header 名并拒绝 CRLF/控制字符，非法头写 warnings 而非静默透传；`quote()` 编码 path_params + `raw:` 显式跳过 + 同名 query append + list doseq 展开；上传加大小/后缀白名单、uuid 文件名与 `try/finally` 删除。
+- **凭据脱敏**：`redact_auth_config()` 统一清空 `token`/`password`/`api_key_value`/`custom_header_value`，生成脚本运行时通过 `credential_env_vars` 环境变量注入；**第二轮修正**：无论 `enabled` 是否为真都先脱敏，只有启用时才生成环境变量映射，堵住「填了凭据没勾启用」的明文落盘分支。
+- **报告与导出安全**：详细/简要 HTML 全字段 `html.escape()`（含 `<pre>` 与属性上下文），method class 只用清洗后 slug；文件名加 `uuid4().hex[:8]`；CSV 统一 `sanitize_csv_value()` 前置 `'`；Markdown 单元格转义换行/管道符；`strict_json_dumps(allow_nan=False)` 把 `NaN`/`Infinity` 清洗为 `null` 并递归深度保护。
+- **正确性与结果可信**：`compare_response()` 递归结构化比对 `smoke`/`standard`/`strict`，输出 `response.data.user.id` 点号路径，先比类型再比值（`True == 1` 不假绿），受深度/字段数上限约束；报告统计一律以 `test_results.total/passed/failed/errors` 为准，明细缺失只提示覆盖率；非法 `expected_status` 回落 200 并写 `status_bucket`/`status_valid`；**第二轮跨模块保真**：同时保留 `raw_expected_status` 原始值，`api_dev_tools` 体检/回归清单据此继续判高风险，生成脚本仍用 200。
+- **状态反馈与易用性**：`_current_config_signature()` 把接口清单 + 执行模式/base_url/timeout/retry/verify_ssl/请求格式/模板风格/环境/鉴权/SSRF 开关/凭据开关一起签名，改配置后产物与结果显式标「已过期」；`build_text_summary()` 渲染纯文字结论；导出件带 `config_snapshot`/`input_signature`/`registry_summary`/`warnings`/`truncation`；HTML 报告与下载项按结果签名惰性缓存；清理只删 `get_known_generated_files()` 列出的产物并二次确认。
+- **拓展性（重点）**：新增 `src/qa_toolkit/core/api_automation_registry.py`——HTTP 方法、请求格式、执行模式、框架渲染器、鉴权方式、模板风格、断言策略、状态码分桶、镜像源、导入模板、报告模板、导出格式、运行上限、协议白名单、Header 清洗器、HTML/Markdown/CSV 转义器、文字摘要模板全部注册化；frozen dataclass Spec + 查询返回副本 + `replace=True` 覆盖 + `reset_automation_registry()` 测试隔离；页面下拉框、镜像源、模板下载项、鉴权 label 映射、首屏能力摘要全部注册表驱动。
+- **第三轮（#415-#423）**：① 生成脚本改用 `encode_json_literal()` 的 base64 表达式注入 CONFIG/CASES，base64 字母表不含下划线，从根本上杜绝哨兵二次替换（同时让历史三单引号注入用例更安全）；② `_extract_braces_block()` 用花括号配对（含字符串内引号判定）替代非贪婪正则，Bruno `body:json` 嵌套 JSON 完整还原；③ 报告统计接入 `normalize_test_stats()` 按比例钳制 + 告警，`success_rate` 上限 100%，杜绝 500%；④ CSV 公式清洗正则覆盖前导空白/控制字符/零宽字符；⑤ `json_warnings()` 把 NaN/Inf/递归深度清洗变成 manifest 可观测告警；⑥ 报告模板/导出格式升级为带 renderer/serializer 的 Spec，页面下载区改由 `get_export_items(ctx)` 驱动，报告头消费 `get_report_templates()`/`get_report_renderer()`；⑦ 内置三种框架渲染器就地注册（延迟 import 断开循环依赖）；⑧ `get_registry_summary()['接入状态']` 区分「已接入产物链」与「仅登记」，首屏只把可用项呈现给用户。
+
+### 专项验证
+
+- 三轮复现脚本：`.qa-audit/auto_repro.py` 修复前 24/24 坐实、修复后 **0/24**；`.qa-audit/auto_round2_repro.py` 修复前 1/23 坐实（AUTO-25）、修复后 **0/23**；`.qa-audit/auto_round3_repro.py` 修复前 9/9 坐实、修复后 **0/9**，三轮合计 35 项全部坐实并修复。
+- 专项回归 `tests/test_audit_auto.py`：**35 passed**（逐条对应 #389-#423，含跨模块回归用例）；同步更新 `test_audit_security_injection.py` 的三单引号注入断言以匹配更安全的 base64 注入实现。
+- 全量 pytest：**551 passed**（独立 `--basetemp` 规避沙箱 `pytest-of-unknown` 残留 EEXIST）。
+- e2e（新增 `16-api-automation.e2e.ts`：首屏注册能力/安全默认值与 SSRF/凭据开关 / 生成阶段内网护栏告警可读 / 配置变更后产物过期 / 执行结果纯文字结论与精确清理二次确认）：4/4 passed，全套 **64/64 passed**；同时加固 07 号正则用例在全套串行下的会话污染，并修复 15 号研发辅助体检因共享解析器改动产生的跨模块回归。
+- GitHub：issues #389-#423 全部逐条评论并关闭，PR 已合并（PR #424，merge commit `76c2832`），仓库 open issues = 0。
