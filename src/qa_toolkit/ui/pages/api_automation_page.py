@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.core.env_profile_manager import get_session_env_profile_manager
+from qa_toolkit.core.i18n import t
 from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core import api_automation_registry as auto_reg
@@ -78,28 +79,40 @@ def _render_registry_summary() -> None:
     summary = auto_reg.get_registry_summary()
     limits = auto_reg.get_automation_limits()
     st.caption(
-        f"🧩 当前注册的能力：HTTP 方法 {summary['HTTP 方法']} 个 / 请求格式 {summary['请求格式']} 种 / "
-        f"执行模式 {summary['执行模式']} 种 / 鉴权方式 {summary['鉴权方式']} 种 / "
-        f"模板风格 {summary['模板风格']} 种 / 断言策略 {summary['断言策略']} 种 / "
-        f"状态码分桶 {summary['状态码分桶']} 类 / 导入模板 {summary['导入模板']} 份 / "
-        f"报告模板 {summary['报告模板']} 种 / 导出格式 {summary['导出格式']} 种 / 镜像源 {summary['镜像源']} 个。"
+        t(
+            "🧩 当前注册的能力：HTTP 方法 {m} 个 / 请求格式 {f} 种 / 执行模式 {e} 种 / "
+            "鉴权方式 {a} 种 / 模板风格 {ts} 种 / 断言策略 {ast} 种 / "
+            "状态码分桶 {sb} 类 / 导入模板 {it} 份 / 报告模板 {rt} 种 / 导出格式 {ef} 种 / 镜像源 {mi} 个。",
+            m=summary["HTTP 方法"], f=summary["请求格式"], e=summary["执行模式"],
+            a=summary["鉴权方式"], ts=summary["模板风格"], ast=summary["断言策略"],
+            sb=summary["状态码分桶"], it=summary["导入模板"], rt=summary["报告模板"],
+            ef=summary["导出格式"], mi=summary["镜像源"],
+        )
     )
     # 接入状态：只把真正接入产物链的项当成可用能力，仅登记项单独标注（#423/R3-09）。
     _access = summary.get("接入状态", {})
     st.caption(
-        "🔌 接入状态："
-        f"报告模板可用 {len(_access.get('已接入报告模板', []))}/{summary['报告模板']}、"
-        f"导出格式可用 {len(_access.get('已接入导出格式', []))}/{summary['导出格式']}、"
-        f"框架渲染器 {len(_access.get('已接入框架渲染器', []))} 种；"
-        f"仅登记（暂不可用）：报告 {_access.get('仅登记报告模板', []) or '无'}、"
-        f"导出 {_access.get('仅登记导出格式', []) or '无'}。"
+        t(
+            "🔌 接入状态：报告模板可用 {r1}/{rt}、导出格式可用 {e1}/{ef}、"
+            "框架渲染器 {fw} 种；仅登记（暂不可用）：报告 {only_r}、导出 {only_e}。",
+            r1=len(_access.get("已接入报告模板", [])), rt=summary["报告模板"],
+            e1=len(_access.get("已接入导出格式", [])), ef=summary["导出格式"],
+            fw=len(_access.get("已接入框架渲染器", [])),
+            only_r=_access.get("仅登记报告模板", []) or t("无"),
+            only_e=_access.get("仅登记导出格式", []) or t("无"),
+        )
     )
     st.caption(
-        f"安全默认：仅允许 {'/'.join(auto_reg.get_protocols())}；默认校验 SSL={limits.default_verify_ssl}；"
-        f"默认允许内网目标={limits.allow_private_targets}；默认产物保留凭据={limits.allow_credentials_in_artifacts}；"
-        f"运行上限：接口 {limits.max_interfaces} / 上传 {limits.max_upload_bytes} bytes / "
-        f"超时 {limits.max_timeout_seconds}s / 重试 {limits.max_retry_times} / "
-        f"响应体 {limits.max_response_body_chars} 字符。"
+        t(
+            "安全默认：仅允许 {proto}；默认校验 SSL={ssl}；默认允许内网目标={priv}；"
+            "默认产物保留凭据={keep}；运行上限：接口 {mi} / 上传 {mb} bytes / "
+            "超时 {mt}s / 重试 {rt} / 响应体 {rb} 字符。",
+            proto="/".join(auto_reg.get_protocols()), ssl=limits.default_verify_ssl,
+            priv=limits.allow_private_targets, keep=limits.allow_credentials_in_artifacts,
+            mi=limits.max_interfaces, mb=limits.max_upload_bytes,
+            mt=limits.max_timeout_seconds, rt=limits.max_retry_times,
+            rb=limits.max_response_body_chars,
+        )
     )
 
 

@@ -43,6 +43,7 @@ from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
 from qa_toolkit.core.data_generator_registry import get_dataset_scenarios, get_boundary_fields, get_locales, get_registry_summary
 from qa_toolkit.core.i18n import t, th
+from qa_toolkit.core.ui_i18n import install_streamlit_i18n
 from qa_toolkit.tools.data_generator import DataGenerator
 from qa_toolkit.tools.ip_lookup import IPQueryTool
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
@@ -882,6 +883,7 @@ apply_hero_tool_query_selection()
 apply_tool_query_selection()
 
 # 顶部标题区域（语言切换必须先于任何依赖语言的渲染）
+install_streamlit_i18n()
 render_locale_switcher()
 st.markdown(localized_headline(), unsafe_allow_html=True)
 render_hero_tool_triggers()

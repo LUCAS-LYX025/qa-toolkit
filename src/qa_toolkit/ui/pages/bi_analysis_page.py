@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 import pandas as pd
 import streamlit as st
 
+from qa_toolkit.core.i18n import t
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
 from qa_toolkit.ui.components.action_controls import primary_action_button, secondary_action_button
@@ -150,7 +151,7 @@ def render_bi_analysis_page() -> None:
         current_file = st.session_state.bi_loaded_file_name or "未加载"
         if st.session_state.bi_loaded_sheet_name:
             current_file = f"{current_file} / {st.session_state.bi_loaded_sheet_name}"
-        st.caption(f"当前数据集: `{current_file}`")
+        st.caption(t("当前数据集: `{file}`", file=t(current_file)))
 
     df = st.session_state.bi_loaded_df
     if not isinstance(df, pd.DataFrame):

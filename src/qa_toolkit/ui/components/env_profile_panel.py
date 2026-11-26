@@ -6,6 +6,7 @@ import streamlit as st
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter, pop_widget_updates, queue_widget_updates
 
 from qa_toolkit.core.env_profile_manager import EnvProfileManager
+from qa_toolkit.core.i18n import t
 
 
 def _profile_brief(profile: Dict[str, Any]) -> str:
@@ -155,9 +156,9 @@ def render_env_profile_panel(
 
         info_col1, info_col2 = st.columns(2)
         with info_col1:
-            st.caption(f"当前默认({namespace}): `{active_name or '未设置'}`")
+            st.caption(t("当前默认({namespace}): `{name}`", namespace=namespace, name=active_name or t("未设置")))
         with info_col2:
-            st.caption(f"已保存配置数: `{len(profile_names)}`")
+            st.caption(t("已保存配置数: `{count}`", count=len(profile_names)))
 
         if selected_profile:
             if selected_profile.get("encryption_error"):

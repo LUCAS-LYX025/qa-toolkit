@@ -136,8 +136,8 @@ def test_browser_bootstrap_uses_query_param_and_dedupes():
 
 def test_tool_docs_localized_and_fallback():
     en_doc = get_tool_doc("data_generator", "en-US")
-    assert en_doc and "Advanced data generator" in en_doc["title"]
-    assert get_tool_doc("regex_tester", "en-US") is None
+    assert en_doc and "Advanced Data Generator" in en_doc["title"]
+    assert get_tool_doc("__missing_tool__", "en-US") is None
     register_tool_doc("en-US", "__test_tool__", title="T", usage="U", notes="N")
     assert get_tool_doc("__test_tool__", "en-US")["usage"] == "U"
 

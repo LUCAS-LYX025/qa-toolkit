@@ -351,7 +351,7 @@ def test_auto_21_first_screen_shows_registry_summary():
     fn = PAGE_SRC.split("def _render_registry_summary")[1].split("\ndef ")[0]
     assert "安全默认" in fn and "运行上限" in fn
     assert "get_registry_summary" in fn
-    caption_at = fn.index('f"安全默认')
+    caption_at = fn.index('"安全默认')
     assert "expanded=False" not in fn[:caption_at]
 
 

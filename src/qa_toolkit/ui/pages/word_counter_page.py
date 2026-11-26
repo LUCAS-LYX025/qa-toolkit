@@ -9,6 +9,7 @@ import plotly.express as px
 import streamlit as st
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
+from qa_toolkit.core.i18n import t
 from qa_toolkit.core.text_analysis_registry import (
     configure_settings,
     configure_stopwords,
@@ -507,7 +508,7 @@ def render_word_counter_page():
             st.session_state.word_counter_source_name = "手动输入"
             st.rerun()
     with action_col3:
-        st.caption(f"当前来源: `{st.session_state.word_counter_source_name}`")
+        st.caption(t("当前来源: `{src}`", src=st.session_state.word_counter_source_name))
 
     with st.expander("文件导入与快捷操作", expanded=True):
         upload_col1, upload_col2 = st.columns([2.4, 1])
