@@ -885,3 +885,31 @@
 - 全量 pytest：**652 passed**。
 - e2e（新增 `19-data-generator.e2e.ts`）：2/2 passed，全套 **70/70 passed**（修复导航桥后连续会话不再出现丢点击）。
 - GitHub：issues #448-#460 全部逐条评论并关闭，PR #461 已合并（merge commit `91abeaa`），仓库 open issues = 0。
+
+## 国际化（i18n）语言切换功能交付与验收（2026-11-26）
+
+### 需求与定位
+
+新增界面多语言能力：手动切换简体中文 / 繁體中文 / English / 한국어，并按访问者 IP 归属国家自动定位语言（例：美国 → English）。与前面几轮「审计 → issue → PR」专项不同，本次是功能交付，但仍按**拓展性 + 易用性**两条线做设计与验收，未创建 issue / PR，改动在本地提交，仓库 open issues 保持 0。
+
+### 设计要点
+
+- **原文即键**：`core/i18n.py` 以简体中文原文作翻译键，未命中自动回退原文，新增页面零改造即可运行，避免一次性改写约 1.2 万行界面文案带来的大面积回归。
+- **注册式扩展**：`LocaleSpec` / `register_locale()` / `register_translations()` / `register_tool_doc()` 与 `register_country_locale()` 沿用项目既有的 frozen Spec + 显式 `replace` + `RLock` + getter 返回副本惯例；词库外置 `config/locales/*.json`（四语言各 305 条词条 + 整篇工具文档槽位）。外部插件可补词条、补国家映射、甚至新增语种，不用改主入口。
+- **优先级链**：`resolve_locale()` 统一「手动 `?lang=` > 浏览器本地偏好 > IP / 浏览器自动检测 > 默认 zh-CN」。手动切换写入 URL 与 localStorage；自动定位只在无 `lang` 参数时执行，用 sessionStorage 去重，超时/失败静默回退，不会反复刷新或卡住页面。
+- **隐私与安全**：自动定位只取国家码，不读取、不保存 IP；`_json_for_js()` 转义 `<` 防止闭合 `</script>`；所有进入 `unsafe_allow_html` 的动态文案走 `th()`（翻译 + `html.escape`）；工具名保持中文内部路由键不变，仅展示层映射，避免破坏 `PAGE_TOOL_CONFIG` 路由与既有定位器。
+- **覆盖面**：主入口 hero、工具切换器 / 卡片 / 横幅、结果展示区、数据生成整页（Faker + 7 个基础生成器）、反馈面板、作者侧栏、工具页外壳与文档组件全部接入 `t()` / `th()`；下拉项用 `format_func=t` 同步翻译。
+
+### 验收证据
+
+- 新增 `tests/test_i18n.py`：15 passed，覆盖四语言词条、原文回退、别名归一（`zh-Hant` / `en` / `ko` 等）、优先级与手动覆盖、国家映射注册、路由键稳定、AppTest 四语言渲染，以及自动定位脚本的 XSS 防护。
+- AppTest 全应用冒烟：`?lang=` 为空 / `en-US` / `ko-KR` / `zh-TW` 均无异常，hero 分别为「测试工程师 / QA Engineer / QA 엔지니어 / 測試工程師」，侧边栏标签分别为「界面语言 / Interface language / 인터페이스 언어 / 介面語言」。
+- 手动切换交互：侧边栏选择 `en-US` / `zh-TW` / `ko-KR` 后，`session_state` 值、侧边栏标签、hero 文案与 `?lang=` 参数同步生效，证明手动选择优先级真实可用（非仅 URL 注入）。
+- 全量 pytest：**667 passed**（此前 652 + 本次 15），0 failed / 0 error。
+- e2e：全套 **70/70 passed**（19 个测试文件，4m8s），中文定位器未受 i18n 改造影响。
+
+### 顺带修复的基础设施问题
+
+- **依赖缺陷（真实可复现）**：`requirements.txt` 未锁定 `pyarrow`，venv 中被升级到 26.0.1，与锁定的 `numpy==1.26.3` 冲突（`pyarrow requires NumPy 2.0 or newer`），导致 20 个用例中 `st.dataframe` 连锁报错、`st_cropper` 直接抛 `StreamlitAPIException`。已降级 pyarrow 至 17.0.0 并在 `requirements.txt` 显式 pin，避免新环境按 README 的 `pip install -r requirements.txt` 安装后必现。
+- **沙箱临时目录噪声**：40 个 `tmp_path` 用例因宿主 broker 对 `/private/var/folders/.../T/pytest-of-root` 报 `EEXIST` 而 error，属运行环境限制；改用工作区内 `--basetemp` 后全部通过，非代码问题。
+- **回归断言适配**：`test_tool_card_icons.py` 与 `test_dg09` 两条源码字符串断言随 i18n 改写更新，并补了 `th("<script>alert(1)</script>")` 的运行时转义断言，XSS 防护语义未被削弱。

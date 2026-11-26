@@ -16,4 +16,5 @@ def test_tool_picker_uses_svg_badges_for_professional_icons() -> None:
     assert "_build_tool_icon_badge" not in streamlit_app_source
     assert "tool-picker-icon-badge" in constants_source
     assert "tool-picker-banner-icon" in constants_source
-    assert 'st.button(f"切换到{category}"' in streamlit_app_source
+    assert 'st.button(t("切换到{name}", name=tool_label(category))' in streamlit_app_source
+    assert "from qa_toolkit.core.i18n import t, th" in streamlit_app_source

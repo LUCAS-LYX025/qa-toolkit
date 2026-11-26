@@ -1,5 +1,7 @@
 import streamlit as st
 
+from qa_toolkit.core.i18n import get_tool_doc, t
+
 
 class ToolDocumentationManager:
     """工具文档管理类"""
@@ -1347,21 +1349,24 @@ class ToolDocumentationManager:
             tool_name (str): 工具名称
         """
         if tool_name not in self.tool_docs:
-            st.warning(f"未找到工具 '{tool_name}' 的文档")
+            st.warning(t("未找到工具 '{name}' 的文档", name=tool_name))
             return
 
         tool_info = self.tool_docs[tool_name]
+        translated_doc = get_tool_doc(tool_name)
+        if translated_doc:
+            tool_info = {**tool_info, **translated_doc}
 
         # 显示标题
         st.markdown(f'<div class="section-header">{tool_info["title"]}</div>',
                     unsafe_allow_html=True)
 
         # 显示使用说明
-        with st.expander("📋 使用说明", expanded=True):
+        with st.expander(t("📋 使用说明"), expanded=True):
             st.markdown(tool_info["usage"])
 
         # 显示注意事项
-        with st.expander("⚠️ 注意事项"):
+        with st.expander(t("⚠️ 注意事项")):
             st.markdown(tool_info["notes"])
 
     def display_general_guidelines(self):
