@@ -946,7 +946,7 @@
 - `tests/test_i18n.py`：**24 passed**（原 15 + 新增 9）。
 - 全量 pytest：**676 passed**，0 failed / 0 error（沙箱临时目录仍用工作区 `--basetemp` 绕开 broker 冲突）。
 - e2e：最终单独全量 **70/70 passed**（19 个文件，4m13s）。噪声说明：① 最初把全量 pytest 与 e2e 并行执行时，6 个用例因机器负载出现 `locator("body")` 超时，无并行负载下单独重跑 **6/6 passed（17s）**；② 第一次单独全量 69/70，`08-crypto-tools` 一例因工具卡片切换后 `textarea` 未就绪失败，单独重跑 **1/1 passed（3.29s）**，随后第二次全量 70/70。本次修复未触及工具卡片导航逻辑，判定为既有偶发时序噪声而非本轮回归。
-- GitHub：issues #463 / #464 / #465 逐条评论并关闭，修复经 PR 合并入 master，仓库 open issues = 0。
+- GitHub：分支 `fix/i18n-template-source-leak`（远端 commit `187fec1`），PR **#466** 已合并（merge commit `0cec40c`）；issues #463 / #464 / #465 逐条评论并关闭，仓库 open issues = 0。
 
 ### 遗留观察项（非本轮引入，未纳入本次 issue）
 
