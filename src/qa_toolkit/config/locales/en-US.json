@@ -268,8 +268,6 @@
     "生成测试数据、随机内容、模拟用户信息": "Generate test data, random content and mock user profiles",
     "测试用例生成器": "Test Case Generator",
     "AI生成测试用例，支持导出用例": "AI-generated test cases with export support",
-    "禅道绩效统计": "Zentao Performance",
-    "禅道数据统计、绩效分析、报告生成": "Zentao data statistics, performance analysis and reports",
     "缺陷绩效分析": "Defect Performance",
     "连接 JIRA/TAPD/云效/禅道等多平台，按统一模型计算 SLA 绩效": "Connect JIRA/TAPD/Yunxiao/Zentao and compute SLA performance with one model",
     "日志分析工具": "Log Analyzer",
