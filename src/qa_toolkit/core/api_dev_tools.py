@@ -532,7 +532,10 @@ class InterfaceDevTools:
             if not item.get("tags"):
                 add(index, item, "missing_tags")
 
-            status_info = dev_registry.classify_status_code(item.get("expected_status"), 200)
+            status_value = item.get("raw_expected_status")
+            if status_value is None:
+                status_value = item.get("expected_status")
+            status_info = dev_registry.classify_status_code(status_value, 200)
             status_buckets[status_info["bucket"]] = status_buckets.get(status_info["bucket"], 0) + 1
             if not status_info["valid"]:
                 add(index, item, "invalid_expected_status", detail=status_info["code"])
@@ -665,7 +668,10 @@ class InterfaceDevTools:
 
         for index, item in enumerate(normalized_interfaces, start=1):
             focus_points: List[str] = []
-            status_info = dev_registry.classify_status_code(item.get("expected_status"), 200)
+            status_value = item.get("raw_expected_status")
+            if status_value is None:
+                status_value = item.get("expected_status")
+            status_info = dev_registry.classify_status_code(status_value, 200)
             checklist = [templates.get("status", "校验状态码").format(expected_status=item.get("expected_status", 200))]
             if not status_info["valid"]:
                 self._warn(f"接口 {item.get('name') or index} 的期望状态码 {status_info['code']} 非法，回归清单已标注")
@@ -1011,6 +1017,9 @@ class InterfaceDevTools:
             "query_params": query_params,
             "body": self._normalize_value(body),
             "expected_status": dev_registry.to_int(interface.get("expected_status"), 200),
+            # 共享解析器（InterfaceAutoTestCore）会把非法状态码回落到 200，
+            # 但把原始值留在这里，文档体检 / 回归清单仍要把它判为高风险。
+            "raw_expected_status": interface.get("raw_expected_status"),
             "expected_response": self._normalize_value(interface.get("expected_response")),
             "request_format": str(interface.get("request_format") or "auto").strip() or "auto",
             "tags": self._normalize_tags(interface.get("tags")),

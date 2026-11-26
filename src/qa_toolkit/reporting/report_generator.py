@@ -3,10 +3,14 @@ import os
 import json
 import time
 import datetime
+import html as _html
+import re
+import uuid
 from typing import Dict, List, Any
 import streamlit as st
 
 from qa_toolkit.paths import REPORTS_DIR
+from qa_toolkit.core import api_automation_registry as auto_reg
 
 
 class EnhancedReportGenerator:
@@ -44,35 +48,31 @@ class EnhancedReportGenerator:
         if test_details is None:
             test_details = test_results.get('test_details', [])
 
-        # 关键修复：基于实际测试详情计算统计
-        actual_total = len(test_details)
-        passed = 0
-        failed = 0
-        errors = 0
+        # 统计一律以 test_results 为准；明细只作为补充，绝不用明细数量改写总数。
+        # 历史实现会把 total=10 / 只有 1 条详情悄悄改成 1，属于结果造假。
+        def _stat(key, fallback):
+            try:
+                return max(int(test_results.get(key, fallback) or 0), 0)
+            except (TypeError, ValueError):
+                return max(int(fallback or 0), 0)
 
-        for detail in test_details:
-            status = detail.get('status', 'unknown')
-            if status == 'passed':
-                passed += 1
-            elif status == 'failed':
-                failed += 1
-            elif status == 'error':
-                errors += 1
+        detail_passed = sum(1 for d in test_details if d.get('status') == 'passed')
+        detail_failed = sum(1 for d in test_details if d.get('status') == 'failed')
+        detail_errors = sum(1 for d in test_details if d.get('status') == 'error')
+        total = _stat('total', len(test_details))
+        passed = _stat('passed', detail_passed)
+        failed = _stat('failed', detail_failed)
+        errors = _stat('errors', detail_errors)
 
-        # 优先使用基于详情的统计，如果详情为空则使用原始统计
-        if actual_total > 0:
-            total = actual_total
-        else:
-            total = test_results.get('total', 0)
-            passed = test_results.get('passed', 0)
-            failed = test_results.get('failed', 0)
-            errors = test_results.get('errors', 0)
-
-        # 确保数值有效性
-        total = max(total, 0)
-        passed = max(passed, 0)
-        failed = max(failed, 0)
-        errors = max(errors, 0)
+        # 统计不守恒时（如 passed=5 > total=1）按比例钳制并留告警，
+        # 绝不渲染 500% 这类不可能的成功率（#418/R3-03）。
+        stats, stat_warnings = auto_reg.normalize_test_stats(
+            {'total': total, 'passed': passed, 'failed': failed, 'errors': errors}
+        )
+        total, passed = stats['total'], stats['passed']
+        failed, errors = stats['failed'], stats['errors']
+        for warn in stat_warnings:
+            test_results.setdefault('warnings', []).append(warn)
 
         # 重新计算成功率
         success_rate = (passed / total * 100) if total > 0 else 0
@@ -86,7 +86,7 @@ class EnhancedReportGenerator:
             framework, validated_test_details, test_results
         )
 
-        report_filename = f"detailed_test_report_{int(time.time())}.html"
+        report_filename = f"detailed_test_report_{int(time.time())}_{uuid.uuid4().hex[:8]}.html"
         report_path = os.path.join(self.report_dir, report_filename)
 
         try:
@@ -191,33 +191,28 @@ class EnhancedReportGenerator:
                                 test_details, test_results):
         """生成HTML报告模板 - 修复单用例显示问题"""
 
-        # 数据验证和修正 - 确保显示的数据准确
+        # 数据验证和修正 - 统计以执行结果为准，不再为了让表格「自洽」而改写 total。
+        # 明细缺失时在 display_info 里显式提示覆盖率，不改变任何计数。
         total = max(total, 0)
         passed = max(passed, 0)
         failed = max(failed, 0)
         errors = max(errors, 0)
+        framework = _html.escape(str(framework))
 
-        # 关键修复：如果只有一个接口，确保总数正确
-        if total > 1 and test_details and len(test_details) == 1:
-            # 如果接口只有一个但总数显示多个，修正为1
-            total = 1
-            # 根据第一个测试详情的状态重新计算
-            if test_details and len(test_details) > 0:
-                first_status = test_details[0].get('status', 'unknown')
-                if first_status == 'passed':
-                    passed, failed, errors = 1, 0, 0
-                elif first_status == 'failed':
-                    passed, failed, errors = 0, 1, 0
-                else:
-                    passed, failed, errors = 0, 0, 1
+        # 防御性再钳制一次：即便调用方绕过 generate_detailed_report 直接传畸形统计，
+        # 也不能渲染出 >100% 的成功率（#418/R3-03）。
+        safe, _ = auto_reg.normalize_test_stats(
+            {'total': total, 'passed': passed, 'failed': failed, 'errors': errors}
+        )
+        total, passed = safe['total'], safe['passed']
+        success_rate = min(100.0, (passed / total * 100) if total > 0 else 0)
 
-        # 确保总数正确
-        calculated_total = passed + failed + errors
-        if total != calculated_total and calculated_total >= 0:
-            total = calculated_total
-
-        # 重新计算成功率
-        success_rate = (passed / total * 100) if total > 0 else 0
+        # 报告模板由注册中心提供：报告头标注当前使用的模板，注册新模板可被追溯。
+        report_templates = auto_reg.get_report_templates()
+        renderer = auto_reg.get_report_renderer('html')
+        template_label = report_templates.get('html', 'HTML 详细报告')
+        if renderer is not None:
+            template_label = f"{template_label}（自定义渲染器）"
 
         # 生成状态颜色
         status_color = '#28a745' if success_rate >= 80 else '#ffc107' if success_rate >= 60 else '#dc3545'
@@ -240,6 +235,7 @@ class EnhancedReportGenerator:
     <head>
         <title>接口自动化测试报告</title>
         <meta name="generator" content="InterfaceAutoTestTool"/>
+        <meta name="report-template" content="{_html.escape(template_label, quote=True)}"/>
         <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
 
     <style type="text/css" media="screen">
@@ -845,19 +841,28 @@ class EnhancedReportGenerator:
                 status_text = '⚠️ 错误'
                 row_class = 'Et'
 
-            # 方法样式
-            method_class = f'method-{method.lower()}'
+            # 方法样式：method 来自不可信文档，类名只保留字母数字，避免属性上下文注入。
+            method_slug = re.sub(r'[^a-z0-9]+', '-', str(method).lower()).strip('-') or 'unknown'
+            method_class = f'method-{method_slug}'
 
             row_id = f'{row_class}{i + 1}'
+            # 所有动态文本统一 html.escape；<pre> 里的详情整体转义，
+            # 避免 response_body / error 里的 </pre><script> 逃逸。
+            safe_name = _html.escape(str(interface_name))
+            safe_method = _html.escape(str(method))
+            safe_path = _html.escape(str(path))
+            safe_status_code = _html.escape(str(status_code))
+            safe_response_time = self._coerce_response_time(response_time)
+            safe_detail = _html.escape(self._format_test_detail(detail))
 
             row = f'''
             <tr id='{row_id}' class='{status_class}'>
-                <td>{interface_name}</td>
-                <td><span class="interface-method {method_class}">{method}</span></td>
-                <td>{path}</td>
+                <td>{safe_name}</td>
+                <td><span class="interface-method {method_class}">{safe_method}</span></td>
+                <td>{safe_path}</td>
                 <td class='{status_class}'>{status_text}</td>
-                <td>{response_time:.2f}s</td>
-                <td>{status_code}</td>
+                <td>{safe_response_time:.2f}s</td>
+                <td>{safe_status_code}</td>
                 <td>
                     <a class="popup_link" onfocus='this.blur();' href="javascript:showTestDetail('div_{row_id}')">
                         详情
@@ -867,7 +872,7 @@ class EnhancedReportGenerator:
                             <a onfocus='this.blur();' onclick="document.getElementById('div_{row_id}').style.display = 'none'">[x]</a>
                         </div>
                         <pre>
-{self._format_test_detail(detail)}
+{safe_detail}
                         </pre>
                     </div>
                 </td>
@@ -950,17 +955,23 @@ class EnhancedReportGenerator:
         '''
 
         for i, error in enumerate(error_details):
+            safe_name = _html.escape(str(error.get('name', '未知接口')))
+            safe_method = _html.escape(str(error.get('method', 'GET')))
+            safe_path = _html.escape(str(error.get('path', '')))
+            safe_status = _html.escape(str(error.get('status_code', 'N/A')))
+            safe_error = _html.escape(str(error.get('error', '未知错误')))
+            safe_time = self._coerce_response_time(error.get('response_time', 0))
             html += f'''
             <div class="alert alert-warning">
-                <h5>{i + 1}. {error.get('name', '未知接口')}</h5>
-                <p><strong>方法:</strong> {error.get('method', 'GET')} | <strong>路径:</strong> {error.get('path', '')}</p>
-                <p><strong>状态码:</strong> {error.get('status_code', 'N/A')} | <strong>响应时间:</strong> {error.get('response_time', 0):.2f}s</p>
-                <p><strong>错误信息:</strong> {error.get('error', '未知错误')}</p>
+                <h5>{i + 1}. {safe_name}</h5>
+                <p><strong>方法:</strong> {safe_method} | <strong>路径:</strong> {safe_path}</p>
+                <p><strong>状态码:</strong> {safe_status} | <strong>响应时间:</strong> {safe_time:.2f}s</p>
+                <p><strong>错误信息:</strong> {safe_error}</p>
                 <button class="btn btn-sm btn-default" onclick="document.getElementById('error_detail_{i}').style.display = 'block'">
                     查看完整错误详情
                 </button>
                 <div id="error_detail_{i}" style="display: none; margin-top: 10px;">
-                    <pre>{error.get('error', '无错误信息')}</pre>
+                    <pre>{safe_error}</pre>
                 </div>
             </div>
             '''
