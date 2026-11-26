@@ -12,6 +12,7 @@ from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
 
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.ui.components.action_controls import action_download_button, primary_action_button, secondary_action_button
+from qa_toolkit.ui.components.mcp_import_panel import render_mcp_import_panel
 from qa_toolkit.ui.components.status_feedback import (
     render_error_feedback,
     render_info_feedback,
@@ -792,6 +793,8 @@ def render_test_case_generator_page() -> None:
     input_tab, config_tab, result_tab = st.tabs(["需求输入", "生成配置", "结果导出"])
 
     with input_tab:
+        with st.expander("从外部 MCP 导入需求 / 设计标注", expanded=False):
+            render_mcp_import_panel("tcg_requirement_text")
         left_col, right_col = st.columns([1.3, 1])
         with left_col:
             st.text_area(
