@@ -38,7 +38,7 @@ QA Toolkit 把这些活收进一个 Streamlit 应用里。启动一次，左边�
 | --- | --- | --- |
 | 🧬 数据生成工具 | 联调造数、表单校验、边界值设计。支持 Faker 真实感数据、基础随机值、业务场景数据集、边界值/异常值 | 文本、CSV、JSON |
 | 📑 测试用例生成器 | 拿到需求文本或截图，要一版用例初稿。四种模型可选，支持 OCR 识别截图、需求分析助手 | Excel、CSV、Markdown、JSON |
-| 📈 禅道绩效统计 | 月底统计测试/开发的缺陷处理时效、超时响应率 | Excel、CSV |
+| 📊 缺陷绩效分析 | 月底统计测试/开发的缺陷处理时效与 SLA 超时。一套模型接禅道、JIRA、TAPD、云效 | CSV |
 
 ### 接口相关
 
@@ -92,7 +92,7 @@ QA Toolkit 把这些活收进一个 Streamlit 应用里。启动一次，左边�
 | | |
 | --- | --- |
 | ![接口研发辅助](assets/images/screenshots/04_api_dev_tools.png) | ![接口性能测试](assets/images/screenshots/06_api_performance.png) |
-| ![禅道绩效统计](assets/images/screenshots/08_zentao.png) | ![文本对比](assets/images/screenshots/09_text_compare.png) |
+| ![缺陷绩效分析](assets/images/screenshots/20_tracking_performance.png) | ![文本对比](assets/images/screenshots/09_text_compare.png) |
 | ![JSON 处理](assets/images/screenshots/10_json_tools.png) | ![正则测试](assets/images/screenshots/11_regex_tester.png) |
 | ![日志分析](assets/images/screenshots/12_log_analysis.png) | ![字数统计](assets/images/screenshots/13_word_counter.png) |
 | ![时间处理](assets/images/screenshots/14_time_processor.png) | ![IP 域名查询](assets/images/screenshots/15_ip_lookup.png) |
@@ -269,7 +269,7 @@ pytest                            # 跑全部
 pytest tests/test_data_generator.py -v    # 跑单个模块
 ```
 
-`tests/` 下 31 个文件，覆盖核心逻辑（数据生成、接口核心、安全工具、禅道导出）和页面冒烟（各工具页面能否正常渲染、工具路由是否可达）。
+`tests/` 下 50+ 个文件，覆盖核心逻辑（数据生成、接口核心、安全工具、缺陷数据源适配）和页面冒烟（各工具页面能否正常渲染、工具路由是否可达）。
 
 ## 文档
 
@@ -286,7 +286,7 @@ pytest tests/test_data_generator.py -v    # 跑单个模块
 - **安全测试模块是基线自查工具，不是攻击平台。** 只对已授权目标使用，别直接对着生产环境跑。自动化扫描替代不了人工安全测试。
 - **AI 生成的用例需要人工复核。** 模型给的是初稿，业务规则和边界条件还是要自己过一遍。
 - **Streamlit 页面里压测别一上来就开大并发。** 先用小规模确认脚本和断言正常，再放大线程数；长链路优先看事务级统计。
-- **禅道绩效统计建议先在数据库备份或影子库验证**，统计口径建议结合项目背景解读。
+- **缺陷绩效分析建议先在数据库备份或影子库验证**，统计口径建议结合项目背景解读。
 - 仓库目前未声明开源协议，如需商用请先联系作者。
 
 ## 已知可以更好的地方

@@ -19,11 +19,6 @@ PAGE_TOOL_CONFIG: Dict[str, Dict[str, str]] = {
         "function_name": "render_test_case_generator_page",
         "page_label": "测试用例生成页面",
     },
-    "禅道绩效统计": {
-        "module_path": "qa_toolkit.ui.pages.zentao_performance_page",
-        "function_name": "render_zentao_performance_page",
-        "page_label": "禅道绩效统计页面",
-    },
     "缺陷绩效分析": {
         "module_path": "qa_toolkit.ui.pages.tracking_performance_page",
         "function_name": "render_tracking_performance_page",

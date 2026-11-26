@@ -581,11 +581,6 @@ TOOL_CATEGORIES = {
         "description": "AI生成测试用例，支持导出用例",
         "color": "#ed64a6"
     },
-    "禅道绩效统计": {
-        "icon": "📈",
-        "description": "禅道数据统计、绩效分析、报告生成",
-        "color": "#4CAF50"
-    },
     "缺陷绩效分析": {
         "icon": "📊",
         "description": "连接 JIRA/TAPD/云效/禅道等多平台，按统一模型计算 SLA 绩效",

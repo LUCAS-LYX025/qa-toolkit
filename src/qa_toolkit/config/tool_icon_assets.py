@@ -4,7 +4,6 @@ from __future__ import annotations
 TOOL_ICON_SVG_BODIES = {
     "数据生成工具": '<circle cx="10" cy="12" r="3"></circle><circle cx="22" cy="10" r="3"></circle><circle cx="19.5" cy="22" r="3"></circle><path d="M12.8 11.3 19 10.6"></path><path d="M11.8 14.4 17.6 19.8"></path><path d="M21.3 13 20.2 19"></path>',
     "测试用例生成器": '<rect x="9" y="8" width="14" height="18" rx="3"></rect><path d="M13 8h6a2 2 0 0 0-2-2h-2a2 2 0 0 0-2 2Z"></path><path d="m12.4 15.2 1.8 1.8 3.3-3.3"></path><path d="M16 21h4.5"></path><path d="M16 24h4.5"></path>',
-    "禅道绩效统计": '<path d="M10 24v-7"></path><path d="M16 24V13"></path><path d="M22 24V9"></path><path d="m9 11 5 3 4-5 5 2"></path>',
     "缺陷绩效分析": '<path d="M8 24V10"></path><path d="M14 24V5"></path><path d="M20 24V14"></path><path d="M26 24V8"></path><path d="M6 26h22"></path>',
     "日志分析工具": '<path d="M11 7h8l4 4v12a3 3 0 0 1-3 3H11a3 3 0 0 1-3-3V10a3 3 0 0 1 3-3Z"></path><path d="M19 7v4h4"></path><path d="M12 16h8"></path><path d="M12 20h8"></path><path d="M12 24h5"></path>',
     "BI数据分析工具": '<path d="M16 8a8 8 0 1 0 8 8h-8Z"></path><path d="M18 8a8 8 0 0 1 8 8h-8Z"></path>',
