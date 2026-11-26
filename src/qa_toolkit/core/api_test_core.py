@@ -11,7 +11,7 @@ import sys
 import time
 from copy import deepcopy
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qsl, urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urljoin, urlparse
 
 import pandas as pd
 import requests
@@ -58,7 +58,14 @@ class InterfaceAutoTestCore:
             "detected_base_url": "",
             "interface_count": 0,
         }
+        # parse_content 支持「贴一个 Swagger URL」自动拉取，这属于服务端发起请求，
+        # 默认拒绝内网/回环/链路本地/元数据地址；页面可显式开启。
+        self.allow_private_targets = False
         self.setup_directories()
+
+    def set_allow_private_targets(self, flag: bool) -> None:
+        """是否允许从内网/本地地址拉取远程接口文档（默认关闭）。"""
+        self.allow_private_targets = bool(flag)
 
     def setup_directories(self):
         """创建必要的目录"""
@@ -2747,10 +2754,25 @@ def execute_case(session, case):
         return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
     def _fetch_remote_content(self, url: str) -> str:
-        """拉取远程 Swagger/OpenAPI 文档"""
-        response = requests.get(url, timeout=20)
-        response.raise_for_status()
-        return response.text
+        """拉取远程 Swagger/OpenAPI 文档（带 SSRF 护栏，避免探测内网/元数据服务）。"""
+        # 延迟导入，避免共享解析器与注册中心形成模块级循环依赖。
+        from qa_toolkit.core.api_dev_registry import validate_target_url
+
+        allow_private = bool(getattr(self, "allow_private_targets", False))
+        current = str(url or "").strip()
+        # 逐跳校验重定向目标：公网 URL 302 跳到 169.254.169.254 同样是 SSRF。
+        for _ in range(4):
+            ok, reason = validate_target_url(current, allow_private=allow_private)
+            if not ok:
+                raise ValueError(f"远程文档地址校验失败：{reason}")
+            response = requests.get(current, timeout=20, allow_redirects=False)
+            location = response.headers.get("Location") if response.is_redirect else None
+            if location:
+                current = urljoin(current, location)
+                continue
+            response.raise_for_status()
+            return response.text
+        raise ValueError("远程文档重定向次数过多，已中止拉取")
 
     def _ensure_mapping(self, value: Any) -> Dict[str, Any]:
         """确保值为 dict"""
