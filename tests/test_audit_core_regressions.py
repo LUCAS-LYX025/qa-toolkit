@@ -220,7 +220,12 @@ def test_issue_10_no_invalid_escape_syntax_warning():
 
 
 def test_issue_10_mock_server_script_output_unchanged():
-    """修复非法转义后，生成的 Mock 服务脚本必须保持原有字节输出。"""
+    """Mock 服务脚本必须可编译、输出确定，且带安全默认值与资源护栏。
+
+    专项审计后生成脚本改成静态模板 + 占位符（含请求体/响应体/头/路由上限、
+    默认 127.0.0.1、白名单 CORS 来源），字节输出已按设计更新；这里继续锁定
+    确定性哈希，同时补语义断言，避免后续重构悄悄破坏脚本可用性。
+    """
     import hashlib
 
     tool = InterfaceDevTools.__new__(InterfaceDevTools)
@@ -234,6 +239,11 @@ def test_issue_10_mock_server_script_output_unchanged():
     script = tool.generate_mock_server_script([iface], host="127.0.0.1", port=9999)
 
     compile(script, "<mock>", "exec")
+    assert "DEFAULT_PORT = 9999" in script
+    assert "DEFAULT_HOST = '127.0.0.1'" in script
+    for marker in ("MAX_REQUEST_BODY_BYTES", "MAX_RESPONSE_BODY_CHARS",
+                   "MAX_HEADER_VALUE_CHARS", "MAX_ROUTES"):
+        assert marker in script
     assert hashlib.sha256(script.encode()).hexdigest() == (
-        "3fb5df82221891fcf98b2618327cea4fe3842afe2035d58384f1c8e2abe35f6e"
+        "cbb48436c79df95560043fde2b3fc3b79c5dfa04451a9d8f2e17d9adae8f8772"
     )

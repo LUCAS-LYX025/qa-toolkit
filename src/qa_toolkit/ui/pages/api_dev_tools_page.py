@@ -1,12 +1,18 @@
+import hashlib
+import html
 import json
 import os
+import re
+import shlex
 import time
 from typing import Any, Dict, List, Tuple
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
+from qa_toolkit.core import api_dev_registry as dev_reg
 from qa_toolkit.core.api_dev_tools import InterfaceDevTools
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.support.documentation import show_doc
@@ -105,13 +111,28 @@ def _render_upload_templates_panel(parser: InterfaceAutoTestCore) -> None:
 
 
 def _escape_js_string(text: str) -> str:
-    return json.dumps(text)
+    """内联 <script> 中的 JS 字符串字面量：除 JSON 转义外还要防 `</script>` 闭合。
+
+    json.dumps 不会转义 `<` / `>` / `&` / U+2028 / U+2029，浏览器 HTML 解析阶段
+    遇到 `</script>` 会提前结束脚本块，后续内容变成可执行 HTML。被复制的文本来自
+    用户上传的接口文档，属于不可信输入，必须按 HTML 上下文额外转义。
+    """
+    raw = json.dumps(str(text), ensure_ascii=False)
+    return (raw.replace("<", "\\u003c")
+               .replace(">", "\\u003e")
+               .replace("&", "\\u0026")
+               .replace("\u2028", "\\u2028")
+               .replace("\u2029", "\\u2029"))
 
 
 def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板", key: str = None) -> None:
-    """创建一键复制按钮。"""
-    button_key = key or f"copy_{abs(hash(text))}"
+    """创建一键复制按钮（HTML/JS 双重转义，key 做标识符白名单校验）。"""
+    button_key = str(key or f"copy_{abs(hash(text))}")
+    if not re.fullmatch(r"[A-Za-z0-9_]+", button_key):
+        button_key = "copy_" + hashlib.sha256(button_key.encode("utf-8")).hexdigest()[:12]
     escaped_text = _escape_js_string(text)
+    safe_button_text = html.escape(str(button_text))
+    js_button_text = _escape_js_string(button_text)
 
     html_code = f"""
     <div style="margin: 10px 0;">
@@ -133,7 +154,7 @@ def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板",
             onmouseover="this.style.transform='translateY(-1px)'"
             onmouseout="this.style.transform='translateY(0)'"
         >
-            {button_text}
+            {safe_button_text}
         </button>
         <script>
             function copyToClipboard_{button_key}() {{
@@ -161,7 +182,7 @@ def _create_copy_button(text: str, button_text: str = "📋 复制到剪贴板",
                     button.style.fontWeight = '800';
                     button.style.textShadow = '0 1px 1px rgba(127,29,29,0.54)';
                     setTimeout(function() {{
-                        button.innerHTML = '{button_text}';
+                        button.innerHTML = {js_button_text};
                         button.style.background = 'linear-gradient(135deg, #071427 0%, #13294b 62%, #224d79 100%)';
                         button.style.color = '#ffffff';
                         button.style.fontWeight = '700';
@@ -207,6 +228,15 @@ def _render_interface_source_panel(prefix: str, title: str, height: int = 220) -
     return source_data
 
 
+def _is_url_like_text(text: str) -> bool:
+    """判断粘贴内容是否是会触发远端拉取的 URL（与解析器的 URL 识别口径一致）。"""
+    candidate = str(text or "").strip()
+    if "\n" in candidate or len(candidate) > 2048:
+        return False
+    parsed = urlparse(candidate)
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
 def _parse_interface_source(
     parser: InterfaceAutoTestCore,
     source_data: Dict[str, Any],
@@ -216,18 +246,48 @@ def _parse_interface_source(
         uploaded_file = source_data.get("uploaded_file")
         if uploaded_file is None:
             raise ValueError("请先上传接口文档")
-        temp_filename = f"{prefix}_{int(time.time() * 1000)}_{uploaded_file.name}"
+        # 上传文件名只保留 basename + 安全字符，杜绝路径穿越；临时文件用完即删。
+        original_name = os.path.basename(str(uploaded_file.name or "upload"))
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", original_name)[:120] or "upload"
+        suffix = os.path.splitext(safe_name)[1].lower()
+        if suffix and suffix.lstrip(".") not in INTERFACE_FILE_TYPES:
+            raise ValueError(f"不支持的文件后缀: {suffix}")
+        temp_filename = f"{prefix}_{int(time.time() * 1000)}_{safe_name}"
         file_path = os.path.join(parser.upload_dir, temp_filename)
-        with open(file_path, "wb") as file:
-            file.write(uploaded_file.getbuffer())
-        interfaces = parser.parse_document(file_path)
-        return interfaces, uploaded_file.name
+        try:
+            with open(file_path, "wb") as file:
+                file.write(uploaded_file.getbuffer())
+            interfaces = parser.parse_document(file_path)
+        finally:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except OSError:
+                pass
+        return interfaces, original_name
 
     raw_content = source_data.get("raw_content", "")
     if not raw_content.strip():
         raise ValueError("请输入原始接口定义")
 
     raw_format = source_data.get("raw_format", "自动检测")
+    if raw_format not in RAW_FORMAT_MAP:
+        raise ValueError(f"未知文本格式 {raw_format!r}，请从下拉框重新选择")
+
+    # 「原始文本」里贴一个 URL 会让服务端发起 GET，必须先在页面侧做目标地址校验。
+    try:
+        allow_private = bool(st.session_state.get("api_dev_allow_private_targets", False))
+    except Exception:
+        allow_private = False
+    if hasattr(parser, "set_allow_private_targets"):
+        parser.set_allow_private_targets(allow_private)
+    elif hasattr(parser, "__dict__"):
+        parser.allow_private_targets = allow_private
+    if _is_url_like_text(raw_content):
+        ok, reason = dev_reg.validate_target_url(raw_content.strip(), allow_private=allow_private)
+        if not ok:
+            raise ValueError(f"远程文档地址校验失败：{reason}")
+
     interfaces = parser.parse_content(
         raw_content,
         source_type=RAW_FORMAT_MAP[raw_format],
@@ -251,6 +311,120 @@ def _build_interface_preview_rows(interfaces: List[Dict[str, Any]], limit: int =
     return rows
 
 
+# ---------------------------------------------------------------------------
+# 结果可信、可读性与导出统一（拓展性视角：能力摘要与运行上限注册式驱动）
+# ---------------------------------------------------------------------------
+
+def _snapshot_state() -> Dict[str, Any]:
+    """收集当前页面基本类型配置，作为结果过期检测的输入快照。"""
+    snapshot: Dict[str, Any] = {}
+    for key in sorted(str(item) for item in st.session_state.keys()):
+        if key.startswith("interface_dev_") and (
+            key.endswith("_result") or key.endswith("_config") or key.endswith("_signature")
+            or key.endswith("_interfaces") or key.endswith("_source_name")
+        ):
+            continue
+        value = st.session_state[key]
+        if isinstance(value, (bool, int, float, str)) or value is None:
+            snapshot[key] = value
+        elif isinstance(value, (list, tuple)) and all(
+            isinstance(item, (bool, int, float, str)) for item in value
+        ):
+            snapshot[key] = list(value)
+        elif hasattr(value, "name") and hasattr(value, "size") and hasattr(value, "getbuffer"):
+            snapshot[key] = f"{value.name}:{value.size}"
+    return snapshot
+
+
+def _mark_result_current(tab: str) -> None:
+    st.session_state[f"interface_dev_{tab}_config"] = _snapshot_state()
+
+
+def _is_result_stale(tab: str) -> bool:
+    saved = st.session_state.get(f"interface_dev_{tab}_config")
+    if not isinstance(saved, dict):
+        return False
+    current = _snapshot_state()
+    return any(current.get(key) != value for key, value in saved.items())
+
+
+def _render_warnings_panel(result: Dict[str, Any]) -> None:
+    warnings = result.get("warnings") or []
+    truncation = result.get("truncation") or {}
+    if warnings:
+        with st.expander(f"⚠️ 运行告警（{len(warnings)} 条）", expanded=False):
+            for item in warnings:
+                st.warning(html.escape(str(item)))
+    if truncation:
+        st.caption(f"截断明细：{html.escape(json.dumps(truncation, ensure_ascii=False))}")
+
+
+def _render_text_summary(result: Dict[str, Any], title: str = "本轮结论") -> None:
+    text = result.get("text_summary") or ""
+    if text:
+        st.info(f"**{title}**：{text}")
+
+
+def _render_result_feedback(tab: str, result: Dict[str, Any]) -> None:
+    if _is_result_stale(tab):
+        st.error("⚠️ 当前展示的是上一次生成的结果：输入内容或运行参数已变更，结论可能已过期，请重新执行对应动作。")
+    _render_text_summary(result)
+    _render_warnings_panel(result)
+
+
+def _csv_bytes(rows: Any) -> bytes:
+    """所有 CSV 导出统一走注册式公式注入清洗。"""
+    cleaned = dev_reg.sanitize_export_rows(list(rows or []))
+    return pd.DataFrame(cleaned).to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
+
+
+def _build_download_payload(result: Dict[str, Any]) -> str:
+    """统一导出：结果 + 配置快照 + 输入签名 + 能力摘要 + 告警 + 截断明细。"""
+    payload = dev_reg.build_export_payload(
+        result,
+        config_snapshot=result.get("config_snapshot"),
+        input_signature=result.get("input_signature", ""),
+        warnings=result.get("warnings"),
+        truncation=result.get("truncation"),
+    )
+    return dev_reg.strict_json_dumps(payload, indent=2)
+
+
+def _render_registry_summary() -> None:
+    """首屏直接展示注册能力与安全默认值，不藏进折叠面板。"""
+    summary = dev_reg.get_registry_summary()
+    limits = dev_reg.get_dev_limits()
+    st.caption(
+        f"🧩 当前注册的能力：HTTP 方法 {summary['HTTP 方法']} 个 / 代码片段语言 {summary['代码片段语言']} 种 / "
+        f"代码渲染器 {summary['代码渲染器']} 个 / 质量规则 {summary['质量规则']} 条 / "
+        f"状态码分桶 {summary['状态码分桶']} 类 / "
+        f"断言风格 {summary['断言风格']} 种 / 词表分组 {summary['词表分组']} 组 / "
+        f"清单文案 {summary['清单文案']} 条 / Mock 默认响应头 {summary['Mock 默认响应头']} 个 / "
+        f"CSV 清洗器 {summary['CSV 清洗器']} 个"
+    )
+    st.caption(
+        f"安全默认：仅允许 {'/'.join(dev_reg.get_protocols())}；默认校验 SSL={limits.verify_ssl_by_default}；"
+        f"默认监听 {limits.default_mock_host}:{limits.default_mock_port}；默认 CORS 来源 {limits.default_cors_origin}；"
+        f"默认允许内网目标={limits.allow_private_targets}；"
+        f"运行上限：接口 {limits.max_interfaces} / Mock 路由 {limits.max_mock_routes} / "
+        f"递归深度 {limits.max_recursion_depth} / 延迟 {limits.max_delay_ms}ms / 请求体 {limits.max_request_body_bytes} bytes"
+    )
+    st.checkbox(
+        "允许从内网/本地 URL 导入 Swagger 文档（SSRF 护栏，默认关闭）",
+        key="api_dev_allow_private_targets",
+        value=False,
+        help="默认仅允许公网 http/https 地址。联调本机或内网 Swagger 服务时再开启；开启后仍会校验协议、userinfo、端口与重定向目标。",
+    )
+    with st.expander("能力明细（可通过注册接口扩展，不局限于当前业务）", expanded=False):
+        cols = st.columns(4)
+        for index, (key, value) in enumerate(summary.items()):
+            cols[index % 4].metric(key, value)
+        st.caption(
+            "新增代码语言、质量规则、评分权重、词表、清单文案或 Mock 响应头只需调用 "
+            "`api_dev_registry.register_*`，无需修改 core / 页面源码。"
+        )
+
+
 def render_api_dev_tools_page() -> None:
     show_doc("interface_dev_tools")
 
@@ -264,6 +438,7 @@ def render_api_dev_tools_page() -> None:
 
     st.markdown('<div class="category-card">🛠️ 接口研发辅助工具</div>', unsafe_allow_html=True)
     st.caption("围绕接口测试与联调补七类高频能力: 标准化导出、回归清单、变更分析、文档体检、断言模板、Mock 服务、请求代码片段。")
+    _render_registry_summary()
     render_workflow_guide(
         title="接口研发辅助推荐使用顺序",
         description="先做标准化和体检，再决定是产出回归清单、变更报告、断言模板，还是直接生成 Mock 与调试代码。",
@@ -289,6 +464,7 @@ def render_api_dev_tools_page() -> None:
                 normalize_result = dev_toolkit.export_normalized_interfaces(interfaces)
                 st.session_state.interface_dev_normalize_result = normalize_result
                 st.session_state.interface_dev_normalize_source_name = source_name
+                _mark_result_current("normalize")
                 st.success(f"✅ 已标准化整理 {len(interfaces)} 个接口")
             except Exception as exc:
                 st.error(f"❌ 生成失败: {exc}")
@@ -298,6 +474,7 @@ def render_api_dev_tools_page() -> None:
             source_name = st.session_state.get("interface_dev_normalize_source_name", "当前文档")
             summary = normalize_result.get("summary", {})
             st.info(f"当前标准化来源: `{source_name}`")
+            _render_result_feedback("normalize", normalize_result)
 
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             with metric_col1:
@@ -330,7 +507,7 @@ def render_api_dev_tools_page() -> None:
                 items=[
                     {
                         "label": "📥 下载 JSON 清单",
-                        "data": normalize_result.get("json_artifact", ""),
+                        "data": _build_download_payload(normalize_result),
                         "file_name": "normalized_interfaces.json",
                         "mime": "application/json",
                     },
@@ -376,6 +553,7 @@ def render_api_dev_tools_page() -> None:
                 )
                 st.session_state.interface_dev_checklist_result = checklist_result
                 st.session_state.interface_dev_checklist_source_name = source_name
+                _mark_result_current("checklist")
                 st.success("✅ 回归清单已生成")
             except Exception as exc:
                 st.error(f"❌ 生成失败: {exc}")
@@ -385,6 +563,7 @@ def render_api_dev_tools_page() -> None:
             source_name = st.session_state.get("interface_dev_checklist_source_name", "当前文档")
             summary = checklist_result.get("summary", {})
             st.info(f"当前回归清单来源: `{source_name}`")
+            _render_result_feedback("checklist", checklist_result)
 
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5 = st.columns(5)
             with metric_col1:
@@ -416,7 +595,7 @@ def render_api_dev_tools_page() -> None:
                         for checklist_item in item.get("checklist", []):
                             st.write(f"- [ ] {checklist_item}")
 
-            checklist_csv = pd.DataFrame(checklist_rows).to_csv(index=False, encoding="utf-8-sig")
+            checklist_csv = _csv_bytes(checklist_rows)
             render_download_panel(
                 title="回归清单导出区",
                 description="统一下载 Markdown、JSON 和 CSV 三种清单结果。",
@@ -429,13 +608,13 @@ def render_api_dev_tools_page() -> None:
                     },
                     {
                         "label": "📥 下载 JSON 清单",
-                        "data": checklist_result.get("json_artifact", ""),
+                        "data": _build_download_payload(checklist_result),
                         "file_name": "interface_regression_checklist.json",
                         "mime": "application/json",
                     },
                     {
                         "label": "📥 下载 CSV 总览",
-                        "data": checklist_csv.encode("utf-8-sig"),
+                        "data": checklist_csv,
                         "file_name": "interface_regression_checklist.csv",
                         "mime": "text/csv",
                     },
@@ -458,6 +637,7 @@ def render_api_dev_tools_page() -> None:
                 st.session_state.interface_dev_diff_result = diff_result
                 st.session_state.interface_dev_diff_baseline_name = baseline_name
                 st.session_state.interface_dev_diff_target_name = target_name
+                _mark_result_current("diff")
                 st.success("✅ 接口差异分析完成")
             except Exception as exc:
                 st.error(f"❌ 分析失败: {exc}")
@@ -468,6 +648,7 @@ def render_api_dev_tools_page() -> None:
             baseline_name = st.session_state.get("interface_dev_diff_baseline_name", "基线版本")
             target_name = st.session_state.get("interface_dev_diff_target_name", "当前版本")
             st.info(f"基线文档: `{baseline_name}` | 当前文档: `{target_name}`")
+            _render_result_feedback("diff", diff_result)
 
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5, metric_col6 = st.columns(6)
             with metric_col1:
@@ -537,7 +718,7 @@ def render_api_dev_tools_page() -> None:
                     },
                     {
                         "label": "📥 下载 JSON 报告",
-                        "data": json.dumps(diff_result, ensure_ascii=False, indent=2),
+                        "data": _build_download_payload(diff_result),
                         "file_name": "interface_diff_report.json",
                         "mime": "application/json",
                     },
@@ -557,6 +738,7 @@ def render_api_dev_tools_page() -> None:
                     quality_result = dev_toolkit.analyze_interface_quality(interfaces)
                     st.session_state.interface_dev_quality_result = quality_result
                     st.session_state.interface_dev_quality_source_name = source_name
+                    _mark_result_current("quality")
                     st.success("✅ 接口文档体检完成")
                 except Exception as exc:
                     st.error(f"❌ 体检失败: {exc}")
@@ -566,6 +748,7 @@ def render_api_dev_tools_page() -> None:
             source_name = st.session_state.get("interface_dev_quality_source_name", "当前文档")
             summary = quality_result.get("summary", {})
             st.info(f"当前体检来源: `{source_name}`")
+            _render_result_feedback("quality", quality_result)
 
             metric_col1, metric_col2, metric_col3, metric_col4, metric_col5, metric_col6 = st.columns(6)
             with metric_col1:
@@ -635,7 +818,7 @@ def render_api_dev_tools_page() -> None:
                     },
                     {
                         "label": "📥 下载体检 JSON 报告",
-                        "data": json.dumps(quality_result, ensure_ascii=False, indent=2),
+                        "data": _build_download_payload(quality_result),
                         "file_name": "interface_quality_report.json",
                         "mime": "application/json",
                     },
@@ -696,7 +879,7 @@ def render_api_dev_tools_page() -> None:
         with assertion_col1:
             assertion_style = st.radio(
                 "断言风格",
-                ["字段存在断言", "标准断言", "严格断言"],
+                list(dev_reg.get_assertion_styles().keys()),
                 horizontal=True,
                 key="interface_assertion_style",
             )
@@ -713,12 +896,14 @@ def render_api_dev_tools_page() -> None:
                     max_depth=assertion_depth,
                 )
                 st.session_state.interface_dev_assertion_result = assertion_result
+                _mark_result_current("assertion")
                 st.success("✅ 断言模板已生成")
             except Exception as exc:
                 st.error(f"❌ 生成失败: {exc}")
 
         assertion_result = st.session_state.get("interface_dev_assertion_result")
         if assertion_result:
+            _render_result_feedback("assertion", assertion_result)
             info_col1, info_col2, info_col3 = st.columns(3)
             with info_col1:
                 st.metric("样例类型", assertion_result.get("sample_type", "unknown"))
@@ -758,11 +943,14 @@ def render_api_dev_tools_page() -> None:
         mock_source = _render_interface_source_panel("interface_mock_source", "接口文档", height=240)
         mock_config_col1, mock_config_col2, mock_config_col3, mock_config_col4 = st.columns(4)
         with mock_config_col1:
-            mock_host = st.text_input("监听地址", value="0.0.0.0", key="mock_server_host")
+            mock_host = st.text_input("监听地址", value=dev_reg.get_dev_limits().default_mock_host, key="mock_server_host")
         with mock_config_col2:
             mock_port = st.number_input("监听端口", min_value=1, max_value=65535, value=8000, key="mock_server_port")
         with mock_config_col3:
-            mock_delay_ms = st.number_input("固定延迟(ms)", min_value=0, value=0, key="mock_server_delay")
+            mock_delay_ms = st.number_input(
+                "固定延迟(ms)", min_value=0, value=0,
+                max_value=dev_reg.get_dev_limits().max_delay_ms, key="mock_server_delay",
+            )
         with mock_config_col4:
             mock_enable_cors = st.checkbox("开启 CORS", value=True, key="mock_server_cors")
 
@@ -779,6 +967,7 @@ def render_api_dev_tools_page() -> None:
                 st.session_state.interface_dev_mock_interfaces = interfaces
                 st.session_state.interface_dev_mock_source_name = source_name
                 st.session_state.interface_dev_mock_script = mock_script
+                _mark_result_current("mock")
                 st.success(f"✅ 已根据 {len(interfaces)} 个接口生成 Mock 服务脚本")
             except Exception as exc:
                 st.error(f"❌ 生成失败: {exc}")
@@ -788,11 +977,21 @@ def render_api_dev_tools_page() -> None:
             mock_interfaces = st.session_state.get("interface_dev_mock_interfaces", [])
             source_name = st.session_state.get("interface_dev_mock_source_name", "当前文档")
             st.info(f"当前 Mock 来源: `{source_name}` | 接口数: {len(mock_interfaces)}")
+            _render_result_feedback("mock", {
+                "text_summary": dev_reg.build_text_summary("mock", {
+                    "interface_count": len(mock_interfaces),
+                    "host": mock_host, "port": int(mock_port), "delay_ms": int(mock_delay_ms),
+                }),
+            })
             if mock_interfaces:
                 st.dataframe(pd.DataFrame(_build_interface_preview_rows(mock_interfaces)), use_container_width=True)
 
             st.code(mock_script, language="python")
-            st.code(f"python mock_api_server.py --host {mock_host} --port {int(mock_port)}", language="bash")
+            st.code(
+                f"python mock_api_server.py --host {shlex.quote(str(mock_host))} "
+                f"--port {shlex.quote(str(int(mock_port)))}",
+                language="bash",
+            )
 
             mock_action_col1, mock_action_col2 = st.columns(2)
             with mock_action_col1:
@@ -839,7 +1038,7 @@ def render_api_dev_tools_page() -> None:
             with snippet_col1:
                 snippet_language = st.radio(
                     "代码类型",
-                    ["Python requests", "JavaScript fetch", "curl"],
+                    [spec.label for spec in dev_reg.get_snippet_languages()],
                     horizontal=True,
                     key="interface_snippet_language",
                 )
@@ -850,6 +1049,10 @@ def render_api_dev_tools_page() -> None:
                     placeholder="例如: https://api.example.com",
                     key="interface_snippet_base_url",
                 )
+            if str(snippet_base_url).strip():
+                target_ok, target_reason = dev_reg.validate_target_url(snippet_base_url)
+                if not target_ok:
+                    st.error(f"目标地址校验失败：{target_reason}")
 
             if st.button("⚡ 生成请求代码片段", use_container_width=True, key="generate_request_snippet"):
                 try:
@@ -860,6 +1063,7 @@ def render_api_dev_tools_page() -> None:
                     )
                     st.session_state.interface_dev_snippet_result = snippet_result
                     st.session_state.interface_dev_snippet_language_value = snippet_language
+                    _mark_result_current("snippet")
                     st.success("✅ 请求代码片段已生成")
                 except Exception as exc:
                     st.error(f"❌ 生成代码片段失败: {exc}")
@@ -871,12 +1075,18 @@ def render_api_dev_tools_page() -> None:
                 st.session_state.get("interface_snippet_language"),
                 st.session_state.get("interface_dev_snippet_language_value"),
             )
-            snippet_language_map = {
-                "Python requests": "python",
-                "JavaScript fetch": "javascript",
-                "curl": "bash",
-            }
-            st.code(snippet_result, language=snippet_language_map.get(snippet_language, "text"))
+            spec, lang_warning = dev_reg.resolve_snippet_language(snippet_language)
+            highlight = spec.highlight if spec else "text"
+            suffix = spec.download_suffix if spec else "txt"
+            _render_result_feedback("snippet", {
+                "text_summary": dev_reg.build_text_summary("snippet", {
+                    "language": snippet_language,
+                    "method": snippet_interfaces[selected_index].get("method", "GET") if snippet_interfaces else "-",
+                    "path": snippet_interfaces[selected_index].get("path", "/") if snippet_interfaces else "-",
+                }),
+                "warnings": [lang_warning] if lang_warning else [],
+            })
+            st.code(snippet_result, language=highlight)
             snippet_action_col1, snippet_action_col2 = st.columns(2)
             with snippet_action_col1:
                 _create_copy_button(snippet_result, button_text="📋 复制代码片段", key="copy_request_snippet")
