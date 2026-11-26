@@ -8,6 +8,9 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 from qa_toolkit.paths import IMAGES_DIR
+from qa_toolkit.core.i18n import current_locale, th, t
+
+
 
 
 class AuthorProfile:
@@ -177,6 +180,14 @@ class AuthorProfile:
             "sidebar_hero_gif_url": "https://media1.tenor.com/m/Adp4Bl8kqaAAAAAC/luffy-jump.gif",
             "skills": ["AI应用师", "接口测试", "自动化测试", "性能测试","安全测试",  "测试工具开发"]
         }
+
+    def _localized_info(self):
+        """返回用于展示的语言副本，不改动实例中的中文原始资料。"""
+        info = dict(self.author_info)
+        for key in ("title", "description", "bio", "sidebar_tagline", "sidebar_story", "wechat_public"):
+            info[key] = t(info[key])
+        info["skills"] = [t(skill) for skill in info["skills"]]
+        return info
 
     def load_image(self, image_path):
         """加载图片，如果图片不存在则返回None"""
@@ -743,6 +754,7 @@ class AuthorProfile:
         return f'<div class="qa-sidebar-author-card-stack">{cards_html}</div>'
 
     def _build_sidebar_compact_component_html(self):
+        info = self._localized_info()
         avatar_uri = self._image_to_data_uri("csdn_profile.jpg")
         hero_visual_html = self._build_sidebar_hero_visual_html(avatar_uri)
         logo_uris = {
@@ -754,24 +766,24 @@ class AuthorProfile:
         cards = [
             {
                 "title": "CSDN 专栏",
-                "desc": "文章与实践总结。",
-                "cta": "阅读文章",
+                "desc": t("文章与实践总结。"),
+                "cta": t("阅读文章"),
                 "href": self.author_info["csdn_url"],
                 "accent": "#fb7185",
                 "glow": "rgba(251, 113, 133, 0.24)",
             },
             {
                 "title": "GitHub 仓库",
-                "desc": "源码、迭代与协作记录。",
-                "cta": "查看源码",
+                "desc": t("源码、迭代与协作记录。"),
+                "cta": t("查看源码"),
                 "href": self.author_info["github_url"],
                 "accent": "#38bdf8",
                 "glow": "rgba(56, 189, 248, 0.24)",
             },
             {
                 "title": "GitCode 镜像",
-                "desc": "国内访问更稳的镜像仓库。",
-                "cta": "访问镜像",
+                "desc": t("国内访问更稳的镜像仓库。"),
+                "cta": t("访问镜像"),
                 "href": self.author_info["gitcode_url"],
                 "accent": "#f97316",
                 "glow": "rgba(249, 115, 22, 0.24)",
@@ -782,12 +794,12 @@ class AuthorProfile:
             <a class="deck-card" href="{card['href']}" target="_blank" rel="noopener noreferrer"
                style="--accent:{card['accent']};--glow:{card['glow']};">
                 <div class="deck-card__icon">
-                    <img src="{logo_uris.get(card['title'], '')}" alt="{card['title']} 图标" class="deck-card__logo" />
+                    <img src="{logo_uris.get(card['title'], '')}" alt="{html.escape(t(card['title']))} {th(' 图标')}" class="deck-card__logo" />
                 </div>
                 <div class="deck-card__body">
-                    <div class="deck-card__title">{card['title']}</div>
-                    <div class="deck-card__desc">{card['desc']}</div>
-                    <div class="deck-card__cta">{card['cta']} →</div>
+                    <div class="deck-card__title">{html.escape(t(card['title']))}</div>
+                    <div class="deck-card__desc">{html.escape(card['desc'])}</div>
+                    <div class="deck-card__cta">{html.escape(card['cta'])} →</div>
                 </div>
             </a>
             """
@@ -795,13 +807,13 @@ class AuthorProfile:
         )
 
         skill_html = "".join(
-            f'<span class="skill-chip">{skill}</span>'
-            for skill in self.author_info["skills"][:4]
+            f'<span class="skill-chip">{html.escape(skill)}</span>'
+            for skill in info["skills"][:4]
         )
 
         return f"""
         <!doctype html>
-        <html lang="zh-CN">
+        <html lang="{current_locale()}">
         <head>
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -1260,19 +1272,19 @@ class AuthorProfile:
                 <div class="curtain curtain--right"></div>
                 <div class="deck-copy">
                     <div class="deck-kicker">AUTHOR LINKS</div>
-                    <div class="deck-title">作者入口</div>
-                    <div class="deck-subtitle">文章、源码与镜像入口，直接点开就能看。</div>
+                    <div class="deck-title">{th("作者入口")}</div>
+                    <div class="deck-subtitle">{th("文章、源码与镜像入口，直接点开就能看。")}</div>
                 </div>
                 <div class="hero-shell">
                     {hero_visual_html}
-                    <div class="hero-ribbon">技术布道者</div>
+                    <div class="hero-ribbon">{th("技术布道者")}</div>
                 </div>
                 <div class="identity">
-                    <div class="identity-name">{self.author_info['name']}</div>
-                    <div class="identity-summary">{self.author_info['description']}</div>
-                    <div class="identity-role">{self.author_info['sidebar_tagline']}</div>
+                    <div class="identity-name">{html.escape(info['name'])}</div>
+                    <div class="identity-summary">{html.escape(info['description'])}</div>
+                    <div class="identity-role">{html.escape(info['sidebar_tagline'])}</div>
                     <div class="identity-text">
-                        {self.author_info['sidebar_story']}
+                        {html.escape(info['sidebar_story'])}
                     </div>
                     <div class="skill-row">{skill_html}</div>
                 </div>
@@ -1666,16 +1678,17 @@ class AuthorProfile:
             st.markdown("---")
             components.html(self._build_sidebar_compact_component_html(), height=760, scrolling=False)
 
-            with st.expander("扫码名片 / 更多资源", expanded=False):
+            info = self._localized_info()
+            with st.expander(t("扫码名片 / 更多资源"), expanded=False):
                 wechat_image = self.load_image("wechat_qrcode.jpg")
                 if wechat_image:
                     st.image(wechat_image, width="stretch")
-                st.caption(f"公众号：{self.author_info['wechat_public']}")
+                st.caption(t("公众号：{name}", name=info["wechat_public"]))
                 action_col1, action_col2 = st.columns(2)
                 with action_col1:
-                    st.link_button("公众号合集", self.author_info["wechat_url"], use_container_width=True)
+                    st.link_button(t("公众号合集"), self.author_info["wechat_url"], use_container_width=True)
                 with action_col2:
-                    st.link_button("CSDN主页", self.author_info["csdn_url"], use_container_width=True)
+                    st.link_button(t("CSDN主页"), self.author_info["csdn_url"], use_container_width=True)
 
     def _render_sidebar_wechat_card(self):
         """渲染侧边栏微信公众号卡片"""

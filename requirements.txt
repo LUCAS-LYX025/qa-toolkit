@@ -1,5 +1,7 @@
 streamlit==1.50.0
 streamlit-cropper==0.2.2
+# Streamlit 依赖 pyarrow；17.x 兼容 numpy==1.26.3，升级到要求 NumPy 2 的版本会导致组件/表格报错
+pyarrow==17.0.0
 pandas==2.1.4
 numpy==1.26.3
 requests==2.31.0

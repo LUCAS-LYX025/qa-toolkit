@@ -101,6 +101,41 @@ QA Toolkit 把这些活收进一个 Streamlit 应用里。启动一次，左边�
 
 </details>
 
+## 界面语言
+
+侧边栏最上面有个「界面语言」下拉框，随时手动切换，不用重启：
+
+| 选项 | 主要适配地区 |
+| --- | --- |
+| 简体中文 | 默认，中国大陆 |
+| 繁體中文 | 中国台湾 / 中国香港 / 中国澳门 |
+| English | 美国、英国、加拿大、澳大利亚等英语地区 |
+| 한국어 | 韩国 |
+
+切换后 URL 会带上 `?lang=en-US` 这样的参数，并把选择记在浏览器本地，下次打开还是上次的语种。也可以直接给链接加 `?lang=ko-KR` 分享给别人。
+
+**首访自动定位**：没带 `lang` 参数时，页面按 IP 归属国家 + 浏览器语言推断一次——在美国显示 English，在韩国显示 한국어，在港台显示繁體中文，其余默认简体中文。这里只取国家码，不读取也不保存 IP；请求超时或失败就静默用默认语言，不会卡住页面。整体优先级是：
+
+> 手动选择 > 浏览器记住的偏好 > IP / 浏览器自动定位 > 默认简体中文
+
+主界面、工具切换器、数据生成、反馈条、作者侧栏和通用组件已全量翻译（每种语言约 300 条词条）。其余工具页暂时没覆盖的中文文案会**自动回退原文**，所以新增页面不必先补齐四种语言。
+
+想补翻译或加语言，不用改主入口：
+
+```python
+from qa_toolkit.core.i18n import register_translations, register_locale, LocaleSpec
+from qa_toolkit.core.locale_detector import register_country_locale
+
+# 往已有语言补词条（简体中文原文即 key）
+register_translations("en-US", {"新增文案": "New copy"})
+
+# 注册新语种与国家映射
+register_locale(LocaleSpec("ja-JP", "日本語", "Japanese", "zh-CN", ("ja", "jp")))
+register_country_locale("JP", "ja-JP")
+```
+
+词库放在 `src/qa_toolkit/config/locales/*.json`，`messages` 里按「简体中文原文 → 译文」写即可；整篇工具文档也有 `tool_docs` 槽位。运行时不传 `locale` 的调用点会自动跟随当前语言，纯函数 `t()` / `th()` 在脚本和单测里同样可用。
+
 ## 快速开始
 
 ```bash

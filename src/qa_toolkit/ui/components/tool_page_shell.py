@@ -5,6 +5,8 @@ from typing import Iterable
 
 import streamlit as st
 
+from qa_toolkit.core.i18n import t
+
 
 def _inject_styles() -> None:
     st.markdown(
@@ -158,13 +160,13 @@ def render_tool_page_hero(
     _inject_styles()
     # 所有进入 HTML 的动态内容统一转义，避免污染页面结构（与同类组件保持一致）。
     safe_icon = html.escape(str(icon))
-    safe_title = html.escape(str(title))
-    safe_description = html.escape(str(description))
+    safe_title = html.escape(t(str(title)))
+    safe_description = html.escape(t(str(description)))
     safe_accent = html.escape(str(accent), quote=True)
     safe_title_color = html.escape(str(title_color), quote=True)
     safe_description_color = html.escape(str(description_color), quote=True)
     tag_items = "".join(
-        f'<span class="qa-tool-shell-tag">{html.escape(str(tag))}</span>' for tag in (tags or [])
+        f'<span class="qa-tool-shell-tag">{html.escape(t(str(tag)))}</span>' for tag in (tags or [])
     )
     st.markdown(
         f"""
@@ -182,8 +184,8 @@ def render_tool_page_hero(
 
 def render_tool_tips(title: str, tips: Iterable[str]) -> None:
     _inject_styles()
-    safe_title = html.escape(str(title))
-    tip_items = "".join(f"<li>{html.escape(str(tip))}</li>" for tip in tips)
+    safe_title = html.escape(t(str(title)))
+    tip_items = "".join(f"<li>{html.escape(t(str(tip)))}</li>" for tip in tips)
     st.markdown(
         f"""
         <div class="qa-tool-shell-tips">
@@ -197,8 +199,8 @@ def render_tool_tips(title: str, tips: Iterable[str]) -> None:
 
 def render_tool_empty_state(title: str, description: str) -> None:
     _inject_styles()
-    safe_title = html.escape(str(title))
-    safe_description = html.escape(str(description))
+    safe_title = html.escape(t(str(title)))
+    safe_description = html.escape(t(str(description)))
     st.markdown(
         f"""
         <div class="qa-tool-shell-empty">

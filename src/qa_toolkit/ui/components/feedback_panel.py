@@ -2,6 +2,7 @@ import streamlit as st
 import html
 import re
 from qa_toolkit.config.constants import TOOL_CATEGORIES
+from qa_toolkit.core.i18n import t
 from qa_toolkit.support.feedback_store import FeedbackStore
 
 # === 留言反馈区域 ===
@@ -170,38 +171,40 @@ class FeedbackSection:
 
                 with col1:
                     feedback_type = st.selectbox(
-                        "反馈类型 *",
+                        t("反馈类型 *"),
                         ["功能建议", "问题反馈", "体验优化", "新工具需求", "其他"],
-                        help="请选择最符合您反馈的类别"
+                        format_func=t,
+                        help=t("请选择最符合您反馈的类别")
                     )
                     nickname = st.text_input(
-                        "昵称（可选）",
-                        placeholder="如何称呼您",
-                        help="可以留下昵称或匿名"
+                        t("昵称（可选）"),
+                        placeholder=t("如何称呼您"),
+                        help=t("可以留下昵称或匿名")
                     )
 
                 with col2:
                     urgency = st.radio(
-                        "紧急程度",
+                        t("紧急程度"),
                         ["一般", "重要", "紧急"],
                         horizontal=True,
-                        help="请选择问题的紧急程度"
+                        format_func=t,
+                        help=t("请选择问题的紧急程度")
                     )
                     rating = st.slider(
-                        "整体满意度 *",
+                        t("整体满意度 *"),
                         1, 5, 4,
-                        help="1分-很不满意，5分-非常满意"
+                        help=t("1分-很不满意，5分-非常满意")
                     )
 
                 feedback_content = st.text_area(
-                    "详细反馈内容 *",
+                    t("详细反馈内容 *"),
                     height=150,
-                    placeholder="请详细描述您的建议、遇到的问题或需求...",
-                    help="请尽可能详细地描述，这将帮助我们更好地理解您的需求"
+                    placeholder=t("请详细描述您的建议、遇到的问题或需求..."),
+                    help=t("请尽可能详细地描述，这将帮助我们更好地理解您的需求")
                 )
 
                 # 表单提交按钮
-                submitted = st.form_submit_button("📤 提交反馈", use_container_width=True)
+                submitted = st.form_submit_button(t("📤 提交反馈"), use_container_width=True)
 
                 if submitted:
                     self._handle_feedback_submission(feedback_type, urgency, rating, feedback_content, nickname)
@@ -216,34 +219,36 @@ class FeedbackSection:
             else "希望新增什么能力？用在什么场景？"
         )
 
-        st.caption(f"当前工具: `{tool_name}`，提交时间和工具名会自动记录。")
+        st.caption(t("当前工具: `{name}`，提交时间和工具名会自动记录。", name=tool_name))
         with st.form(key=form_key):
             col1, col2 = st.columns(2)
             with col1:
                 feedback_type = st.selectbox(
-                    "反馈类型",
+                    t("反馈类型"),
                     ["功能建议", "问题反馈", "体验优化", "新工具需求", "其他"],
                     index=["功能建议", "问题反馈", "体验优化", "新工具需求", "其他"].index(default_type),
+                    format_func=t,
                     key=f"{form_key}_type",
                 )
-                nickname = st.text_input("昵称（可选）", placeholder="匿名也可以", key=f"{form_key}_nickname")
+                nickname = st.text_input(t("昵称（可选）"), placeholder=t("匿名也可以"), key=f"{form_key}_nickname")
             with col2:
                 urgency = st.radio(
-                    "紧急程度",
+                    t("紧急程度"),
                     ["一般", "重要", "紧急"],
                     horizontal=True,
+                    format_func=t,
                     key=f"{form_key}_urgency",
                 )
-                rating = st.slider("当前满意度", 1, 5, default_rating, key=f"{form_key}_rating")
+                rating = st.slider(t("当前满意度"), 1, 5, default_rating, key=f"{form_key}_rating")
 
             feedback_content = st.text_area(
-                "反馈内容",
+                t("反馈内容"),
                 height=140,
-                placeholder=placeholder,
+                placeholder=t(placeholder),
                 key=f"{form_key}_content",
             )
 
-            submitted = st.form_submit_button("提交反馈", use_container_width=True)
+            submitted = st.form_submit_button(t("提交反馈"), use_container_width=True)
 
             if submitted:
                 self._handle_feedback_submission(

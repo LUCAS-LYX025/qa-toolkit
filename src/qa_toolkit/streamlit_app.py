@@ -42,11 +42,13 @@ from qa_toolkit.integrations.zentao_exporter import ZenTaoPerformanceExporter
 from qa_toolkit.support.documentation import show_doc
 from qa_toolkit.tools.bi_analysis import BIAnalyzer
 from qa_toolkit.core.data_generator_registry import get_dataset_scenarios, get_boundary_fields, get_locales, get_registry_summary
+from qa_toolkit.core.i18n import t, th
 from qa_toolkit.tools.data_generator import DataGenerator
 from qa_toolkit.tools.ip_lookup import IPQueryTool
 from qa_toolkit.tools.test_case_generator import TestCaseGenerator
 from qa_toolkit.ui.components.author_profile import AuthorProfile
 from qa_toolkit.ui.components.feedback_panel import FeedbackSection
+from qa_toolkit.ui.components.locale_switcher import render_locale_switcher
 from qa_toolkit.utils.datetime_tools import DateTimeUtils
 
 # 导入Faker库
@@ -61,11 +63,45 @@ except ImportError:
 
 # 设置页面
 st.set_page_config(
-    page_title="测试工程师常用工具集",
+    page_title=t("测试工程师常用工具集"),
     page_icon="🔧",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+
+def tool_label(tool_name: str) -> str:
+    """工具名只作内部路由键，这里负责展示当前语言的名称。"""
+    return t(tool_name)
+
+
+def tool_description(tool_name: str) -> str:
+    return t(TOOL_CATEGORIES[tool_name]["description"])
+
+
+def localized_headline() -> str:
+    """按当前语言替换首页主视觉文案，保留原 CSS 与触发按钮结构。"""
+    from qa_toolkit.config.constants import HEADLINE_STYLES as _headline
+
+    keys = (
+        "围绕测试数据、日志、正则、文本、接口与质量分析的工程化工具台，",
+        "从日常排查到专项分析，常用工具和辅助流程都集中在这里。",
+        "把高频测试动作收进一个统一入口。",
+        "测试工程师",
+        "常用工具集",
+        "正则与文本",
+        "日志与 JSON",
+        "接口与分析",
+        "一站式入口",
+        "工程化提效",
+        "面向测试实战",
+    )
+    result = _headline
+    for source in keys:
+        translated = t(source)
+        if translated != source:
+            result = result.replace(source, translated)
+    return result
 
 # 现代化CSS样式
 st.markdown(CSS_STYLES, unsafe_allow_html=True)
@@ -78,15 +114,15 @@ def _build_page_renderer(module_path, function_name, page_label):
         try:
             render_fn = getattr(import_module(module_path), function_name)
         except Exception as exc:
-            st.error(f"{page_label}加载失败，当前已跳过该页面。")
+            st.error(t("{name}加载失败，当前已跳过该页面。", name=page_label))
             if isinstance(exc, ModuleNotFoundError):
                 st.info(
-                    f"缺少模块: `{exc.name}`。常见原因是新文件没有提交到 GitHub，"
-                    "或 `requirements.txt` 中缺少依赖。"
+                    t("缺少模块: `{name}`。常见原因是新文件没有提交到 GitHub，", name=exc.name)
+                    + t("或 `requirements.txt` 中缺少依赖。")
                 )
             else:
-                st.info("页面模块存在，但其内部导入或初始化失败。")
-            with st.expander("查看详细错误"):
+                st.info(t("页面模块存在，但其内部导入或初始化失败。"))
+            with st.expander(t("查看详细错误")):
                 st.code("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
             return
 
@@ -118,8 +154,8 @@ def render_tool_placeholder_page(tool_name):
     if doc_key:
         show_doc(doc_key)
 
-    st.warning(f"{tool_name} 当前还在迁移到独立页面，已先恢复入口和说明展示。")
-    st.info("这个工具不再是空白页了；如果你要，我可以继续把它的完整功能也迁过来。")
+    st.warning(t("{name} 当前还在迁移到独立页面，已先恢复入口和说明展示。", name=tool_name))
+    st.info(t("这个工具不再是空白页了；如果你要，我可以继续把它的完整功能也迁过来。"))
 
 
 def clear_hero_tool_query():
@@ -190,8 +226,11 @@ def escape_js_string(text):
     return json.dumps(text)
 
 
-def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
+def create_copy_button(text, button_text=None, key=None):
+    button_text = button_text or t("📋 复制到剪贴板")
     _safe_button_text = json.dumps(str(button_text), ensure_ascii=False)[1:-1]
+    _copied_text = json.dumps(t("✅ 复制成功！"), ensure_ascii=False)
+    _failed_text = json.dumps(t("❌ 复制失败"), ensure_ascii=False)
     """创建一键复制按钮"""
     if key is None:
         key = hash(text)
@@ -239,7 +278,7 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
                 copyTextToClipboard{key}().then(function(success) {{
                     if (success) {{
                         const originalText = button.innerHTML;
-                        button.innerHTML = '✅ 复制成功！';
+                        button.innerHTML = {_copied_text};
                         button.style.background = 'linear-gradient(135deg, #fb923c 0%, #ea580c 52%, #7c2d12 100%)';
                         button.style.color = '#ffffff';
                         button.style.fontWeight = '800';
@@ -252,7 +291,7 @@ def create_copy_button(text, button_text="📋 复制到剪贴板", key=None):
                             button.style.textShadow = '0 1px 1px rgba(7,20,39,0.34)';
                         }}, 2000);
                     }} else {{
-                        button.innerHTML = '❌ 复制失败';
+                        button.innerHTML = {_failed_text};
                         button.style.background = 'linear-gradient(135deg, #b91c1c 0%, #dc2626 100%)';
                         button.style.color = '#ffffff';
                         button.style.fontWeight = '800';
@@ -419,10 +458,10 @@ def render_back_to_top_button():
         </style>
         <div class="qa-toolkit-floating-shell">
             <details class="qa-toolkit-floating-menu">
-                <summary class="qa-toolkit-floating-summary">⚡ 快捷操作</summary>
+                <summary class="qa-toolkit-floating-summary">{th("⚡ 快捷操作")}</summary>
                 <div class="qa-toolkit-floating-items">
-                    <a class="qa-toolkit-floating-link qa-toolkit-feedback-link" href="#tool-feedback-anchor">💬 意见反馈</a>
-                    <a class="qa-toolkit-floating-link qa-toolkit-back-to-top" href="#page-top">↑ 返回顶部</a>
+                    <a class="qa-toolkit-floating-link qa-toolkit-feedback-link" href="#tool-feedback-anchor">{th("💬 意见反馈")}</a>
+                    <a class="qa-toolkit-floating-link qa-toolkit-back-to-top" href="#page-top">{th("↑ 返回顶部")}</a>
                 </div>
             </details>
         </div>
@@ -659,7 +698,7 @@ def render_hero_tool_triggers():
     ]
 
     for trigger_key, tool_name in hero_tool_actions:
-        if st.button(f"切换到{tool_name}", key=trigger_key, use_container_width=True):
+        if st.button(t("切换到{name}", name=tool_label(tool_name)), key=trigger_key, use_container_width=True):
             clear_hero_tool_query()
             st.session_state.selected_tool = tool_name
             st.session_state.tool_picker_compact = True
@@ -686,7 +725,7 @@ def render_tool_picker():
         ">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
                 {current_tool_icon}
-                <div style="font-size:20px;font-weight:800;">{current_tool}</div>
+                <div style="font-size:20px;font-weight:800;">{th(tool_label(current_tool))}</div>
                 <div style="
                     margin-left:auto;
                     background: rgba(255,255,255,0.18);
@@ -696,11 +735,11 @@ def render_tool_picker():
                     font-size: 12px;
                     font-weight: 700;
                 ">
-                    {'功能区模式' if st.session_state.tool_picker_compact else '工具切换模式'}
+                    {th(t('功能区模式' if st.session_state.tool_picker_compact else '工具切换模式'))}
                 </div>
             </div>
             <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.92);">
-                {current_info['description']}
+                {th(tool_description(current_tool))}
             </div>
         </div>
         """,
@@ -709,21 +748,21 @@ def render_tool_picker():
 
     action_col1, action_col2 = st.columns([1, 1])
     with action_col1:
-        primary_label = "展开工具列表" if st.session_state.tool_picker_compact else "收起工具列表"
+        primary_label = t("展开工具列表" if st.session_state.tool_picker_compact else "收起工具列表")
         if st.button(primary_label, key="toggle_tool_picker", use_container_width=True):
             st.session_state.tool_picker_compact = not st.session_state.tool_picker_compact
             st.rerun()
     with action_col2:
-        if st.button("仅看当前功能区", key="focus_current_tool", use_container_width=True):
+        if st.button(t("仅看当前功能区"), key="focus_current_tool", use_container_width=True):
             st.session_state.tool_picker_compact = True
             st.rerun()
 
     if st.session_state.tool_picker_compact:
-        st.caption("当前已优先展示功能区。如需切换模块，点击“展开工具列表”。")
+        st.caption(t("当前已优先展示功能区。如需切换模块，点击“展开工具列表”。"))
         st.markdown("---")
         return
 
-    st.markdown('<div class="sub-header">🚀 可用工具</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="sub-header">{th(t("🚀 可用工具"))}</div>', unsafe_allow_html=True)
     cols = st.columns(3)
     col_index = 0
 
@@ -734,22 +773,22 @@ def render_tool_picker():
             accent_color = info.get("color", "#667eea")
             trigger_key = f"tool_picker_card_trigger_{col_index}_{abs(hash(category))}"
             status_class = "tool-picker-status selected" if is_selected else "tool-picker-status"
-            status_text = "当前已选中，点击卡片定位到功能区" if is_selected else "点击卡片进入功能区"
+            status_text = t("当前已选中，点击卡片定位到功能区" if is_selected else "点击卡片进入功能区")
             tool_icon_markup = build_tool_icon_badge(category, accent_color)
             st.markdown(
                 f"""
-                <div class="tool-picker-linklike" data-trigger-key="{trigger_key}" role="button" tabindex="0" aria-label="切换到{category}">
+                <div class="tool-picker-linklike" data-trigger-key="{trigger_key}" role="button" tabindex="0" aria-label="{th(t("切换到{name}", name=tool_label(category)))}">
                     <div class="{card_class}">
                         <div class="tool-picker-icon">{tool_icon_markup}</div>
-                        <div class="tool-picker-title">{category}</div>
-                        <div class="tool-picker-desc">{info['description']}</div>
+                        <div class="tool-picker-title">{th(tool_label(category))}</div>
+                        <div class="tool-picker-desc">{th(tool_description(category))}</div>
                     </div>
                 </div>
                 <div class="{status_class}">{status_text}</div>
                 """,
                 unsafe_allow_html=True,
             )
-            if st.button(f"切换到{category}", key=trigger_key, use_container_width=True):
+            if st.button(t("切换到{name}", name=tool_label(category)), key=trigger_key, use_container_width=True):
                 clear_hero_tool_query()
                 st.session_state.selected_tool = category
                 st.session_state.tool_picker_compact = True
@@ -763,15 +802,15 @@ def render_tool_picker():
 
 def display_generated_results(title, content, filename_prefix):
     """统一展示生成结果 + 复制 + 下载"""
-    st.markdown(f'<div class="category-card">📋 生成结果 - {html.escape(str(title))}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="category-card">{th(t("📋 生成结果 - {title}", title=title))}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="result-box">{html.escape(str(content))}</div>', unsafe_allow_html=True)
 
     col1, col2 = st.columns(2)
     with col1:
-        create_copy_button(content, button_text="📋 复制结果", key=f"copy_{filename_prefix}")
+        create_copy_button(content, button_text=t("📋 复制结果"), key=f"copy_{filename_prefix}")
     with col2:
         st.download_button(
-            label="💾 下载结果",
+            label=t("💾 下载结果"),
             data=content,
             file_name=f"{filename_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
             mime="text/plain"
@@ -781,42 +820,42 @@ def display_generated_results(title, content, filename_prefix):
 def display_structured_results(title, records, filename_prefix):
     """统一展示结构化结果，支持预览和多格式导出。"""
     if not records:
-        st.warning("暂无可展示的数据。")
+        st.warning(t("暂无可展示的数据。"))
         return
 
     dataframe = pd.DataFrame(records)
     json_text = json.dumps(records, ensure_ascii=False, indent=2)
     csv_bytes = dataframe.to_csv(index=False).encode("utf-8-sig")
 
-    st.markdown(f'<div class="category-card">🗂️ 结构化结果 - {title}</div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="category-card">{th(t("🗂️ 结构化结果 - {title}", title=title))}</div>', unsafe_allow_html=True)
     metric_col1, metric_col2, metric_col3 = st.columns(3)
     with metric_col1:
-        st.metric("记录数", len(dataframe))
+        st.metric(t("记录数"), len(dataframe))
     with metric_col2:
-        st.metric("字段数", len(dataframe.columns))
+        st.metric(t("字段数"), len(dataframe.columns))
     with metric_col3:
-        st.metric("导出格式", "CSV / JSON")
+        st.metric(t("导出格式"), "CSV / JSON")
 
-    preview_tab, json_tab = st.tabs(["表格预览", "JSON 预览"])
+    preview_tab, json_tab = st.tabs([t("表格预览"), t("JSON 预览")])
     with preview_tab:
         st.dataframe(dataframe, use_container_width=True, hide_index=True)
-        st.caption(f"字段覆盖: {', '.join(dataframe.columns.tolist())}")
+        st.caption(t("字段覆盖: {fields}", fields=", ".join(dataframe.columns.tolist())))
     with json_tab:
         st.code(json_text, language="json")
 
     action_col1, action_col2, action_col3 = st.columns(3)
     with action_col1:
-        create_copy_button(json_text, button_text="📋 复制 JSON", key=f"copy_json_{filename_prefix}")
+        create_copy_button(json_text, button_text=t("📋 复制 JSON"), key=f"copy_json_{filename_prefix}")
     with action_col2:
         st.download_button(
-            label="💾 下载 CSV",
+            label=t("💾 下载 CSV"),
             data=csv_bytes,
             file_name=f"{filename_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
             mime="text/csv"
         )
     with action_col3:
         st.download_button(
-            label="🧾 下载 JSON",
+            label=t("🧾 下载 JSON"),
             data=json_text.encode("utf-8"),
             file_name=f"{filename_prefix}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json"
@@ -836,8 +875,9 @@ if st.session_state.selected_tool not in TOOL_CATEGORIES:
 apply_hero_tool_query_selection()
 apply_tool_query_selection()
 
-# 顶部标题区域
-st.markdown(HEADLINE_STYLES, unsafe_allow_html=True)
+# 顶部标题区域（语言切换必须先于任何依赖语言的渲染）
+render_locale_switcher()
+st.markdown(localized_headline(), unsafe_allow_html=True)
 render_hero_tool_triggers()
 render_tool_card_click_bridge()
 st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
@@ -858,48 +898,51 @@ if tool_category == "数据生成工具":
     show_doc("data_generator")
     locales = get_locales()
     locale_key = st.selectbox(
-        "生成地区", list(locales),
+        t("生成地区"), list(locales),
         format_func=lambda key: locales[key].label,
         key="data_gen_locale",
-        help="切换地区后，Faker 生成的姓名、地址等数据会按当地规则生成。",
+        help=t("切换地区后，Faker 生成的姓名、地址等数据会按当地规则生成。"),
     )
     generator = DataGenerator(locale=locales[locale_key].faker_locale)
     registry_summary = get_registry_summary()
     st.caption(
-        f"注册式扩展：{len(registry_summary['造数场景'])} 个造数场景 / "
-        f"{len(registry_summary['边界字段'])} 个边界字段 / "
-        f"{len(registry_summary['生成地区'])} 个地区"
-        + (f"，含 {registry_summary['扩展场景数'] + registry_summary['扩展字段数']} 项外部扩展"
+        t("注册式扩展：{scenarios} 个造数场景 / {fields} 个边界字段 / {locales} 个地区",
+          scenarios=len(registry_summary['造数场景']),
+          fields=len(registry_summary['边界字段']),
+          locales=len(registry_summary['生成地区']))
+        + (t("含 {count} 项外部扩展",
+             count=registry_summary['扩展场景数'] + registry_summary['扩展字段数'])
            if registry_summary['扩展场景数'] + registry_summary['扩展字段数'] else "")
     )
     if 'clear_data_gen_counter' not in st.session_state:
         st.session_state.clear_data_gen_counter = 0
 
     gen_mode = st.radio(
-        "选择生成模式",
+        t("选择生成模式"),
         ["Faker高级生成器", "基础数据生成器"],
+        format_func=t,
         horizontal=True
     )
 
     if gen_mode == "Faker高级生成器":
         if not FAKER_AVAILABLE:
-            st.error("❌ Faker库未安装，无法使用高级生成器")
-            st.info("请运行以下命令安装: `pip install faker`")
+            st.error(t("❌ Faker库未安装，无法使用高级生成器"))
+            st.info(t("请运行以下命令安装: `pip install faker`"))
             st.code("pip install faker", language="bash")
         else:
-            st.markdown('<div class="category-card">🚀 Faker高级数据生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("🚀 Faker高级数据生成器"))}</div>', unsafe_allow_html=True)
 
             col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
             with col1:
-                selected_category = st.selectbox("选择数据类别", list(CATEGORIES.keys()))
+                selected_category = st.selectbox(t("选择数据类别"), list(CATEGORIES.keys()), format_func=t)
             with col2:
-                selected_subcategory = st.selectbox("选择具体类型", CATEGORIES[selected_category])
+                selected_subcategory = st.selectbox(t("选择具体类型"), CATEGORIES[selected_category], format_func=t)
             with col3:
-                count = st.number_input("生成数量", min_value=1, max_value=100, value=5)
+                count = st.number_input(t("生成数量"), min_value=1, max_value=100, value=5)
             with col4:
                 st.write("")  # 占位符
                 st.write("")
-                if st.button("🗑️ 清空", key="clear_faker", use_container_width=True):
+                if st.button(t("🗑️ 清空"), key="clear_faker", use_container_width=True):
                     if 'faker_result' in st.session_state:
                         del st.session_state.faker_result
                     if 'last_category' in st.session_state:
@@ -912,11 +955,11 @@ if tool_category == "数据生成工具":
 
             extra_params = {}
             if selected_subcategory == "随机文本":
-                text_length = st.slider("文本长度", min_value=10, max_value=1000, value=200)
+                text_length = st.slider(t("文本长度"), min_value=10, max_value=1000, value=200)
                 extra_params['length'] = text_length
             faker_seed_text = st.text_input(
-                "随机种子", value="", placeholder="留空则每次生成不同",
-                help="填写整数后，同一组参数可复现同一批 Faker 数据。",
+                t("随机种子"), value="", placeholder=t("留空则每次生成不同"),
+                help=t("填写整数后，同一组参数可复现同一批 Faker 数据。"),
                 key="faker_seed",
             )
             faker_seed = None
@@ -924,7 +967,7 @@ if tool_category == "数据生成工具":
                 try:
                     faker_seed = int(faker_seed_text.strip())
                 except ValueError:
-                    st.warning("随机种子需为整数，当前已忽略。")
+                    st.warning(t("随机种子需为整数，当前已忽略。"))
             if faker_seed is not None:
                 extra_params['seed'] = faker_seed
 
@@ -934,8 +977,8 @@ if tool_category == "数据生成工具":
                 st.session_state.pop("last_category", None)
                 st.session_state.faker_result_key = current_faker_key
 
-            if st.button("🎯 生成数据", use_container_width=True):
-                with st.spinner("正在生成数据..."):
+            if st.button(t("🎯 生成数据"), use_container_width=True):
+                with st.spinner(t("正在生成数据...")):
                     results = generator.safe_generate(generator.generate_faker_data, selected_category,
                                                       selected_subcategory, count, **extra_params)
                     if results is not None:
@@ -946,75 +989,76 @@ if tool_category == "数据生成工具":
             if 'faker_result' in st.session_state:
                 title = st.session_state.get("last_category", "")
                 if title.endswith("完整个人信息"):
-                    st.text_area("生成结果", st.session_state.faker_result, height=300, key="profile_result")
+                    st.text_area(t("生成结果"), st.session_state.faker_result, height=300, key="profile_result")
                 else:
                     st.markdown(
                         f'<div class="result-box">{html.escape(str(st.session_state.faker_result))}</div>',
                         unsafe_allow_html=True,
                     )
-                create_copy_button(st.session_state.faker_result, button_text="📋 复制结果", key="copy_faker_result")
+                create_copy_button(st.session_state.faker_result, button_text=t("📋 复制结果"), key="copy_faker_result")
                 st.download_button(
-                    label="💾 下载结果",
+                    label=t("💾 下载结果"),
                     data=st.session_state.faker_result,
                     file_name=f"faker_data_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
                     mime="text/plain"
                 )
 
     else:  # 基础数据生成器
-        st.markdown('<div class="category-card">🔧 基础数据生成器</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="category-card">{th(t("🔧 基础数据生成器"))}</div>', unsafe_allow_html=True)
         data_gen_tool = st.radio(
-            "选择生成工具",
+            t("选择生成工具"),
             ["随机内容生成器", "随机邮箱生成器", "电话号码生成器", "随机地址生成器", "随机身份证生成器",
-             "测试场景造数", "边界值/异常值生成器"]
+             "测试场景造数", "边界值/异常值生成器"],
+            format_func=t,
         )
-        st.caption("前 5 项适合快速单字段造数，后 2 项适合测试联调、批量导入和边界值设计。")
+        st.caption(t("前 5 项适合快速单字段造数，后 2 项适合测试联调、批量导入和边界值设计。"))
 
         if data_gen_tool == "随机内容生成器":
-            st.markdown('<div class="category-card">🎲 随机内容生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">🎲 {th(t("随机内容生成器"))}</div>', unsafe_allow_html=True)
 
             col1, col2 = st.columns(2)
             with col1:
-                gen_type = st.selectbox("生成类型", ["随机字符串", "随机数字", "随机密码", "UUID"])
+                gen_type = st.selectbox(t("生成类型"), ["随机字符串", "随机数字", "随机密码", "UUID"], format_func=t)
 
                 if gen_type in ["随机字符串", "随机密码"]:
-                    length = st.slider("长度", 1, 100, 10, help="生成内容的长度（字符数）")
+                    length = st.slider(t("长度"), 1, 100, 10, help=t("生成内容的长度（字符数）"))
                 if gen_type == "随机数字":
-                    min_val = st.number_input("最小值", value=0)
-                    max_val = st.number_input("最大值", value=100)
+                    min_val = st.number_input(t("最小值"), value=0)
+                    max_val = st.number_input(t("最大值"), value=100)
 
-                count = st.number_input("生成数量", min_value=1, max_value=100, value=5)
+                count = st.number_input(t("生成数量"), min_value=1, max_value=100, value=5)
 
             with col2:
                 if gen_type == "随机字符串":
-                    chars_type = st.multiselect("字符类型", RANDOM_STRING_TYPES, default=RANDOM_STRING_TYPES[:3],
-                                                help="选择包含的字符类型")
+                    chars_type = st.multiselect(t("字符类型"), RANDOM_STRING_TYPES, default=RANDOM_STRING_TYPES[:3],
+                                                help=t("选择包含的字符类型"), format_func=t)
                 if gen_type == "随机密码":
-                    password_options = st.multiselect("密码选项", PASSWORD_OPTIONS, default=PASSWORD_OPTIONS[:3],
-                                                      help="设置密码复杂度要求")
+                    password_options = st.multiselect(t("密码选项"), PASSWORD_OPTIONS, default=PASSWORD_OPTIONS[:3],
+                                                      help=t("设置密码复杂度要求"), format_func=t)
 
-                st.write("📋 条件说明")
+                st.write(t("📋 条件说明"))
                 if gen_type == "随机字符串":
-                    st.write(f"- 类型: 随机字符串")
-                    st.write(f"- 长度: {length}字符")
-                    st.write(f"- 字符类型: {', '.join(chars_type)}")
+                    st.write(t("- 类型: {value}", value=t(gen_type)))
+                    st.write(t("- 长度: {value}字符", value=length))
+                    st.write(t("- 字符类型: {value}", value=", ".join(t(item) for item in chars_type)))
                 elif gen_type == "随机数字":
-                    st.write(f"- 类型: 随机数字")
-                    st.write(f"- 范围: {min_val} 到 {max_val}")
+                    st.write(t("- 类型: {value}", value=t(gen_type)))
+                    st.write(t("- 范围: {min} 到 {max}", min=min_val, max=max_val))
                 elif gen_type == "随机密码":
-                    st.write(f"- 类型: 随机密码")
-                    st.write(f"- 长度: {length}字符")
-                    st.write(f"- 复杂度: {', '.join(password_options)}")
+                    st.write(t("- 类型: {value}", value=t(gen_type)))
+                    st.write(t("- 长度: {value}字符", value=length))
+                    st.write(t("- 复杂度: {value}", value=", ".join(t(item) for item in password_options)))
                 else:
-                    st.write(f"- 类型: UUID")
+                    st.write(t("- 类型: {value}", value=t(gen_type)))
 
-                st.write("💡 提示: 点击生成按钮后结果将保留在页面")
+                st.write(t("💡 提示: 点击生成按钮后结果将保留在页面"))
 
-            if st.button("生成内容", key="gen_random_content"):
+            if st.button(t("生成内容"), key="gen_random_content"):
                 if gen_type == "随机数字" and min_val > max_val:
-                    st.error(f"最小值（{min_val}）不能大于最大值（{max_val}）。")
+                    st.error(t("最小值（{min}）不能大于最大值（{max}）。", min=min_val, max=max_val))
                     st.stop()
                 results = []
-                with st.spinner(f"正在生成{count}个{gen_type}..."):
+                with st.spinner(t("正在生成{count}个{name}...", count=count, name=t(gen_type))):
                     for _ in range(count):
                         if gen_type == "随机字符串":
                             res = generator.safe_generate(generator.generate_random_string, length, chars_type)
@@ -1029,34 +1073,34 @@ if tool_category == "数据生成工具":
 
                 result_text = "\n".join(results)
                 conditions = (
-                        f"类型: {gen_type}, " +
-                        (f"长度: {length}, " if gen_type in ["随机字符串", "随机密码"] else "") +
-                        (f"范围: {min_val}-{max_val}, " if gen_type == "随机数字" else "") +
-                        (f"字符类型: {', '.join(chars_type)}" if gen_type == "随机字符串" else "") +
-                        (f"复杂度: {', '.join(password_options)}" if gen_type == "随机密码" else "")
+                        t("类型: {value}", value=t(gen_type)) + ", " +
+                        (t("长度: {value}字符", value=length) + ", " if gen_type in ["随机字符串", "随机密码"] else "") +
+                        (t("范围: {min}-{max}", min=min_val, max=max_val) + ", " if gen_type == "随机数字" else "") +
+                        (t("字符类型: {value}", value=", ".join(t(item) for item in chars_type)) if gen_type == "随机字符串" else "") +
+                        (t("复杂度: {value}", value=", ".join(t(item) for item in password_options)) if gen_type == "随机密码" else "")
                 )
-                display_generated_results(conditions, result_text, "随机内容")
+                display_generated_results(conditions, result_text, t("随机内容"))
 
         elif data_gen_tool == "随机邮箱生成器":
-            st.markdown('<div class="category-card">📧 随机邮箱生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("📧 随机邮箱生成器"))}</div>', unsafe_allow_html=True)
 
             col1, col2 = st.columns(2)
             with col1:
-                count = st.number_input("邮箱数量", min_value=1, max_value=100, value=10)
-                domain_option = st.selectbox("域名选项", ["随机域名", "自定义域名"])
+                count = st.number_input(t("邮箱数量"), min_value=1, max_value=100, value=10)
+                domain_option = st.selectbox(t("域名选项"), ["随机域名", "自定义域名"], format_func=t)
 
             with col2:
                 if domain_option == "自定义域名":
-                    custom_domain = st.text_input("自定义域名", "example.com", placeholder="输入不带http://的域名")
-                    conditions = f"域名: {custom_domain}"
+                    custom_domain = st.text_input(t("自定义域名"), "example.com", placeholder=t("输入不带http://的域名"))
+                    conditions = t("域名: {value}", value=custom_domain)
                 else:
-                    selected_domains = st.multiselect("选择域名", DOMAINS_PRESET, default=DOMAINS_PRESET[:3])
-                    conditions = f"随机域名: {', '.join(selected_domains)}"
-                st.write("💡 提示: 用户名将随机生成8-12位字母数字组合")
+                    selected_domains = st.multiselect(t("选择域名"), DOMAINS_PRESET, default=DOMAINS_PRESET[:3])
+                    conditions = t("随机域名: {value}", value=", ".join(selected_domains))
+                st.write(t("💡 提示: 用户名将随机生成8-12位字母数字组合"))
 
-            if st.button("生成邮箱", key="gen_emails"):
+            if st.button(t("生成邮箱"), key="gen_emails"):
                 results = []
-                with st.spinner(f"正在生成{count}个邮箱地址..."):
+                with st.spinner(t("正在生成{count}个邮箱地址...", count=count)):
                     for _ in range(count):
                         email = generator.safe_generate(generator.generate_random_email, domain_option,
                                                         custom_domain if domain_option == "自定义域名" else None,
@@ -1065,9 +1109,9 @@ if tool_category == "数据生成工具":
                             results.append(email)
 
                 result_text = "\n".join(results)
-                display_generated_results(conditions, result_text, "邮箱列表")
+                display_generated_results(conditions, result_text, t("邮箱列表"))
         elif data_gen_tool == "电话号码生成器":
-            st.markdown('<div class="category-card">📞 电话号码生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("📞 电话号码生成器"))}</div>', unsafe_allow_html=True)
             # 确保PROVINCES是列表类型
             PROVINCES = list(PROVINCE_CITY_AREA_CODES.keys())
 
@@ -1084,7 +1128,7 @@ if tool_category == "数据生成工具":
 
             col1, col2 = st.columns(2)
             with col1:
-                phone_type = st.selectbox("号码类型", ["手机号", "座机", "国际号码"])
+                phone_type = st.selectbox(t("号码类型"), ["手机号", "座机", "国际号码"], format_func=t)
 
                 # 初始化变量
                 operator = None
@@ -1094,51 +1138,59 @@ if tool_category == "数据生成工具":
                 area_code = None
 
                 if phone_type == "国际号码":
-                    country = st.selectbox("选择国家", COUNTRIES)
+                    country = st.selectbox(t("选择国家"), COUNTRIES)
                 elif phone_type == "手机号":
-                    operator = st.selectbox("运营商", ["随机", "移动", "联通", "电信", "广电"])
+                    operator = st.selectbox(t("运营商"), ["随机", "移动", "联通", "电信", "广电"], format_func=t)
                 elif phone_type == "座机":
                     # 使用本地定义的 PROVINCES - 确保是列表
                     province_options = ["随机"] + PROVINCES
-                    province = st.selectbox("选择省份", province_options)
+                    province = st.selectbox(t("选择省份"), province_options, format_func=t)
 
                     if province and province != "随机":
                         cities = get_cities_by_province(province)
-                        city = st.selectbox("选择城市", ["随机"] + cities)
+                        city = st.selectbox(t("选择城市"), ["随机"] + cities, format_func=t)
 
                         # 如果选择了具体城市，获取对应的区号
                         if city and city != "随机":
                             area_code = get_area_code(province, city)
                             if area_code:
-                                st.success(f"✅ 所选城市区号: {area_code}")
+                                st.success(t("✅ 所选城市区号: {code}", code=area_code))
                             else:
-                                st.warning("⚠️ 未找到该城市的区号")
+                                st.warning(t("⚠️ 未找到该城市的区号"))
                     else:
                         city = "随机"
-                        st.info("将随机生成区号")
+                        st.info(t("将随机生成区号"))
 
                 count = st.number_input("生成数量", min_value=1, max_value=100, value=10)
 
             with col2:
+                phone_type_label = t(phone_type)
+                random_label = t("随机")
                 if phone_type == "座机":
                     if province == "随机":
-                        conditions = f"类型: {phone_type}, 区号: 随机"
+                        conditions = f"{t('类型: {value}', value=phone_type_label)}, {t('区号: {value}', value=random_label)}"
                     elif city == "随机":
-                        conditions = f"类型: {phone_type}, 省份: {province}, 区号: 随机"
+                        conditions = (
+                            f"{t('类型: {value}', value=phone_type_label)}, "
+                            f"{t('省份: {value}', value=province)}, {t('区号: {value}', value=random_label)}"
+                        )
                     else:
-                        conditions = f"类型: {phone_type}, 城市: {city}, 区号: {area_code}"
+                        conditions = (
+                            f"{t('类型: {value}', value=phone_type_label)}, "
+                            f"{t('城市: {value}', value=city)}, {t('区号: {value}', value=area_code)}"
+                        )
                 elif phone_type == "国际号码":
-                    conditions = f"类型: {phone_type}, 国家: {country}"
+                    conditions = f"{t('类型: {value}', value=phone_type_label)}, {t('国家: {value}', value=country)}"
                 else:
-                    conditions = f"运营商: {operator}, 类型: {phone_type}"
+                    conditions = f"{t('运营商: {value}', value=t(operator))}, {t('类型: {value}', value=phone_type_label)}"
 
-                st.write("💡 提示: 生成的号码将匹配相应的号码规则")
+                st.write(t("💡 提示: 生成的号码将匹配相应的号码规则"))
 
-            if st.button("生成电话号码", key="gen_conditional_phones"):
+            if st.button(t("生成电话号码"), key="gen_conditional_phones"):
                 results = []
                 selected_area_codes = []  # 用于记录实际使用的区号
 
-                with st.spinner(f"正在生成{count}个号码..."):
+                with st.spinner(t("正在生成{count}个号码...", count=count)):
                     for i in range(count):
                         try:
                             if phone_type == "座机":
@@ -1173,51 +1225,51 @@ if tool_category == "数据生成工具":
 
                         except Exception as e:
                             # 处理可能的生成错误，继续生成其他号码
-                            st.error(f"生成第 {i + 1} 个号码时出错: {str(e)}")
+                            st.error(t("生成第 {index} 个号码时出错: {error}", index=i + 1, error=str(e)))
                             continue
 
                 if results:
                     result_text = "\n".join(results)
 
                     # 删除原来的显示代码，直接使用封装的函数
-                    display_generated_results("电话号码", result_text, "电话号码")
+                    display_generated_results(t("电话号码"), result_text, t("电话号码"))
 
                     # 显示调试信息（实际使用的区号）
                     if phone_type == "座机" and selected_area_codes:
                         unique_codes = list(set(selected_area_codes))
-                        st.info(f"实际使用的区号: {', '.join(unique_codes)}")
+                        st.info(t("实际使用的区号: {codes}", codes=", ".join(unique_codes)))
 
                     # 显示生成统计
-                    st.success(f"✅ 成功生成 {len(results)} 个电话号码")
+                    st.success(t("✅ 成功生成 {count} 个电话号码", count=len(results)))
                 else:
-                    st.warning("⚠️ 未能生成任何有效的电话号码，请检查参数设置")
+                    st.warning(t("⚠️ 未能生成任何有效的电话号码，请检查参数设置"))
 
         elif data_gen_tool == "随机地址生成器":
-            st.markdown('<div class="category-card">🏠 随机地址生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("🏠 随机地址生成器"))}</div>', unsafe_allow_html=True)
 
             col1, col2 = st.columns(2)
             with col1:
-                province = st.selectbox("选择省份", ["随机"] + [p for p in PROVINCES.keys() if p != "随机"])
-                count = st.number_input("生成数量", min_value=1, max_value=50, value=10)
-                detailed = st.checkbox("生成详细地址", value=True)
+                province = st.selectbox(t("选择省份"), ["随机"] + [p for p in PROVINCES.keys() if p != "随机"], format_func=t)
+                count = st.number_input(t("生成数量"), min_value=1, max_value=50, value=10)
+                detailed = st.checkbox(t("生成详细地址"), value=True)
 
             with col2:
                 if province != "随机":
                     city_options = PROVINCES[province]
-                    city = st.selectbox("选择城市", ["随机"] + [c for c in city_options if c != province])
+                    city = st.selectbox(t("选择城市"), ["随机"] + [c for c in city_options if c != province], format_func=t)
                 else:
                     city = "随机"
 
                 conditions = (
-                        f"省份: {province if province != '随机' else '随机选择'}, " +
-                        f"城市: {city if city != '随机' else '随机选择'}, " +
-                        f"详细程度: {'详细地址' if detailed else '仅省市信息'}"
+                        t("省份: {value}", value=t(province) if province != "随机" else t("随机选择")) + ", " +
+                        t("城市: {value}", value=t(city) if city != "随机" else t("随机选择")) + ", " +
+                        t("详细程度: {value}", value=t("详细地址" if detailed else "仅省市信息"))
                 )
-                st.write("💡 提示: 详细地址包含街道、门牌号等信息")
+                st.write(t("💡 提示: 详细地址包含街道、门牌号等信息"))
 
-            if st.button("生成地址", key="gen_addresses"):
+            if st.button(t("生成地址"), key="gen_addresses"):
                 results = []
-                with st.spinner(f"正在生成{count}个地址..."):
+                with st.spinner(t("正在生成{count}个地址...", count=count)):
                     for _ in range(count):
                         selected_province = province
                         if province == "随机":
@@ -1235,30 +1287,34 @@ if tool_category == "数据生成工具":
                             results.append(addr)
 
                 result_text = "\n".join(results)
-                display_generated_results(conditions, result_text, "地址列表")
+                display_generated_results(conditions, result_text, t("地址列表"))
 
         elif data_gen_tool == "随机身份证生成器":
-            st.markdown('<div class="category-card">🆔 随机身份证生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("🆔 随机身份证生成器"))}</div>', unsafe_allow_html=True)
 
             col1, col2 = st.columns(2)
             with col1:
-                province = st.selectbox("选择省份", ["随机"] + list(PROVINCE_MAP.keys()))
-                gender = st.selectbox("选择性别", GENDERS)
-                count = st.number_input("生成数量", min_value=1, max_value=100, value=10)
+                province = st.selectbox(t("选择省份"), ["随机"] + list(PROVINCE_MAP.keys()), format_func=t)
+                gender = st.selectbox(t("选择性别"), GENDERS, format_func=t)
+                count = st.number_input(t("生成数量"), min_value=1, max_value=100, value=10)
 
             with col2:
-                min_age = st.number_input("最小年龄", min_value=0, max_value=100, value=18)
-                max_age = st.number_input("最大年龄", min_value=0, max_value=100, value=60)
+                min_age = st.number_input(t("最小年龄"), min_value=0, max_value=100, value=18)
+                max_age = st.number_input(t("最大年龄"), min_value=0, max_value=100, value=60)
                 if min_age > max_age:
-                    st.error("最小年龄不能大于最大年龄")
+                    st.error(t("最小年龄不能大于最大年龄"))
                     st.stop()
 
-                conditions = f"省份: {province}, 性别: {gender}, 年龄: {min_age}-{max_age}岁"
-                st.write("💡 提示: 生成的身份证将严格符合选择的省份、性别和年龄条件")
+                conditions = (
+                    f"{t('省份: {value}', value=t(province))}, "
+                    f"{t('性别: {value}', value=t(gender))}, "
+                    f"{t('年龄: {min}-{max}岁', min=min_age, max=max_age)}"
+                )
+                st.write(t("💡 提示: 生成的身份证将严格符合选择的省份、性别和年龄条件"))
 
-            if st.button("生成身份证", key="gen_id_cards"):
+            if st.button(t("生成身份证"), key="gen_id_cards"):
                 results = []
-                with st.spinner(f"正在生成{count}个身份证号码..."):
+                with st.spinner(t("正在生成{count}个身份证号码...", count=count)):
                     for _ in range(count):
                         id_card = generator.safe_generate(generator.generate_random_id_card,
                                                           province if province != "随机" else random.choice(
@@ -1270,52 +1326,52 @@ if tool_category == "数据生成工具":
                             results.append(id_card)
 
                 result_text = "\n".join(results)
-                display_generated_results(conditions, result_text, "身份证列表")
+                display_generated_results(conditions, result_text, t("身份证列表"))
 
         elif data_gen_tool == "测试场景造数":
-            st.markdown('<div class="category-card">🧩 测试场景造数</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("🧩 测试场景造数"))}</div>', unsafe_allow_html=True)
             scenario_templates = generator.get_test_data_scenarios()
 
             col1, col2 = st.columns([2, 1])
             with col1:
-                selected_scenario = st.selectbox("选择造数场景", list(scenario_templates.keys()))
+                selected_scenario = st.selectbox(t("选择造数场景"), list(scenario_templates.keys()), format_func=t)
                 scenario_meta = scenario_templates[selected_scenario]
-                st.info(scenario_meta["description"])
-                st.caption(f"字段覆盖: {', '.join(scenario_meta['fields'])}")
+                st.info(t(scenario_meta["description"]))
+                st.caption(t("字段覆盖: {fields}", fields=", ".join(t(field) for field in scenario_meta['fields'])))
                 batch_tag = st.text_input(
-                    "批次标识",
+                    t("批次标识"),
                     value=f"qa{datetime.datetime.now().strftime('%m%d')}",
-                    help="会拼接进用户名、员工号、订单号等字段，便于批量清理和回溯。"
+                    help=t("会拼接进用户名、员工号、订单号等字段，便于批量清理和回溯。")
                 )
                 email_domain = st.text_input(
-                    "邮箱域名",
+                    t("邮箱域名"),
                     value="example.com",
-                    help="用于注册账号或员工档案中的邮箱字段。"
+                    help=t("用于注册账号或员工档案中的邮箱字段。")
                 )
 
             with col2:
                 count = st.number_input("生成数量", min_value=1, max_value=200, value=10)
                 scenario_seed_text = st.text_input(
-                    "随机种子",
+                    t("随机种子"),
                     value="",
-                    placeholder="留空则每次生成不同",
-                    help="填写整数后，同一参数组合可复现同一批数据。"
+                    placeholder=t("留空则每次生成不同"),
+                    help=t("填写整数后，同一参数组合可复现同一批数据。")
                 )
-                st.write("💡 使用建议")
-                st.write("- 联调环境建议填写批次标识")
-                st.write("- 回归场景建议补随机种子")
-                st.write("- 结果可直接下载 CSV/JSON")
+                st.write(t("💡 使用建议"))
+                st.write(t("- 联调环境建议填写批次标识"))
+                st.write(t("- 回归场景建议补随机种子"))
+                st.write(t("- 结果可直接下载 CSV/JSON"))
 
             scenario_seed = None
             if scenario_seed_text.strip():
                 try:
                     scenario_seed = int(scenario_seed_text.strip())
                 except ValueError:
-                    st.warning("随机种子需为整数，当前已忽略。")
+                    st.warning(t("随机种子需为整数，当前已忽略。"))
 
             action_col1, action_col2 = st.columns([3, 1])
             with action_col1:
-                if st.button("生成场景数据", key="gen_scenario_dataset", use_container_width=True):
+                if st.button(t("生成场景数据"), key="gen_scenario_dataset", use_container_width=True):
                     dataset = generator.safe_generate(
                         generator.generate_test_dataset,
                         selected_scenario,
@@ -1328,31 +1384,32 @@ if tool_category == "数据生成工具":
                         st.session_state.scenario_dataset_records = dataset
                         st.session_state.scenario_dataset_title = selected_scenario
             with action_col2:
-                if st.button("清空结果", key="clear_scenario_dataset", use_container_width=True):
+                if st.button(t("清空结果"), key="clear_scenario_dataset", use_container_width=True):
                     st.session_state.pop("scenario_dataset_records", None)
                     st.session_state.pop("scenario_dataset_title", None)
                     st.rerun()
 
             if st.session_state.get("scenario_dataset_records"):
                 display_structured_results(
-                    st.session_state.get("scenario_dataset_title", "测试场景数据"),
+                    t(st.session_state.get("scenario_dataset_title", "测试场景数据")),
                     st.session_state["scenario_dataset_records"],
                     "scenario_dataset"
                 )
 
         elif data_gen_tool == "边界值/异常值生成器":
-            st.markdown('<div class="category-card">🧪 边界值/异常值生成器</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="category-card">{th(t("🧪 边界值/异常值生成器"))}</div>', unsafe_allow_html=True)
             boundary_templates = generator.get_boundary_field_templates()
 
             col1, col2 = st.columns([2, 1])
             with col1:
-                selected_field_type = st.selectbox("选择字段类型", list(boundary_templates.keys()))
-                st.info(boundary_templates[selected_field_type]["description"])
+                selected_field_type = st.selectbox(t("选择字段类型"), list(boundary_templates.keys()), format_func=t)
+                st.info(t(boundary_templates[selected_field_type]["description"]))
                 case_types = st.multiselect(
-                    "包含用例类型",
+                    t("包含用例类型"),
                     ["正常值", "边界值", "异常值"],
                     default=["正常值", "边界值", "异常值"],
-                    help="可按需要只生成某类数据，便于接口联调或测试设计。"
+                    help=t("可按需要只生成某类数据，便于接口联调或测试设计。"),
+                    format_func=t,
                 )
 
                 min_length = 2
@@ -1364,42 +1421,42 @@ if tool_category == "数据生成工具":
                 if selected_field_type in ["用户名", "密码"]:
                     length_col1, length_col2 = st.columns(2)
                     with length_col1:
-                        min_length = st.number_input("最小长度", min_value=1, max_value=128, value=2)
+                        min_length = st.number_input(t("最小长度"), min_value=1, max_value=128, value=2)
                     with length_col2:
-                        max_length = st.number_input("最大长度", min_value=min_length, max_value=256, value=20)
+                        max_length = st.number_input(t("最大长度"), min_value=min_length, max_value=256, value=20)
 
                 if selected_field_type == "金额":
                     amount_col1, amount_col2 = st.columns(2)
                     with amount_col1:
-                        amount_min = st.number_input("最小金额", value=0.00, format="%.2f")
+                        amount_min = st.number_input(t("最小金额"), value=0.00, format="%.2f")
                     with amount_col2:
-                        amount_max = st.number_input("最大金额", min_value=float(amount_min), value=99999.99,
+                        amount_max = st.number_input(t("最大金额"), min_value=float(amount_min), value=99999.99,
                                                      format="%.2f")
 
                 if selected_field_type == "邮箱":
-                    boundary_email_domain = st.text_input("邮箱域名", value="example.com")
+                    boundary_email_domain = st.text_input(t("邮箱域名"), value="example.com")
 
             with col2:
                 boundary_seed_text = st.text_input(
-                    "随机种子",
+                    t("随机种子"),
                     value="",
-                    placeholder="留空则每次生成不同"
+                    placeholder=t("留空则每次生成不同")
                 )
-                st.write("📌 适用场景")
-                st.write("- 表单校验测试")
-                st.write("- 接口参数边界值设计")
-                st.write("- 前后端联调异常值验证")
+                st.write(t("📌 适用场景"))
+                st.write(t("- 表单校验测试"))
+                st.write(t("- 接口参数边界值设计"))
+                st.write(t("- 前后端联调异常值验证"))
 
             boundary_seed = None
             if boundary_seed_text.strip():
                 try:
                     boundary_seed = int(boundary_seed_text.strip())
                 except ValueError:
-                    st.warning("随机种子需为整数，当前已忽略。")
+                    st.warning(t("随机种子需为整数，当前已忽略。"))
 
             action_col1, action_col2 = st.columns([3, 1])
             with action_col1:
-                if st.button("生成边界值用例", key="gen_boundary_cases", use_container_width=True):
+                if st.button(t("生成边界值用例"), key="gen_boundary_cases", use_container_width=True):
                     cases = generator.safe_generate(
                         generator.generate_boundary_test_cases,
                         selected_field_type,
@@ -1417,14 +1474,14 @@ if tool_category == "数据生成工具":
                         st.session_state.boundary_case_records = cases
                         st.session_state.boundary_case_title = selected_field_type
             with action_col2:
-                if st.button("清空结果", key="clear_boundary_cases", use_container_width=True):
+                if st.button(t("清空结果"), key="clear_boundary_cases", use_container_width=True):
                     st.session_state.pop("boundary_case_records", None)
                     st.session_state.pop("boundary_case_title", None)
                     st.rerun()
 
             if st.session_state.get("boundary_case_records"):
                 display_structured_results(
-                    f"{st.session_state.get('boundary_case_title', '字段')}边界值",
+                    t("{name}边界值", name=t(st.session_state.get('boundary_case_title', '字段'))),
                     st.session_state["boundary_case_records"],
                     "boundary_cases"
                 )

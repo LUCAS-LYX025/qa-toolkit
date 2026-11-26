@@ -90,11 +90,15 @@ def test_dg08_unknown_sex_is_not_guessed():
 
 
 def test_dg09_generated_html_content_is_escaped():
+    from qa_toolkit.core.i18n import th
+
     app_src = (ROOT / "src/qa_toolkit/streamlit_app.py").read_text(encoding="utf-8")
     snippet = app_src[app_src.index("def display_generated_results"):app_src.index("def display_structured_results")]
     assert "html.escape(str(content))" in snippet
-    assert "html.escape(str(title))" in snippet
-    faker_snippet = app_src[app_src.index("if tool_category == \"数据生成工具\""):]
+    # 标题经 i18n 的 th() 输出：先翻译再转义，安全性不弱于直接 html.escape
+    assert 'th(t("📋 生成结果 - {title}", title=title))' in snippet
+    assert th("<script>alert(1)</script>") == "&lt;script&gt;alert(1)&lt;/script&gt;"
+    faker_snippet = app_src[app_src.index('if tool_category == "数据生成工具"'):]
     assert "html.escape(str(st.session_state.faker_result))" in faker_snippet
 
 
