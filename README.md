@@ -6,7 +6,7 @@
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="Streamlit" src="https://img.shields.io/badge/Streamlit-1.50-FF4B4B?logo=streamlit&logoColor=white">
   <img alt="tools" src="https://img.shields.io/badge/tools-17-4CAF50">
-  <img alt="tests" src="https://img.shields.io/badge/tests-31%20files-blue">
+  <img alt="tests" src="https://img.shields.io/badge/tests-60%20files-blue">
 </p>
 
 ![QA Toolkit 首页](assets/images/screenshots/01_home.png)
@@ -118,7 +118,7 @@ QA Toolkit 把这些活收进一个 Streamlit 应用里。启动一次，左边�
 
 > 手动选择 > 浏览器记住的偏好 > IP / 浏览器自动定位 > 默认简体中文
 
-主界面、工具切换器、数据生成、反馈条、作者侧栏和通用组件已全量翻译（每种语言约 300 条词条）。其余工具页暂时没覆盖的中文文案会**自动回退原文**，所以新增页面不必先补齐四种语言。
+主界面、工具切换器、各工具页、文档详情、反馈条、作者侧栏和通用组件已全量翻译：英文约 1900 条、韩文约 1900 条、繁中约 4100 条词条。这些词库同时覆盖界面文案、运行态提示（含错误提示的动作名与原因）和整篇工具文档。个别工具页暂时没覆盖的中文文案会**自动回退原文**，所以新增页面不必先补齐四种语言。
 
 想补翻译或加语言，不用改主入口：
 
@@ -185,6 +185,63 @@ sudo apt install tesseract-ocr tesseract-ocr-chi-sim
 
 **数据生成工具** 造一批场景数据（建议填随机种子，回归时可复现）→ **接口研发辅助** 生成 Mock 服务和调试代码 → 需要处理请求参数就用 **JSON 处理** 或 **加密/解密**。
 
+## 验收工作流与人工签字
+
+工具跑出结果只是一半，另一半是判断「这结果能不能交付」。每个工具页的 **📚 运行记录** 里都接了一套验收面板：机器先按标准逐条检查，人再对语义项签字确认，全过程留痕可追溯。
+
+这套流程借了 SoduWork 的一个设计思路：**做什么**（工作流）、**谁来做**（工具 + 当次输入）、**算不算完成**（验收证据）三者分开。工作流是可复用的方法定义，不绑具体公司、模型、密钥；每次运行是一条独立记录，携带自己的验收报告和签字。
+
+### 怎么用
+
+1. 在任意工具里跑一次，产出结果
+2. 打开 **📚 运行记录**，找到这次运行，展开详情
+3. 在「验收与签字」区选一条工作流（默认会选中当前工具的专属工作流）
+4. 点 **运行验收**，看逐条证据：✓ 通过 / × 未通过 / ◔ 待人工确认，每条都带判定依据
+5. 任务执行成功、且机器可判定项全部通过后，填签字人和说明，点 **签字确认交付**
+6. 需要反悔时点 **撤销签字**——撤销后审计记录仍保留
+
+签字门槛是刻意设的：**任务成功 + 有验收报告 + 机器项全过**才允许签。语义类项目（比如「用例是否覆盖验收标准」）机器不假装判定，标成「人工确认」，由签字人明确承担确认责任。
+
+### 内置的四条工作流
+
+| 工作流 | 适用 | 检查重点 |
+| --- | --- | --- |
+| 通用交付验收 | 任意工具 | 结果非空、无占位符、无明文凭据 |
+| 测试用例交付验收 | 测试用例生成器 | 章节齐全、内容完整度、无占位符/凭据 + 人工确认覆盖度 |
+| 结构化数据验收 | JSON / 结构化结果 | JSON 可解析、无占位符、无凭据 |
+| 接口用例交付验收 | 接口自动化测试 | 含请求/断言信息、敏感字段脱敏 + 人工确认 |
+
+### 机器检查器
+
+验收标准由 10 个确定性检查器支撑，结果可复现：`non_empty`（非空）、`min_chars`/`max_chars`（长度）、`contains_all`/`contains_any`/`not_contains`（关键词）、`no_placeholder`（占位符）、`no_secret`（明文凭据）、`json_parseable`（JSON 可解析）、`manual`（人工确认）。每条报告都带产物指纹（结果文本的 SHA-256 前 16 位），确保验收的是当时那份产物。
+
+### 审计留痕
+
+每次验收、签字、撤销都会写一条事件到 `workspace/reports/task_runs/<命名空间>.jsonl`，记录时间、操作、签字人和说明。运行记录本身也带验收报告、签字时间和结果指纹，方便回溯「当时到底交付了什么、谁确认的」。
+
+### 接入自定义工作流
+
+不用改页面代码，注册一条新工作流即可（同名覆盖要显式 `replace=True`）：
+
+```python
+from qa_toolkit.core.workflow_registry import WorkflowSpec, CriterionSpec, register_workflow
+
+register_workflow(WorkflowSpec(
+    key="my_team_delivery",
+    name="我的团队交付验收",
+    tool="数据生成工具",          # 留空表示通用，可套用到任意工具
+    steps=("生成结果", "独立校验", "负责人签字"),
+    criteria=(
+        CriterionSpec("non_empty", "结果非空", "non_empty"),
+        CriterionSpec("must_include", "含关键字段", "contains_all", expected=["姓名", "手机号"]),
+        CriterionSpec("review", "业务规则确认", "manual"),
+    ),
+    source="my-team",
+))
+```
+
+`check` 字段必须是上面 10 个检查器之一；`manual` 类型由签字人确认，不参与机器门槛。详细验收字段和更多例子见 [MANUAL.md](MANUAL.md) 第 11 节。
+
 ## 关于 AI 部分
 
 测试用例生成器支持四家模型，都需要你自己的 API Key：
@@ -247,15 +304,19 @@ include_pdf = false
 ├── src/qa_toolkit/
 │   ├── streamlit_app.py         # 主应用逻辑
 │   ├── config/                  # 工具路由、常量、图标资源
-│   ├── core/                    # 接口自动化/性能/安全等核心能力
+│   ├── core/                    # 接口自动化/性能/安全、i18n、验收与审计等核心能力
+│   │   ├── workflow_registry.py #   工作流与验收标准注册中心
+│   │   ├── verification.py      #   10 个确定性检查器与验收报告
+│   │   └── task_runner.py       #   运行记录、验收挂载、人工签字、JSONL 审计
 │   ├── tools/                   # 数据生成、用例生成、IP 查询等工具模块
 │   ├── ui/pages/                # 每个工具一个页面模块
+│   ├── ui/components/           # 验收面板、状态反馈、任务运行面板等通用组件
 │   ├── integrations/            # 禅道导出与代理
 │   ├── reporting/               # 报告生成、执行封装、MobSF PDF
 │   └── utils/                   # 日志、时间、图片、JSON 等通用工具
 ├── assets/images/screenshots/   # 工具截图
 ├── examples/                    # 接口文档模板、示例用例、示例脚本
-├── tests/                       # 31 个测试文件
+├── tests/                       # 60 个测试文件
 ├── workspace/                   # 运行期产物（uploads / reports / api_cases）
 ├── MANUAL.md                    # 完整操作手册（每个工具的使用细节）
 ├── packages.txt                 # Cloud 系统依赖
@@ -269,7 +330,7 @@ pytest                            # 跑全部
 pytest tests/test_data_generator.py -v    # 跑单个模块
 ```
 
-`tests/` 下 50+ 个文件，覆盖核心逻辑（数据生成、接口核心、安全工具、缺陷数据源适配）和页面冒烟（各工具页面能否正常渲染、工具路由是否可达）。
+`tests/` 下 60 个文件、720+ 条用例，覆盖核心逻辑（数据生成、接口核心、安全工具、缺陷数据源适配、验收与签字）、页面冒烟（各工具页面能否正常渲染、工具路由是否可达、数据生成页全子工具切换）、多语言（错误提示三语、默认语言空转）与错误提示可操作性。浏览器端的端到端回归在 `~/e2e-lab/qatoolkit/`（20 个用例文件，覆盖全部工具页）。
 
 ## 文档
 
@@ -289,8 +350,4 @@ pytest tests/test_data_generator.py -v    # 跑单个模块
 - **缺陷绩效分析建议先在数据库备份或影子库验证**，统计口径建议结合项目背景解读。
 - 仓库目前未声明开源协议，如需商用请先联系作者。
 
-## 已知可以更好的地方
-
-- 页面逻辑还有一部分集中在 `src/qa_toolkit/streamlit_app.py`，后续可以继续往 `ui/pages/` 拆
-- `.npm-cache/` 目录曾被误提交（294 个文件），不影响运行，但会让仓库变大，后续会清理
-- 部分工具的错误提示还比较粗，遇到问题欢迎提 issue 带上复现步骤
+遇到问题欢迎提 issue，带上复现步骤和当前界面语言。
