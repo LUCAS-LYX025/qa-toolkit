@@ -19,3 +19,4 @@ workspace/mobsf_profile.local.json
 .streamlit/secrets.toml
 
 .qa-audit/
+.npm-cache/

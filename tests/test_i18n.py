@@ -161,7 +161,7 @@ def test_catalog_placeholders_match_source():
 
 def test_route_keys_stay_chinese_after_localization():
     # 语言切换只改显示名，路由键和 session_state 值保持不变。
-    assert "数据生成工具" in INLINE_TOOL_CATEGORIES
+    assert "数据生成工具" in PAGE_TOOL_CONFIG
     assert "数据生成工具" in TOOL_CATEGORIES
     assert "正则测试工具" in PAGE_TOOL_CONFIG
     assert all(isinstance(key, str) for key in PAGE_TOOL_CONFIG)
@@ -242,7 +242,7 @@ def _load_copy_button_function(overrides=None):
     import html as html_module
 
     source = (
-        Path(__file__).resolve().parents[1] / "src" / "qa_toolkit" / "streamlit_app.py"
+        Path(__file__).resolve().parents[1] / "src" / "qa_toolkit" / "ui" / "pages" / "data_generator_page.py"
     ).read_text(encoding="utf-8")
     tree = ast.parse(source)
     wanted = {"escape_js_string", "create_copy_button"}

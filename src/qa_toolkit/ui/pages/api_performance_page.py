@@ -16,6 +16,7 @@ from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter, make_setter
+from qa_toolkit.ui.components.status_feedback import render_action_error
 from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
@@ -2109,7 +2110,7 @@ def _render_csv_panel():
                 preview_text = _decode_csv_bytes(upload_file.getvalue())
             except ValueError as exc:
                 preview_text = ""
-                st.error(str(exc))
+                render_action_error("读取上传的 CSV 文件", exc)
         if preview_text.strip():
             st.text_area("Preview", "\n".join(preview_text.strip().splitlines()[:5]), height=140, disabled=True)
 

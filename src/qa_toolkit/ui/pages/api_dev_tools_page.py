@@ -17,6 +17,7 @@ from qa_toolkit.core.i18n import t
 from qa_toolkit.core.api_dev_tools import InterfaceDevTools
 from qa_toolkit.core.api_test_core import InterfaceAutoTestCore
 from qa_toolkit.support.documentation import show_doc
+from qa_toolkit.ui.components.status_feedback import render_action_error
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
 
 
@@ -477,7 +478,7 @@ def render_api_dev_tools_page() -> None:
                 _mark_result_current("normalize")
                 st.success(f"✅ 已标准化整理 {len(interfaces)} 个接口")
             except Exception as exc:
-                st.error(f"❌ 生成失败: {exc}")
+                render_action_error("生成标准化清单", exc)
 
         normalize_result = st.session_state.get("interface_dev_normalize_result")
         if normalize_result:
@@ -566,7 +567,7 @@ def render_api_dev_tools_page() -> None:
                 _mark_result_current("checklist")
                 st.success("✅ 回归清单已生成")
             except Exception as exc:
-                st.error(f"❌ 生成失败: {exc}")
+                render_action_error("生成回归清单", exc)
 
         checklist_result = st.session_state.get("interface_dev_checklist_result")
         if checklist_result:
@@ -909,7 +910,7 @@ def render_api_dev_tools_page() -> None:
                 _mark_result_current("assertion")
                 st.success("✅ 断言模板已生成")
             except Exception as exc:
-                st.error(f"❌ 生成失败: {exc}")
+                render_action_error("生成断言模板", exc)
 
         assertion_result = st.session_state.get("interface_dev_assertion_result")
         if assertion_result:
@@ -980,7 +981,7 @@ def render_api_dev_tools_page() -> None:
                 _mark_result_current("mock")
                 st.success(f"✅ 已根据 {len(interfaces)} 个接口生成 Mock 服务脚本")
             except Exception as exc:
-                st.error(f"❌ 生成失败: {exc}")
+                render_action_error("生成 Mock 服务脚本", exc)
 
         mock_script = st.session_state.get("interface_dev_mock_script")
         if mock_script:
