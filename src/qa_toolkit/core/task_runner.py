@@ -81,6 +81,13 @@ class RunRecord:
     error: str = ""
     cancel_requested: bool = False
     logs: List[str] = field(default_factory=list)
+    # 验收驱动工作流：结果为证据，verification 为独立校验报告，签名为人工确认。
+    result_digest: str = ""
+    result_preview: str = ""
+    verification: Dict[str, Any] = field(default_factory=dict)
+    signed_off_at: str = ""
+    signed_off_by: str = ""
+    sign_off_note: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -244,7 +251,11 @@ class TaskRunCenter:
         self.mark_running(run_id)
         try:
             result = self._invoke_executor(executor, lambda message: self.append_log(run_id, message))
-            if self._get_record(run_id).cancel_requested:
+            result_text = _stable_payload_text(result)
+            record = self._get_record(run_id)
+            record.result_digest = hashlib.sha256(result_text.encode("utf-8")).hexdigest()[:16]
+            record.result_preview = result_text if len(result_text) <= 2000 else f"{result_text[:2000]}..."
+            if record.cancel_requested:
                 self.mark_canceled(run_id, "任务在执行过程中收到取消请求。")
                 return result
             self.mark_success(run_id, _summarize_result(result))
@@ -278,6 +289,45 @@ class TaskRunCenter:
             executor=executor,
             retry_of=record.run_id,
         )
+
+    def attach_verification(self, run_id: str, report: Dict[str, Any]) -> None:
+        """把一次独立校验报告附到运行记录，并写入审计日志。"""
+        record = self._get_record(run_id)
+        record.verification = dict(report or {})
+        passed = bool(record.verification.get("automated_passed", False))
+        self.append_log(run_id, f"验收校验完成：{'通过' if passed else '未通过'}")
+        self._persist_event("verification", record)
+
+    def sign_off(self, run_id: str, *, by: str = "", note: str = "") -> bool:
+        """人工签字确认交付。
+
+        门槛：任务成功 + 附了验收报告 + 机器可判定项全部通过。
+        语义类（manual）项目不阻止签字，由签字人明确承担确认责任。
+        """
+        record = self._get_record(run_id)
+        if record.status != RUN_STATUS_SUCCESS:
+            return False
+        verification = record.verification or {}
+        if not verification or not verification.get("automated_passed", False):
+            return False
+        record.signed_off_at = _utc_now_iso()
+        record.signed_off_by = str(by or "本机用户").strip() or "本机用户"
+        record.sign_off_note = str(note or "")[:500]
+        self.append_log(run_id, f"验收签字：{record.signed_off_by} 确认交付")
+        self._persist_event("sign_off", record)
+        return True
+
+    def revoke_sign_off(self, run_id: str) -> bool:
+        """撤销签字；撤销后仍保留审计事件与验收报告。"""
+        record = self._get_record(run_id)
+        if not record.signed_off_at:
+            return False
+        record.signed_off_at = ""
+        record.signed_off_by = ""
+        record.sign_off_note = ""
+        self.append_log(run_id, "验收签字已撤销。")
+        self._persist_event("sign_off_revoked", record)
+        return True
 
     def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         record = self._records.get(run_id)
