@@ -37,6 +37,12 @@ _LOCALES: Dict[str, LocaleSpec] = {}
 _CATALOGS: Dict[str, Dict[str, str]] = {}
 _TOOL_DOCS: Dict[str, Dict[str, Dict[str, str]]] = {}
 
+# t() 是热路径：一次页面 rerun 会调用数百次。早期实现每次都 dict() 复制整份
+# 词库（zh-TW 约 4000 条）与 fallback，纯复制就占单次调用 70% 时间。这里按
+# 「目录版本」缓存不可变快照；注册新词时版本号自增，旧快照自动失效。
+_CATALOG_VERSION = 0
+_SNAPSHOT_CACHE: Dict[tuple, tuple] = {}
+
 
 def register_locale(spec: LocaleSpec, replace: bool = False) -> None:
     """注册界面语言；默认拒绝静默覆盖内置语言。"""
@@ -82,6 +88,7 @@ def register_translations(locale: str, translations: Mapping[str, str], replace:
     code = normalize_locale(locale)
     if code is None:
         raise ValueError(f"unsupported locale: {locale}")
+    global _CATALOG_VERSION
     with _LOCK:
         catalog = _CATALOGS.setdefault(code, {})
         for source, target in translations.items():
@@ -90,11 +97,33 @@ def register_translations(locale: str, translations: Mapping[str, str], replace:
             if source in catalog and not replace:
                 raise ValueError(f"translation already registered: {code}:{source}")
             catalog[source] = target
+        # 目录内容变了，让 t() 的快照缓存失效（下一个 key 自然命中新版本）。
+        _CATALOG_VERSION += 1
+        _SNAPSHOT_CACHE.clear()
 
 
 def get_catalog(locale: str) -> Dict[str, str]:
     with _LOCK:
         return dict(_CATALOGS.get(locale, {}))
+
+
+def _catalog_views(code: str) -> tuple:
+    """返回 (当前语言目录, fallback 目录) 的只读引用，带版本化缓存。
+
+    t() 只做键查找，不修改目录；直接返回内部引用即可，省去每次复制。
+    调用方必须在 _LOCK 内使用返回的引用完成查找。
+    """
+    key = (code, _CATALOG_VERSION)
+    views = _SNAPSHOT_CACHE.get(key)
+    if views is None:
+        spec = _LOCALES.get(code)
+        fallback_code = spec.fallback if spec else None
+        views = (
+            _CATALOGS.get(code, {}),
+            _CATALOGS.get(fallback_code, {}) if fallback_code else {},
+        )
+        _SNAPSHOT_CACHE[key] = views
+    return views
 
 
 def register_tool_doc(
@@ -174,12 +203,8 @@ def t(source: str, *, locale: Optional[str] = None, **kwargs: object) -> str:
     code = code or DEFAULT_LOCALE
 
     with _LOCK:
-        catalog = dict(_CATALOGS.get(code, {}))
-        fallback = get_locale_spec(code)
-        fallback_code = fallback.fallback if fallback else None
-        fallback_catalog = dict(_CATALOGS.get(fallback_code, {})) if fallback_code else {}
-
-    text = catalog.get(source, fallback_catalog.get(source, source))
+        catalog, fallback_catalog = _catalog_views(code)
+        text = catalog.get(source, fallback_catalog.get(source, source))
     if kwargs:
         try:
             return text.format(**kwargs)

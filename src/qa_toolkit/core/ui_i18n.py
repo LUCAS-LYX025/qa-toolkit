@@ -18,10 +18,24 @@ import re
 
 import streamlit as st
 
+from qa_toolkit.core import i18n
 from qa_toolkit.core.i18n import t
 
 _CJK = re.compile(r"[\u4e00-\u9fff]")
 _INSTALLED = False
+
+
+def _translation_active() -> bool:
+    """当前界面是否需要翻译。
+
+    默认语言（简体中文）的目录为空，原文即译文，翻译层在这个语言下完全是空转：
+    一次 rerun 数百次 t() 调用加逐行正则解析却没有任何产出。这里一次性判断，
+    中文界面直接放行，省掉整条热路径。
+    """
+    try:
+        return i18n._runtime_locale() != i18n.DEFAULT_LOCALE
+    except Exception:
+        return True
 
 # 需要整体跳过翻译的块
 _RAW_BLOCK = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.S | re.I)
@@ -48,7 +62,7 @@ def translate_text(value):
     ``"使用说明："``、``" 确定 "``。这里先按去空白后的核心文本查词条，命中后
     再把原有空白和尾标点补回去，避免因为一个冒号就回退中文。
     """
-    if not isinstance(value, str) or not _has_cjk(value):
+    if not isinstance(value, str) or not _translation_active() or not _has_cjk(value):
         return value
     core = value.strip()
     if not core:
@@ -99,7 +113,7 @@ def _translate_line(line: str) -> str:
 
 def translate_markup(text: str) -> str:
     """翻译 Markdown / HTML 文本节点，保留结构与代码块。"""
-    if not isinstance(text, str) or not _has_cjk(text):
+    if not isinstance(text, str) or not _translation_active() or not _has_cjk(text):
         return text
     # <style> / <script> 整体保护
     protected: dict[str, str] = {}

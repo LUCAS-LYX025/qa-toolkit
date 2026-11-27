@@ -6,6 +6,7 @@ import os
 import pytest
 
 from qa_toolkit.core import i18n
+from qa_toolkit.core import ui_i18n
 from qa_toolkit.core.ui_i18n import translate_markup, translate_text
 
 
@@ -93,3 +94,15 @@ def test_option_wrapper_preserves_internal_values(english):
     assert captured["options"] == ["确定", "取消"]
     assert value == "确定"
     assert captured["format_func"]("确定") == "OK"
+
+
+def test_default_locale_is_passthrough(monkeypatch):
+    """默认语言下翻译层是空转：有中文也不应调用 t()，整段原样返回。"""
+    monkeypatch.setattr(i18n, "_runtime_locale", lambda: i18n.DEFAULT_LOCALE)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("default locale must not call t()")
+
+    monkeypatch.setattr(ui_i18n, "t", boom)
+    assert translate_text("界面语言：开始分析") == "界面语言：开始分析"
+    assert translate_markup("<div>界面语言</div>`开始分析`") == "<div>界面语言</div>`开始分析`"
