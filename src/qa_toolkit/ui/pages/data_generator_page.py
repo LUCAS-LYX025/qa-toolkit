@@ -22,6 +22,7 @@ from qa_toolkit.config.constants import (
     PASSWORD_OPTIONS,
     PROVINCE_CITY_AREA_CODES,
     PROVINCE_MAP,
+    PROVINCES,
     RANDOM_STRING_TYPES,
 )
 from qa_toolkit.core.data_generator_registry import get_locales, get_registry_summary
@@ -423,8 +424,9 @@ def render_data_generator_page() -> None:
                     display_generated_results(conditions, result_text, t("邮箱列表"))
             elif data_gen_tool == "电话号码生成器":
                 st.markdown(f'<div class="category-card">{th(t("📞 电话号码生成器"))}</div>', unsafe_allow_html=True)
-                # 确保PROVINCES是列表类型
-                PROVINCES = list(PROVINCE_CITY_AREA_CODES.keys())
+                # 电话号码分支需要一个「省份 key 列表」，与全局 PROVINCES（dict）区分，
+                # 避免函数内把 PROVINCES 判定为局部变量导致地址/身份证分支 UnboundLocalError。
+                province_list = list(PROVINCE_CITY_AREA_CODES.keys())
 
 
                 def get_cities_by_province(province):
@@ -453,8 +455,7 @@ def render_data_generator_page() -> None:
                     elif phone_type == "手机号":
                         operator = st.selectbox(t("运营商"), ["随机", "移动", "联通", "电信", "广电"], format_func=t)
                     elif phone_type == "座机":
-                        # 使用本地定义的 PROVINCES - 确保是列表
-                        province_options = ["随机"] + PROVINCES
+                        province_options = ["随机"] + province_list
                         province = st.selectbox(t("选择省份"), province_options, format_func=t)
 
                         if province and province != "随机":

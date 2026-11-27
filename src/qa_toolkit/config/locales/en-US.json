@@ -1854,7 +1854,26 @@
         "通用交付验收": "General delivery acceptance",
         "测试用例交付验收": "Test case delivery acceptance",
         "结构化数据验收": "Structured data acceptance",
-        "接口用例交付验收": "API case delivery acceptance"
+        "接口用例交付验收": "API case delivery acceptance",
+        "输入不是合法 JSON，请检查括号、逗号与引号后重试。": "Invalid JSON input. Check brackets, commas and quotes, then retry.",
+        "输入内容不符合要求，请核对配置项后重试。": "The input does not meet the requirements. Check the configuration and retry.",
+        "缺少必需的字段，请对照示例补齐后再执行。": "A required field is missing. Refer to the example and fill it in before continuing.",
+        "参数类型不匹配，请检查输入格式。": "Parameter type mismatch. Check the input format.",
+        "找不到指定的文件，请确认路径或重新上传。": "The specified file was not found. Check the path or upload it again.",
+        "没有访问权限，请检查文件或目录权限。": "Access denied. Check the file or directory permissions.",
+        "请求超时，请稍后重试或检查网络连接。": "Request timed out. Retry later or check the network connection.",
+        "网络连接失败，请检查地址与网络后重试。": "Network connection failed. Check the address and network, then retry.",
+        "操作未能完成，请检查输入与配置后重试。": "The operation could not be completed. Check the input and configuration, then retry.",
+        "{action}失败。": "{action} failed. ",
+        "操作失败。": "Operation failed. ",
+        "生成标准化清单": "Generate standardization checklist",
+        "生成回归清单": "Generate regression checklist",
+        "生成断言模板": "Generate assertion template",
+        "生成 Mock 服务脚本": "Generate mock service script",
+        "解析鉴权头配置": "Parse auth header configuration",
+        "解析角色配置": "Parse role configuration",
+        "解析站点扫描请求头": "Parse site scan request headers",
+        "读取上传的 CSV 文件": "Read the uploaded CSV file"
     },
     "tool_docs": {
         "data_generator": {

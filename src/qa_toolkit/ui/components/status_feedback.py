@@ -5,6 +5,8 @@ import json
 
 import streamlit as st
 
+from qa_toolkit.core.i18n import t
+
 
 STATUS_META = {
     "success": {
@@ -168,12 +170,13 @@ def format_exception_hint(exc: BaseException, action: str = "") -> str:
     hint = ""
     for exc_type, template in _EXCEPTION_HINTS:
         if isinstance(exc, exc_type):
-            hint = template
+            hint = t(template)
             break
     if not hint:
-        hint = "操作未能完成，请检查输入与配置后重试。"
+        hint = t("操作未能完成，请检查输入与配置后重试。")
 
-    prefix = f"{action}失败。" if action else "操作失败。"
+    # 动作名与前缀分别翻译，避免整句拼接后无法命中词库；未命中时 t() 回退中文原文。
+    prefix = t("{action}失败。", action=t(action)) if action else t("操作失败。")
     if not message:
         return prefix + hint
     # 异常原文可能很长或含换行，压成单行，避免撑破提示卡片。
