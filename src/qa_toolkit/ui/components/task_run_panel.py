@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 
 from qa_toolkit.core.task_runner import TaskRunCenter
+from qa_toolkit.ui.components.acceptance_panel import render_run_acceptance
 
 
 def _build_table_rows(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -75,3 +76,10 @@ def render_task_run_panel(
             st.code("\n".join(logs[-40:]), language="text")
         else:
             st.caption("该任务暂无日志。")
+
+        render_run_acceptance(
+            run_center,
+            run_detail,
+            panel_key=panel_key,
+            tool=tool_name,
+        )
