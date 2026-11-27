@@ -20,6 +20,7 @@ from qa_toolkit.core.task_runner import get_session_task_runner
 from qa_toolkit.reporting.mobsf_pdf_report import build_mobsf_chinese_pdf
 from qa_toolkit.ui.components.env_profile_panel import render_env_profile_panel
 from qa_toolkit.ui.components.session_state_bridge import make_multi_setter
+from qa_toolkit.ui.components.status_feedback import render_action_error
 from qa_toolkit.ui.components.task_run_panel import render_task_run_panel
 from qa_toolkit.ui.components.tool_page_shell import render_tool_page_hero, render_tool_tips
 from qa_toolkit.ui.components.workflow_panels import render_download_panel, render_workflow_guide
@@ -1084,12 +1085,12 @@ def _render_action_bar(tool: SecurityTestTool, interfaces: List[Dict[str, Any]])
     try:
         auth_headers = _parse_auth_headers(st.session_state.get("api_sec_auth_headers_text", "{}"))
     except ValueError as exc:
-        st.error(str(exc))
+        render_action_error("解析鉴权头配置", exc)
         auth_headers = None
     try:
         role_profiles = _parse_role_profiles(st.session_state.get("api_sec_role_profiles_text", ""))
     except ValueError as exc:
-        st.error(str(exc))
+        render_action_error("解析角色配置", exc)
         role_profiles = None
 
     limits = sec_registry.get_security_limits()
@@ -3233,7 +3234,7 @@ def _render_web_security_tab(app_tool: ApplicationSecurityTool, run_center):
             try:
                 request_headers = _parse_json_object(st.session_state.get("app_sec_web_headers_text", "{}"), "请求头")
             except ValueError as exc:
-                st.error(str(exc))
+                render_action_error("解析站点扫描请求头", exc)
                 request_headers = None
             if request_headers is not None:
                 target_url = str(st.session_state.get("app_sec_web_url", "") or "").strip()

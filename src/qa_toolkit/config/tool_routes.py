@@ -3,12 +3,15 @@ from __future__ import annotations
 from typing import Dict, Set
 
 
-INLINE_TOOL_CATEGORIES: Set[str] = {
-    "数据生成工具",
-}
+INLINE_TOOL_CATEGORIES: Set[str] = set()
 
 
 PAGE_TOOL_CONFIG: Dict[str, Dict[str, str]] = {
+    "数据生成工具": {
+        "module_path": "qa_toolkit.ui.pages.data_generator_page",
+        "function_name": "render_data_generator_page",
+        "page_label": "数据生成页面",
+    },
     "JSON处理工具": {
         "module_path": "qa_toolkit.ui.pages.json_tools_page",
         "function_name": "render_json_tools_page",
