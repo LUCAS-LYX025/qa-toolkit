@@ -3,7 +3,8 @@
 页面里大量 ``st.button("开始分析")`` 这类调用没有显式走翻译函数。这里在入口处
 一次性包装常用的渲染 API，对「显示文本」做翻译，但**不改变控件返回值**：
 
-- 按钮 / 标题 / 提示 / caption / expander / metric 的 label 直接翻译；
+- 按钮 / 标题 / 提示 / caption / expander 的文本、metric 的 label 直接翻译；
+- metric 的 value 只翻词库里整词命中的状态词（数字/百分比/文件名保持原样）；
 - selectbox / radio / multiselect 只加 ``format_func``，选项内部值仍是中文，
   页面里的 ``if value == "中文"`` 逻辑不受影响；
 - markdown / HTML 只翻译文本节点，保留标签、属性、代码块、URL、Markdown 标记。
@@ -160,6 +161,70 @@ def _wrap_text(func):
     return wrapper
 
 
+def _translate_metric_value(value):
+    """只翻译 metric 的 value 中「词库里整词命中的中文状态词」。
+
+    ``st.metric("来源", "未导入")`` 的 value 是状态词，切语言后必须跟着翻；
+    但 value 更多时候是数字、百分比、文件名或 URL（如 ``"3.5/5"``、
+    ``"report.json"``、``image.mode``），套用 label 那套 ``translate_text``
+    会把其中的中文片段一并翻掉，反而误伤。这里只在词库里**整词命中**时才
+    替换，命中不到就原样返回，保守但不会破坏数值类展示。
+    """
+    if not isinstance(value, str) or not _translation_active() or not _has_cjk(value):
+        return value
+    core = value.strip()
+    if not core:
+        return value
+    translated = t(core)
+    if translated == core:
+        return value
+    leading = value[: len(value) - len(value.lstrip())]
+    trailing = value[len(value.rstrip()):]
+    return leading + translated + trailing
+
+
+def _wrap_metric(func):
+    """metric(label, value, ...) —— label 正常翻译，value 只翻命中词条的状态词。"""
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        args = list(args)
+        if args and isinstance(args[0], str):
+            args[0] = translate_text(args[0])
+        elif isinstance(kwargs.get("label"), str):
+            kwargs["label"] = translate_text(kwargs["label"])
+        if len(args) >= 2:
+            args[1] = _translate_metric_value(args[1])
+        elif isinstance(kwargs.get("value"), str):
+            kwargs["value"] = _translate_metric_value(kwargs["value"])
+        if isinstance(kwargs.get("help"), str):
+            kwargs["help"] = translate_text(kwargs["help"])
+        return func(*tuple(args), **kwargs)
+
+    return wrapper
+
+
+def _wrap_dg_metric(func):
+    """DeltaGenerator.metric 的同款包装（``col.metric(...)``）。"""
+
+    @functools.wraps(func)
+    def wrapper(self, *args, **kwargs):
+        args = list(args)
+        if args and isinstance(args[0], str):
+            args[0] = translate_text(args[0])
+        elif isinstance(kwargs.get("label"), str):
+            kwargs["label"] = translate_text(kwargs["label"])
+        if len(args) >= 2:
+            args[1] = _translate_metric_value(args[1])
+        elif isinstance(kwargs.get("value"), str):
+            kwargs["value"] = _translate_metric_value(kwargs["value"])
+        if isinstance(kwargs.get("help"), str):
+            kwargs["help"] = translate_text(kwargs["help"])
+        return func(self, *tuple(args), **kwargs)
+
+    return wrapper
+
+
 def _wrap_markup(func):
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
@@ -303,7 +368,7 @@ def install_streamlit_i18n() -> None:
     text_methods = (
         "button", "download_button", "form_submit_button", "checkbox", "toggle",
         "expander", "popover", "caption", "write", "subheader", "header", "title",
-        "info", "warning", "error", "success", "toast", "metric",
+        "info", "warning", "error", "success", "toast",
         "text_input", "text_area", "number_input", "date_input", "time_input",
         "file_uploader", "color_picker", "slider",
     )
@@ -322,6 +387,8 @@ def install_streamlit_i18n() -> None:
             DeltaGenerator.markdown = _wrap_dg_markup(DeltaGenerator.markdown)
         if callable(getattr(DeltaGenerator, "tabs", None)):
             DeltaGenerator.tabs = _wrap_dg_tabs(DeltaGenerator.tabs)
+        if callable(getattr(DeltaGenerator, "metric", None)):
+            DeltaGenerator.metric = _wrap_dg_metric(DeltaGenerator.metric)
 
     # 模块级别名（st.button 等）也保留包装，覆盖直接调用模块函数的写法。
     for name in text_methods:
@@ -336,3 +403,5 @@ def install_streamlit_i18n() -> None:
         st.markdown = _wrap_markup(st.markdown)
     if callable(getattr(st, "tabs", None)):
         st.tabs = _wrap_tabs(st.tabs)
+    if callable(getattr(st, "metric", None)):
+        st.metric = _wrap_metric(st.metric)
