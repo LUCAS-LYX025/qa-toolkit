@@ -60,3 +60,20 @@ def test_multiline_message_is_collapsed():
 def test_no_action_uses_generic_prefix():
     hint = format_exception_hint(ValueError("x"))
     assert hint.startswith("操作失败。")
+
+
+@pytest.mark.parametrize(
+    "locale, expected_action, expected_hint",
+    [
+        ("en-US", "Generate standardization checklist failed.", "does not meet the requirements"),
+        ("ko-KR", "표준화 체크리스트 생성 실패.", "요구 사항을 충족하지 않습니다"),
+        ("zh-CN", "生成标准化清单失败。", "输入内容不符合要求"),
+    ],
+)
+def test_hint_translated_in_all_locales(monkeypatch, locale, expected_action, expected_hint):
+    """错误提示的 hint 与动作名必须跟随语言，不能在中英文界面残留中文。"""
+    monkeypatch.setenv("QA_TOOLKIT_LOCALE", locale)
+    hint = format_exception_hint(ValueError("bad input"), "生成标准化清单")
+    assert expected_action in hint
+    assert expected_hint in hint
+    assert "bad input" in hint  # 原始异常消息保留，便于反馈

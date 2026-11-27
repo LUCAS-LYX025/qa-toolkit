@@ -141,6 +141,33 @@ def test_dg11_locale_is_selectable_on_page():
     assert any("注册式扩展" in getattr(item, "value", "") for item in app.caption)
 
 
+@pytest.mark.parametrize(
+    "subtool",
+    [
+        "随机内容生成器", "随机邮箱生成器", "电话号码生成器",
+        "随机地址生成器", "随机身份证生成器", "测试场景造数", "边界值/异常值生成器",
+    ],
+)
+def test_dg14_every_subtool_switches_without_exception(subtool):
+    """拆分到独立页面后，逐个切换基础生成器子工具不得崩溃。
+
+    曾因电话号码分支把模块级 PROVINCES 重赋值为 list，搬进函数后
+    令 PROVINCES 成为局部变量，导致地址/身份证分支 UnboundLocalError。
+    """
+    app = AppTest.from_file(str(ROOT / "src/qa_toolkit/streamlit_app.py"), default_timeout=30)
+    app.session_state["selected_tool"] = "数据生成工具"
+    app.run()
+    for radio in app.radio:
+        if "生成模式" in radio.label:
+            radio.set_value("基础数据生成器").run()
+            break
+    for radio in app.radio:
+        if "生成工具" in radio.label:
+            radio.set_value(subtool).run()
+            break
+    assert not app.exception, [item.value for item in app.exception]
+
+
 def test_dg13_navigation_bridge_retries_hidden_trigger():
     app_src = (ROOT / "src/qa_toolkit/streamlit_app.py").read_text(encoding="utf-8")
     bridge = app_src[app_src.index("def render_tool_card_click_bridge"):
